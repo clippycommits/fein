@@ -28,11 +28,11 @@ const check = (cond, msg, extra) => {
 
 const db = await getDb();
 
-console.log("[1/5] ingest");
+console.log("[1/8] ingest");
 const ing = await ingestDocs(db, loadJsonl(join(root, "sample/seed.jsonl")));
 check(ing.docCount === 16, `ingested 16 docs`, ing);
 
-console.log("[2/5] resolve");
+console.log("[2/8] resolve");
 const res = await resolveMentions(db);
 const c1 = await counts(db);
 check(c1.entities === 12, `12 entities (7 people + 5 orgs)`, c1);
@@ -40,11 +40,11 @@ check(c1.pendingReviews === 1, `1 pending review (M. Chen from gmail)`, c1);
 const sams = await searchEntities(db, "okafor");
 check(sams.length === 1, `"Sam Okafor" and "Samuel Okafor" merged via email`, sams);
 
-console.log("[3/5] edges");
+console.log("[3/8] edges");
 const edg = await rebuildEdges(db);
 check(edg.edges > 5, `built ${edg.edges} edges`);
 
-console.log("[4/5] paths");
+console.log("[4/8] paths");
 const [dana] = await searchEntities(db, "dana whitfield");
 const [priya] = await searchEntities(db, "priya nair");
 const [maya] = await searchEntities(db, "maya chen");
@@ -57,7 +57,7 @@ check(intros.length >= 2 && intros[0].entity === maya.id, "Maya is top introduce
 const brief = await entityBrief(db, maya.id);
 check(brief.connections.length >= 3 && brief.recentDocuments.length > 0, "Maya brief has connections + docs");
 
-console.log("[5/5] review queue");
+console.log("[5/8] review queue");
 const reviews = await listReviews(db);
 check(reviews.length === 1 && reviews[0].mention_email === "mchen@gmail.com", "review is the gmail alias", reviews);
 await resolveReview(db, reviews[0].id, "accept");
@@ -66,6 +66,41 @@ check(maya2.emails.length === 2 && maya2.emails.includes("mchen@gmail.com"),
   "accepting review adds gmail alias to Maya", maya2);
 const c2 = await counts(db);
 check(c2.unresolvedMentions === 0, "no unresolved mentions after review", c2);
+
+console.log("[6/8] re-ingest idempotency");
+await ingestDocs(db, loadJsonl(join(root, "sample/seed.jsonl")));
+const res2 = await resolveMentions(db);
+const c3 = await counts(db);
+check(c3.entities === 12, "re-ingest + re-resolve creates no new entities", c3);
+check(c3.pendingReviews === 0, "re-ingest re-asks no answered questions", c3);
+check(c3.unresolvedMentions === 0, "all re-ingested mentions resolve", { c3, res2 });
+
+console.log("[7/8] reversed-name blocking");
+await ingestDocs(db, [{
+  source: "crm", kind: "record", external_id: "crm-099",
+  title: "Contact: Whitfield, Dana", occurred_at: "2026-08-01T00:00:00Z",
+  people: [{ name: "Whitfield, Dana", org: "Foxglove Capital", role: "mentioned" }],
+}]);
+await resolveMentions(db);
+const c4 = await counts(db);
+check(c4.entities === 12, "'Whitfield, Dana' attaches to Dana, no duplicate entity", c4);
+check(c4.unresolvedMentions === 0 && c4.pendingReviews === 0, "reversed name auto-attached", c4);
+
+console.log("[8/8] hop-budget pathfinding");
+// Cheap 4-hop chain A-B-C-D-E must not shadow the 2-hop route to E: with
+// maxHops=4 the only viable path to T is A->G->E->T (3 hops).
+const syn = [
+  ["syn_A", "syn_B", 0.99], ["syn_B", "syn_C", 0.99], ["syn_C", "syn_D", 0.99],
+  ["syn_D", "syn_E", 0.99], ["syn_A", "syn_G", 0.5], ["syn_E", "syn_G", 0.5],
+  ["syn_E", "syn_T", 0.9],
+];
+for (const [a, b, s] of syn) {
+  await db.query(`insert into edges (a, b, signals, strength) values ($1, $2, '{}', $3)`, [a, b, s]);
+}
+const synPath = await findWarmPath(db, "syn_A", "syn_T", 4);
+check(synPath !== null, "hop-bounded path is found despite cheaper long chain", synPath);
+check(synPath && synPath.path.map((s) => s.entity).join(">") === "syn_A>syn_G>syn_E>syn_T",
+  "path routes A>G>E>T", synPath?.path.map((s) => s.entity));
 
 await db.close();
 rmSync(dataDir, { recursive: true, force: true });

@@ -37,11 +37,13 @@ export async function resolveReview(db, reviewId, decision) {
     const e = ents[0];
     const emails = typeof e.emails === "string" ? JSON.parse(e.emails) : e.emails;
     const orgs = typeof e.orgs === "string" ? JSON.parse(e.orgs) : e.orgs;
+    const aliases = typeof e.aliases === "string" ? JSON.parse(e.aliases) : e.aliases;
     if (mention.norm_email && !emails.includes(mention.norm_email)) emails.push(mention.norm_email);
     const mOrg = normOrgName(mention.org_hint);
     if (mOrg && !orgs.includes(mOrg)) orgs.push(mOrg);
-    await db.query(`update entities set emails = $2, orgs = $3 where id = $1`,
-      [e.id, JSON.stringify(emails), JSON.stringify(orgs)]);
+    if (mention.norm_name && !aliases.includes(mention.norm_name)) aliases.push(mention.norm_name);
+    await db.query(`update entities set emails = $2, orgs = $3, aliases = $4 where id = $1`,
+      [e.id, JSON.stringify(emails), JSON.stringify(orgs), JSON.stringify(aliases)]);
     await db.query(`update mentions set entity_id = $2 where id = $1`, [mention.id, e.id]);
   } else if (decision === "reject") {
     const entity = await createEntityFromMention(db, null, mention);

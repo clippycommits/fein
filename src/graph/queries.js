@@ -3,7 +3,7 @@ import { strongestConnections } from "./paths.js";
 export async function searchEntities(db, query, limit = 10) {
   const q = `%${query.toLowerCase()}%`;
   const { rows } = await db.query(
-    `select id, kind, canonical_name, emails, orgs from entities
+    `select id, kind, canonical_name, emails, orgs, aliases from entities
      where merged_into is null
        and (lower(canonical_name) like $1 or lower(emails::text) like $1 or lower(orgs::text) like $1)
      order by canonical_name limit $2`,
@@ -42,7 +42,7 @@ export async function entityBrief(db, entityId) {
   }
 
   const { rows: docs } = await db.query(
-    `select d.source, d.kind, d.title, d.occurred_at from documents d
+    `select distinct d.id, d.source, d.kind, d.title, d.occurred_at from documents d
      join mentions m on m.document_id = d.id
      where m.entity_id = $1
      order by d.occurred_at desc nulls last limit 10`,
@@ -64,9 +64,9 @@ export async function counts(db) {
 }
 
 function parseEntity(r) {
-  return {
-    ...r,
-    emails: typeof r.emails === "string" ? JSON.parse(r.emails) : r.emails,
-    orgs: typeof r.orgs === "string" ? JSON.parse(r.orgs) : r.orgs,
-  };
+  const parsed = { ...r };
+  for (const col of ["emails", "orgs", "aliases"]) {
+    if (typeof parsed[col] === "string") parsed[col] = JSON.parse(parsed[col]);
+  }
+  return parsed;
 }

@@ -7,12 +7,13 @@ const KIND_WEIGHT = { meeting: 3, event: 2, email: 2, doc: 1.5, note: 1.5, recor
 const HALF_LIFE_DAYS = 180;
 
 function pairWeight(kind, roleA, roleB) {
-  let w = KIND_WEIGHT[kind] ?? 1;
   if (kind === "email") {
     const direct = (r) => r === "from" || r === "to";
-    w = direct(roleA) && direct(roleB) ? 2.5 : 1; // cc'd participants are weak signal
+    return direct(roleA) && direct(roleB) ? 2.5 : 1; // cc'd participants are weak signal
   }
-  return w;
+  // Being mentioned in a doc is far weaker evidence than attending/authoring it.
+  const damp = (r) => (r === "mentioned" ? 0.5 : 1);
+  return (KIND_WEIGHT[kind] ?? 1) * damp(roleA) * damp(roleB);
 }
 
 function decay(occurredAt, now) {
@@ -36,10 +37,14 @@ export async function rebuildEdges(db, now = Date.now()) {
     byDoc.get(r.doc_id).people.push({ entity: r.entity_id, role: r.role });
   }
 
+  const ROLE_RANK = { from: 5, to: 4, attendee: 4, author: 3, cc: 2, mentioned: 1 };
   const acc = new Map(); // "a|b" -> {signals, weight, lastSeen}
   for (const doc of byDoc.values()) {
-    const seen = new Map(); // entity -> role (dedupe within doc)
-    for (const p of doc.people) if (!seen.has(p.entity)) seen.set(p.entity, p.role);
+    const seen = new Map(); // entity -> strongest role within this doc
+    for (const p of doc.people) {
+      const cur = seen.get(p.entity);
+      if (!cur || (ROLE_RANK[p.role] ?? 0) > (ROLE_RANK[cur] ?? 0)) seen.set(p.entity, p.role);
+    }
     const people = [...seen.entries()];
     const d = decay(doc.occurred_at, now);
     for (let i = 0; i < people.length; i++) {
@@ -58,13 +63,16 @@ export async function rebuildEdges(db, now = Date.now()) {
     }
   }
 
-  await db.query(`delete from edges`);
-  for (const rec of acc.values()) {
-    const strength = 1 - Math.exp(-rec.weight / 6);
-    await db.query(
-      `insert into edges (a, b, signals, strength, last_seen) values ($1, $2, $3, $4, $5)`,
-      [rec.a, rec.b, JSON.stringify(rec.signals), strength, rec.lastSeen]
-    );
-  }
+  // One transaction so readers never observe a half-rebuilt graph.
+  await db.tx(async (tx) => {
+    await tx.query(`delete from edges`);
+    for (const rec of acc.values()) {
+      const strength = 1 - Math.exp(-rec.weight / 6);
+      await tx.query(
+        `insert into edges (a, b, signals, strength, last_seen) values ($1, $2, $3, $4, $5)`,
+        [rec.a, rec.b, JSON.stringify(rec.signals), strength, rec.lastSeen]
+      );
+    }
+  });
   return { edges: acc.size };
 }

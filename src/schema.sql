@@ -30,9 +30,11 @@ create table if not exists entities (
   canonical_name text not null,
   emails         jsonb not null default '[]',
   orgs           jsonb not null default '[]',
+  aliases        jsonb not null default '[]',  -- normalized name forms seen for this entity
   merged_into    text,
   created_at     timestamptz not null default now()
 );
+alter table entities add column if not exists aliases jsonb not null default '[]';
 
 create table if not exists review_queue (
   id                  text primary key,

@@ -19,37 +19,41 @@ async function loadGraph(db) {
 
 export async function findWarmPath(db, fromId, toId, maxHops = 4) {
   const adj = await loadGraph(db);
-  const dist = new Map([[fromId, 0]]);
-  const hops = new Map([[fromId, 0]]);
+  // Dijkstra over (node, hopCount) states: a cheap-but-long path must not
+  // finalize a node and shadow a costlier path that fits the hop budget.
+  const key = (n, h) => `${h}|${n}`;
+  const dist = new Map([[key(fromId, 0), 0]]);
   const prev = new Map();
   const done = new Set();
-  const frontier = [[0, fromId]];
+  const frontier = [[0, fromId, 0]];
+  let end = null;
 
   while (frontier.length) {
     frontier.sort((x, y) => x[0] - y[0]); // fine at this scale; swap for a heap later
-    const [d, node] = frontier.shift();
-    if (done.has(node)) continue;
-    done.add(node);
-    if (node === toId) break;
-    if ((hops.get(node) ?? 0) >= maxHops) continue;
+    const [d, node, h] = frontier.shift();
+    const k = key(node, h);
+    if (done.has(k)) continue;
+    done.add(k);
+    if (node === toId) { end = { node, h }; break; }
+    if (h >= maxHops) continue;
     for (const { to, strength } of adj.get(node) ?? []) {
+      const nk = key(to, h + 1);
       const cost = d + -Math.log(Math.max(strength, 0.01));
-      if (cost < (dist.get(to) ?? Infinity)) {
-        dist.set(to, cost);
-        hops.set(to, (hops.get(node) ?? 0) + 1);
-        prev.set(to, { node, strength });
-        frontier.push([cost, to]);
+      if (cost < (dist.get(nk) ?? Infinity)) {
+        dist.set(nk, cost);
+        prev.set(nk, { node, h, strength });
+        frontier.push([cost, to, h + 1]);
       }
     }
   }
 
-  if (!done.has(toId)) return null;
+  if (!end) return null;
   const path = [];
-  let cur = toId;
-  while (cur !== fromId) {
-    const p = prev.get(cur);
-    path.unshift({ entity: cur, viaStrength: p.strength });
-    cur = p.node;
+  let cur = end;
+  while (cur.node !== fromId || cur.h !== 0) {
+    const p = prev.get(key(cur.node, cur.h));
+    path.unshift({ entity: cur.node, viaStrength: p.strength });
+    cur = { node: p.node, h: p.h };
   }
   path.unshift({ entity: fromId, viaStrength: null });
   const product = path.slice(1).reduce((acc, s) => acc * s.viaStrength, 1);

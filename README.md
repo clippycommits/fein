@@ -30,6 +30,8 @@ crm      ─┘          │  (blocking → candidates →      │ one MCP endp
 
 Requires Node 20+. No database setup — uses embedded Postgres ([PGlite](https://pglite.dev)) under `./data/`; set `DATABASE_URL` to use real Postgres.
 
+Embedded mode is **single-process** (a lockfile enforces this): stop the MCP server before running CLI ingests, or set `DATABASE_URL` to share a real Postgres between them.
+
 ```bash
 npm install
 node src/cli.js demo                          # ingest sample data, resolve, build edges
@@ -81,7 +83,7 @@ Ingestion is idempotent — re-ingesting a document replaces its mentions.
 
 ## How connection strength works
 
-Each co-occurrence contributes `weight(kind) × decay(age)`: meetings 3, calendar events 2, direct emails 2.5 (cc'd 1), co-authored docs 1.5 — with a 180-day half-life. Edge strength is `1 − e^(−W/6)`, saturating toward 1. Warm paths maximize the product of hop strengths (Dijkstra over `−ln(strength)`).
+Each co-occurrence contributes `weight(kind) × decay(age)`: meetings 3, calendar events 2, direct emails 2.5 (cc'd 1), co-authored docs 1.5 — with a 180-day half-life, and merely-`mentioned` participants halved. Edge strength is `1 − e^(−W/6)`, saturating toward 1. Warm paths maximize the product of hop strengths (hop-bounded Dijkstra over `−ln(strength)`).
 
 All weights are in `src/graph/edges.js` — tune them to your data.
 

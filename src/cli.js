@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { fileURLToPath } from "node:url";
 import { getDb } from "./db.js";
 import { loadJsonl } from "./ingest/local.js";
 import { ingestDocs } from "./ingest/index.js";
@@ -95,7 +96,7 @@ async function main() {
       break;
     }
     case "demo": {
-      const dir = new URL("../sample/seed.jsonl", import.meta.url).pathname;
+      const dir = fileURLToPath(new URL("../sample/seed.jsonl", import.meta.url));
       console.log("ingest:", JSON.stringify(await ingestDocs(db, loadJsonl(dir))));
       console.log("resolve:", JSON.stringify(await resolveMentions(db)));
       console.log("edges:", JSON.stringify(await rebuildEdges(db)));

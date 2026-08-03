@@ -40,6 +40,8 @@ export function blockKeys({ normName, normEmail: email, kind }) {
     const last = toks[toks.length - 1];
     keys.push(`n:${kind}:${toks[0][0]}${last}`); // first initial + last token
     if (toks.length === 1) keys.push(`n:${kind}:${toks[0]}`);
+    // Reversed form so "Whitfield, Dana" blocks with "Dana Whitfield".
+    if (toks.length > 1) keys.push(`n:${kind}:${last[0]}${toks[0]}`);
   }
   return keys;
 }

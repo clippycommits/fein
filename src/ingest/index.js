@@ -9,8 +9,13 @@ function docId(doc) {
   return "doc_" + createHash("sha1").update(key).digest("hex").slice(0, 12);
 }
 
-/** Idempotent: re-ingesting the same document replaces its mentions. */
-export async function ingestDocs(db, docs) {
+/** Idempotent: re-ingesting the same document replaces its mentions.
+ * Runs in one transaction so a crash can't strand documents without mentions. */
+export async function ingestDocs(outerDb, docs) {
+  return outerDb.tx((db) => ingestInTx(db, docs));
+}
+
+async function ingestInTx(db, docs) {
   let docCount = 0;
   let mentionCount = 0;
   for (const doc of docs) {

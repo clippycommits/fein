@@ -60,6 +60,10 @@ function scorePerson(mention, entity) {
   }
   let best = 0;
   for (const n of entity.normNames) best = Math.max(best, nameSimilarity(mention.norm_name, n));
+  // Exact-name fast path (mirrors scoreOrg): identical normalized names
+  // auto-attach; the ambiguity guard in resolveMentions queues the case
+  // where several entities share the name.
+  if (best >= 0.999) return { score: 0.96, reason: "exact name match" };
   let score = 0.9 * best;
   const reasons = [`name similarity ${best.toFixed(2)}`];
 
@@ -85,9 +89,10 @@ function scoreOrg(mention, entity) {
 async function loadIndex(db) {
   const index = new EntityIndex();
   const { rows } = await db.query(
-    `select id, kind, canonical_name, emails, orgs from entities where merged_into is null`
+    `select id, kind, canonical_name, emails, orgs, aliases from entities where merged_into is null`
   );
   for (const r of rows) {
+    const aliases = typeof r.aliases === "string" ? JSON.parse(r.aliases) : r.aliases;
     index.add({
       id: r.id,
       kind: r.kind,
@@ -95,7 +100,8 @@ async function loadIndex(db) {
       emails: typeof r.emails === "string" ? JSON.parse(r.emails) : r.emails,
       orgs: typeof r.orgs === "string" ? JSON.parse(r.orgs) : r.orgs,
       normNames: new Set(
-        [r.kind === "org" ? normOrgName(r.canonical_name) : null,
+        [...aliases,
+         r.kind === "org" ? normOrgName(r.canonical_name) : null,
          r.kind === "person" ? mentionNormName(r.canonical_name) : null].filter(Boolean)
       ),
     });
@@ -111,8 +117,9 @@ function mentionNormName(name) {
 
 async function persistEntity(db, e) {
   await db.query(
-    `update entities set canonical_name = $2, emails = $3, orgs = $4 where id = $1`,
-    [e.id, e.canonical_name, JSON.stringify(e.emails), JSON.stringify(e.orgs)]
+    `update entities set canonical_name = $2, emails = $3, orgs = $4, aliases = $5 where id = $1`,
+    [e.id, e.canonical_name, JSON.stringify(e.emails), JSON.stringify(e.orgs),
+     JSON.stringify([...e.normNames])]
   );
 }
 
@@ -144,9 +151,10 @@ export async function createEntityFromMention(db, index, mention) {
   const mOrg = normOrgName(mention.org_hint);
   if (mOrg) entity.orgs.push(mOrg);
   await db.query(
-    `insert into entities (id, kind, canonical_name, emails, orgs) values ($1, $2, $3, $4, $5)`,
+    `insert into entities (id, kind, canonical_name, emails, orgs, aliases) values ($1, $2, $3, $4, $5, $6)`,
     [entity.id, entity.kind, entity.canonical_name,
-     JSON.stringify(entity.emails), JSON.stringify(entity.orgs)]
+     JSON.stringify(entity.emails), JSON.stringify(entity.orgs),
+     JSON.stringify([...entity.normNames])]
   );
   if (index) index.add(entity);
   return entity;
@@ -172,19 +180,21 @@ export async function resolveMentions(db) {
   for (const m of mentions) {
     if (!m.norm_name && !m.norm_email) continue;
     const candidates = index.candidates(m);
-    let best = null;
-    for (const c of candidates) {
-      const s = m.kind === "person" ? scorePerson(m, c) : scoreOrg(m, c);
-      if (!best || s.score > best.score) best = { entity: c, ...s };
-    }
+    const scored = candidates
+      .map((c) => ({ entity: c, ...(m.kind === "person" ? scorePerson(m, c) : scoreOrg(m, c)) }))
+      .sort((x, y) => y.score - x.score);
+    let best = scored[0] ?? null;
+    // Ambiguity guard: if two entities both clear the auto-merge bar (e.g. two
+    // distinct "John Smith"s), a human decides — never merge on a coin flip.
+    const ambiguous = scored.length > 1 && scored[1].score >= AUTO_MERGE;
 
-    if (best && best.score >= AUTO_MERGE) {
+    if (best && best.score >= AUTO_MERGE && !ambiguous) {
       absorb(best.entity, m);
       await persistEntity(db, best.entity);
       index.reindex(best.entity);
       await db.query(`update mentions set entity_id = $2 where id = $1`, [m.id, best.entity.id]);
       stats.attached++;
-    } else if (best && best.score >= REVIEW) {
+    } else if (best && (best.score >= REVIEW || ambiguous)) {
       await db.query(
         `insert into review_queue (id, mention_id, candidate_entity_id, score, detail)
          values ($1, $2, $3, $4, $5)`,
