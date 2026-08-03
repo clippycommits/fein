@@ -22,14 +22,19 @@
     <nav class="tabs">
       <button class="tab active" data-tab="explore">Explore</button>
       <button class="tab" data-tab="path">Warm path</button>
-      <button class="tab" data-tab="reviews">Review queue <span id="review-count" class="chip" hidden></span></button>
-      <button class="tab" data-tab="ingest">Add data</button>
+      <button class="tab" data-tab="reviews">Reviews <span id="review-count" class="chip" hidden></span></button>
+      <button class="tab" data-tab="data">Data</button>
+      <button class="tab" data-tab="settings">Settings</button>
     </nav>
 
     <section id="tab-explore" class="tab-panel active">
-      <input id="search" type="search" placeholder="Search people &amp; orgs…" autocomplete="off">
+      <input id="search" type="search" placeholder="Search people &amp; orgs…  ( / )" autocomplete="off">
       <div id="search-results"></div>
-      <div id="brief"></div>
+      <div id="brief">
+        <div class="empty" id="explore-empty">
+          <p>Search above, or click any node in the graph, to see a profile: strongest relationships with the signals behind them, and recent shared documents.</p>
+        </div>
+      </div>
     </section>
 
     <section id="tab-path" class="tab-panel">
@@ -37,30 +42,75 @@
       <label>To <input id="path-to" list="people-list" placeholder="person…"></label>
       <datalist id="people-list"></datalist>
       <button id="find-path" class="primary">Find warm path</button>
-      <div id="path-result"></div>
+      <div id="path-result">
+        <div class="empty"><p>The best route to an introduction — hops are scored by real interaction history, and the path maximizes end-to-end strength.</p></div>
+      </div>
     </section>
 
     <section id="tab-reviews" class="tab-panel">
-      <p class="hint">Matches scoring between 0.70 and 0.95 wait for a human — the system never merges on a guess.</p>
+      <p class="hint">Matches scoring between 0.70 and 0.95 wait for a human — the system never merges identities on a guess.</p>
       <div id="reviews"></div>
     </section>
 
-    <section id="tab-ingest" class="tab-panel">
+    <section id="tab-data" class="tab-panel">
       <div id="dropzone">
         <p><strong>Drop a file</strong> or click to choose</p>
         <p class="hint">.mbox (Gmail export) · .ics (calendar) · .csv (CRM contacts) · .jsonl</p>
         <input id="file-input" type="file" accept=".jsonl,.json,.mbox,.ics,.csv" hidden>
       </div>
       <div id="ingest-result"></div>
+      <h3 class="section-title">Connected data</h3>
+      <div id="sources"></div>
+      <h3 class="section-title">Live connectors</h3>
+      <p class="hint">Pull Gmail, Calendar, and Drive continuously from the CLI:<br>
+        <code>fundgraph ingest-gog gmail</code> · <code>ingest-granola</code> · <code>ingest-google gmail</code></p>
+      <h3 class="section-title">Audit trail</h3>
+      <div id="audit"></div>
+    </section>
+
+    <section id="tab-settings" class="tab-panel">
+      <h3 class="section-title">Relationship scoring</h3>
+      <p class="hint">What "a strong relationship" means differs by firm. Weights apply per co-occurrence; strength saturates as evidence accumulates. Saving rebuilds the graph instantly.</p>
+      <form id="settings-form"></form>
+      <button id="save-settings" class="primary">Save &amp; rebuild graph</button>
+      <h3 class="section-title">Maintenance</h3>
+      <button id="reresolve" class="danger">Re-run entity resolution from scratch</button>
+      <p class="hint">Rebuilds every entity from raw documents. Pending review questions are re-asked; nothing ingested is lost.</p>
+      <div id="about" class="hint"></div>
     </section>
   </aside>
 
   <section id="canvas">
     <svg id="graph" role="img" aria-label="Relationship graph: people as circles, connection strength as line weight"></svg>
     <div id="tooltip" hidden></div>
+    <div id="graph-controls">
+      <button id="zoom-in" title="Zoom in">+</button>
+      <button id="zoom-out" title="Zoom out">−</button>
+      <button id="zoom-fit" title="Fit to view">⤢</button>
+    </div>
     <div id="legend" class="hint">circle size = connections · line weight = relationship strength</div>
+    <div id="graph-loading" class="spinner-wrap" hidden><div class="spinner"></div></div>
   </section>
 </main>
+
+<div id="onboarding" hidden>
+  <div class="ob-card">
+    <h1>🕸️ fundgraph</h1>
+    <p class="ob-lede">Build your fund's <strong>map of reality</strong> — every person and organization across your email, calendar, meetings, and CRM, entity-resolved into one graph your team and your AI agents can navigate.</p>
+    <ol class="ob-steps">
+      <li><strong>Connect data</strong> — drop an export or use a live connector</li>
+      <li><strong>Confirm identities</strong> — anything under 95% confidence asks you first</li>
+      <li><strong>Explore</strong> — warm paths, briefs, and one MCP endpoint for agents</li>
+    </ol>
+    <div class="ob-actions">
+      <button id="ob-sample" class="primary">Load sample dataset</button>
+      <button id="ob-upload">Upload a file…</button>
+    </div>
+    <p class="hint">Live connectors (Gmail · Calendar · Drive · Granola) run from the CLI — see the Data tab after loading.</p>
+  </div>
+</div>
+
+<div id="toasts"></div>
 
 <script src="/vendor/d3.js"></script>
 <script src="/app.js"></script>

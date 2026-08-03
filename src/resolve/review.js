@@ -1,5 +1,6 @@
 import { normOrgName } from "./normalize.js";
 import { createEntityFromMention } from "./pipeline.js";
+import { audit } from "../settings.js";
 
 export async function listReviews(db) {
   const { rows } = await db.query(
@@ -53,5 +54,11 @@ export async function resolveReview(db, reviewId, decision) {
   }
   await db.query(`update review_queue set status = $2 where id = $1`,
     [reviewId, decision === "accept" ? "accepted" : "rejected"]);
+  await audit(db, `review_${decision}`, {
+    review: reviewId,
+    mention: { name: mention.name, email: mention.email },
+    candidate: row.candidate_entity_id,
+    score: row.score,
+  });
   return { reviewId, decision };
 }

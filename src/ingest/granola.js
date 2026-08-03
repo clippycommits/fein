@@ -57,9 +57,12 @@ export function loadGranola(path = DEFAULT_CACHE) {
 function extractPeople(doc) {
   const found = new Map(); // email|name -> person
   const push = (name, email) => {
+    // Empty strings must not become a shared dedupe key (or a mention identity).
+    name = (typeof name === "string" && name.trim()) || null;
+    email = (typeof email === "string" && email.trim()) || null;
     if (!name && !email) return;
     const key = (email ?? name).toLowerCase();
-    if (!found.has(key)) found.set(key, { name: name ?? null, email: email ?? null, role: "attendee" });
+    if (!found.has(key)) found.set(key, { name, email, role: "attendee" });
   };
 
   const p = doc.people;

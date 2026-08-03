@@ -22,6 +22,8 @@ const USAGE = `fundgraph — open-source agentic data layer for investment teams
   fundgraph ingest-google <service> live pull via Google APIs: gmail | calendar | drive
                                     (needs GOOGLE_OAUTH_CREDENTIALS; prefer ingest-gog if you have gog)
   fundgraph sync                    resolve + rebuild edges in one step
+  fundgraph reresolve               re-run entity resolution from scratch (documents kept;
+                                    review decisions are replayed, pending questions re-asked)
   fundgraph web [port]              start the web dashboard (default port 4321)
   fundgraph resolve                 run entity resolution over unresolved mentions
   fundgraph edges                   rebuild the relationship graph
@@ -114,15 +116,9 @@ async function main() {
       break;
     }
     case "reresolve": {
-      // Wipe derived state and re-run resolution from raw mentions. Discards
-      // pending review questions (they will be re-asked) but not documents.
-      await db.query(`delete from review_queue`);
-      await db.query(`update mentions set entity_id = null`);
-      await db.query(`delete from entities`);
-      await db.query(`delete from edges`);
-      const r = await resolveMentions(db);
-      const e = await rebuildEdges(db);
-      out({ resolve: r, edges: e, stats: await counts(db) });
+      const { reresolveAll } = await import("./resolve/reresolve.js");
+      const r = await reresolveAll(db);
+      out({ ...r, stats: await counts(db) });
       break;
     }
     case "resolve":

@@ -85,6 +85,37 @@ export async function startMcpServer() {
   );
 
   server.tool(
+    "meeting_prep",
+    "Everything needed to prep a meeting with a person: profile, relationship history with receipts, recent shared documents, and (when `me` is given) your warm paths and best introducers to them. Returns structured data for you to write up.",
+    { entity: z.string(), me: z.string().optional() },
+    async ({ entity, me }) => {
+      const target = await ref(db, entity);
+      const brief = await entityBrief(db, target.id);
+      const prep = {
+        profile: brief.entity,
+        connections: brief.connections,
+        recentDocuments: brief.recentDocuments,
+      };
+      if (me) {
+        const self = await ref(db, me);
+        const path = await findWarmPath(db, self.id, target.id);
+        if (path) {
+          for (const step of path.path) {
+            step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
+          }
+        }
+        const intros = await findIntroducers(db, self.id, target.id);
+        for (const i of intros) {
+          i.name = (await getEntity(db, i.entity))?.canonical_name ?? i.entity;
+        }
+        prep.warmPath = path;
+        prep.introducers = intros;
+      }
+      return text(prep);
+    }
+  );
+
+  server.tool(
     "graph_stats",
     "Counts of documents, mentions, entities, pending reviews, and edges.",
     {},

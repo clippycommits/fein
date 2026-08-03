@@ -9,12 +9,14 @@ export function loadIcs(path) {
   const raw = readFileSync(path, "utf8").replace(/\r?\n[ \t]/g, ""); // unfold
   const docs = [];
   let event = null;
+  let depth = 0; // nesting inside VEVENT (VALARM etc.) — those properties are not the event's
   for (const line of raw.split(/\r?\n/)) {
-    if (line === "BEGIN:VEVENT") {
+    if (line === "BEGIN:VEVENT" && !event) {
       event = { people: [] };
+      depth = 0;
       continue;
     }
-    if (line === "END:VEVENT") {
+    if (line === "END:VEVENT" && depth === 0) {
       if (event && event.people.length) {
         docs.push({
           source: "ics",
@@ -29,6 +31,9 @@ export function loadIcs(path) {
       continue;
     }
     if (!event) continue;
+    if (line.startsWith("BEGIN:")) { depth++; continue; }
+    if (line.startsWith("END:")) { if (depth > 0) depth--; continue; }
+    if (depth > 0) continue;
 
     const { name, params, value } = parseProp(line);
     if (!name) continue;

@@ -1,14 +1,33 @@
 /* global d3 */
 const $ = (sel) => document.querySelector(sel);
-const api = async (path, opts) => {
-  const res = await fetch(path, opts);
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error ?? res.statusText);
-  return body;
-};
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pct = (x) => `${Math.round(x * 100)}%`;
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.textContent = msg;
+  $("#toasts").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+
+async function api(path, opts) {
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch {
+    toast("fundgraph server is not reachable — is it still running?", "err");
+    throw new Error("network");
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = body.error ?? res.statusText;
+    if (opts?.method && opts.method !== "GET") toast(msg, "err");
+    throw new Error(msg);
+  }
+  return body;
+}
 
 /* ---------- theme ---------- */
 $("#theme-toggle").addEventListener("click", () => {
@@ -26,8 +45,20 @@ for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.add("active");
     $(`#tab-${tab.dataset.tab}`).classList.add("active");
     if (tab.dataset.tab === "reviews") renderReviews();
+    if (tab.dataset.tab === "data") renderData();
+    if (tab.dataset.tab === "settings") renderSettings();
   });
 }
+
+/* ---------- keyboard ---------- */
+addEventListener("keydown", (ev) => {
+  if (ev.key === "/" && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName)) {
+    ev.preventDefault();
+    document.querySelector('[data-tab="explore"]').click();
+    $("#search").focus();
+  }
+  if (ev.key === "Escape") highlightPath([]);
+});
 
 /* ---------- stat tiles ---------- */
 async function renderStats() {
@@ -45,15 +76,23 @@ async function renderStats() {
   const chip = $("#review-count");
   chip.hidden = !s.pendingReviews;
   chip.textContent = s.pendingReviews;
+  $("#onboarding").hidden = s.documents > 0;
+  return s;
 }
 
 /* ---------- graph ---------- */
 let graphData = { nodes: [], links: [] };
 let simulation = null;
+let zoomBehavior = null;
 const nameToId = new Map();
 
 async function renderGraph() {
-  graphData = await api("/api/graph");
+  $("#graph-loading").hidden = false;
+  try {
+    graphData = await api("/api/graph");
+  } finally {
+    $("#graph-loading").hidden = true;
+  }
   nameToId.clear();
   const list = $("#people-list");
   list.innerHTML = "";
@@ -68,7 +107,8 @@ async function renderGraph() {
   svg.selectAll("*").remove();
   const { width, height } = svg.node().getBoundingClientRect();
   const root = svg.append("g");
-  svg.call(d3.zoom().scaleExtent([0.3, 4]).on("zoom", (ev) => root.attr("transform", ev.transform)));
+  zoomBehavior = d3.zoom().scaleExtent([0.2, 4]).on("zoom", (ev) => root.attr("transform", ev.transform));
+  svg.call(zoomBehavior);
 
   const link = root.append("g").selectAll("line")
     .data(graphData.links).join("line")
@@ -107,10 +147,10 @@ async function renderGraph() {
       tooltip.hidden = false;
       tooltip.style.left = `${ev.offsetX + 14}px`;
       tooltip.style.top = `${ev.offsetY + 14}px`;
-      const sig = Object.entries(d.signals).map(([k, v]) => `${v} ${k}${v === 1 ? "" : "s"}`).join(", ");
+      const sig = Object.entries(d.signals).map(([k, v]) => `${v} ${esc(k)}${v === 1 ? "" : "s"}`).join(", ");
       tooltip.innerHTML =
         `<div class="t-name">${esc(d.source.name)} ↔ ${esc(d.target.name)}</div>` +
-        `<div class="t-sub">strength ${pct(d.strength)} · ${esc(sig)}</div>`;
+        `<div class="t-sub">strength ${pct(d.strength)} · ${sig}</div>`;
     })
     .on("mouseleave", () => { tooltip.hidden = true; });
 
@@ -126,6 +166,38 @@ async function renderGraph() {
       node.attr("transform", (d) => `translate(${d.x},${d.y})`);
     });
 }
+
+function zoomTo(entityId) {
+  const d = graphData.nodes.find((n) => n.id === entityId);
+  if (!d || d.x === undefined) return;
+  const svg = d3.select("#graph");
+  const { width, height } = svg.node().getBoundingClientRect();
+  svg.transition().duration(500).call(
+    zoomBehavior.transform,
+    d3.zoomIdentity.translate(width / 2 - d.x * 1.4, height / 2 - d.y * 1.4).scale(1.4)
+  );
+}
+
+function fitView() {
+  if (!graphData.nodes.length || graphData.nodes[0].x === undefined) return;
+  const xs = graphData.nodes.map((n) => n.x);
+  const ys = graphData.nodes.map((n) => n.y);
+  const pad = 60;
+  const [minX, maxX] = [Math.min(...xs) - pad, Math.max(...xs) + pad];
+  const [minY, maxY] = [Math.min(...ys) - pad, Math.max(...ys) + pad];
+  const svg = d3.select("#graph");
+  const { width, height } = svg.node().getBoundingClientRect();
+  const scale = Math.min(2.5, 0.95 * Math.min(width / (maxX - minX), height / (maxY - minY)));
+  svg.transition().duration(500).call(
+    zoomBehavior.transform,
+    d3.zoomIdentity
+      .translate(width / 2 - ((minX + maxX) / 2) * scale, height / 2 - ((minY + maxY) / 2) * scale)
+      .scale(scale)
+  );
+}
+$("#zoom-fit").addEventListener("click", fitView);
+$("#zoom-in").addEventListener("click", () => d3.select("#graph").transition().call(zoomBehavior.scaleBy, 1.35));
+$("#zoom-out").addEventListener("click", () => d3.select("#graph").transition().call(zoomBehavior.scaleBy, 1 / 1.35));
 
 function highlightPath(ids) {
   const onPath = new Set(ids);
@@ -147,38 +219,68 @@ $("#search").addEventListener("input", (ev) => {
   if (!q) { $("#search-results").innerHTML = ""; return; }
   searchTimer = setTimeout(async () => {
     const results = await api(`/api/search?q=${encodeURIComponent(q)}`);
-    $("#search-results").innerHTML = results.map((r) =>
+    $("#search-results").innerHTML = results.length ? results.map((r) =>
       `<div class="result-row" data-id="${esc(r.id)}">
          <div>${esc(r.canonical_name)} ${r.kind === "org" ? "· <span class='sub'>org</span>" : ""}</div>
          <div class="sub">${esc([...r.orgs, ...r.emails].slice(0, 2).join(" · "))}</div>
-       </div>`).join("");
+       </div>`).join("") : `<div class="empty"><p>No matches for “${esc(q)}”.</p></div>`;
     for (const row of document.querySelectorAll("#search-results .result-row")) {
       row.addEventListener("click", () => showBrief(row.dataset.id));
     }
   }, 150);
 });
 
+let currentBrief = null;
+
 async function showBrief(id) {
   const b = await api(`/api/entity/${id}`);
+  currentBrief = b;
   highlightPath([id]);
+  zoomTo(id);
   const e = b.entity;
   $("#brief").innerHTML =
     `<h2>${esc(e.canonical_name)}</h2>
      <div class="sub">${esc([...e.orgs, ...e.emails].join(" · "))}</div>
-     <h3>Strongest connections</h3>` +
+     <div class="brief-actions"><button class="small" id="copy-brief">Copy brief as Markdown</button></div>
+     <h3 class="section-title">Strongest connections</h3>` +
     (b.connections.length ? b.connections.map((c) =>
       `<div class="conn" data-id="${esc(c.entity)}">
          <span style="flex:1">${esc(c.name)}</span>
          <span class="bar-wrap"><span class="bar" style="width:${pct(c.strength)}"></span></span>
          <span class="pct">${pct(c.strength)}</span>
-       </div>`).join("") : `<div class="hint">none yet</div>`) +
-    `<h3>Recent documents</h3>` +
+       </div>`).join("") : `<div class="empty"><p>No scored relationships yet.</p></div>`) +
+    `<h3 class="section-title">Recent documents</h3>` +
     (b.recentDocuments.length ? b.recentDocuments.map((d) =>
-      `<div class="doc-row">${esc(d.title ?? "(untitled)")} <span class="src">· ${esc(d.source)}${d.occurred_at ? " · " + d.occurred_at.slice(0, 10) : ""}</span></div>`).join("") : `<div class="hint">none</div>`);
+      `<div class="doc-row">${esc(d.title ?? "(untitled)")} <span class="src">· ${esc(d.source)}${d.occurred_at ? " · " + esc(d.occurred_at.slice(0, 10)) : ""}</span></div>`).join("") : `<div class="empty"><p>None.</p></div>`);
   for (const row of document.querySelectorAll("#brief .conn")) {
     row.addEventListener("click", () => showBrief(row.dataset.id));
   }
+  $("#copy-brief").addEventListener("click", copyBrief);
   document.querySelector('[data-tab="explore"]').click();
+}
+
+async function copyBrief() {
+  if (!currentBrief) return;
+  const b = currentBrief;
+  const md = [
+    `# ${b.entity.canonical_name}`,
+    ``,
+    `${[...b.entity.orgs, ...b.entity.emails].join(" · ")}`,
+    ``,
+    `## Strongest connections`,
+    ...b.connections.map((c) => {
+      const sig = Object.entries(c.signals ?? {}).map(([k, v]) => `${v} ${k}${v === 1 ? "" : "s"}`).join(", ");
+      return `- **${c.name}** — ${pct(c.strength)}${sig ? ` (${sig})` : ""}`;
+    }),
+    ``,
+    `## Recent documents`,
+    ...b.recentDocuments.map((d) =>
+      `- ${d.title ?? "(untitled)"} — ${d.source}${d.occurred_at ? `, ${d.occurred_at.slice(0, 10)}` : ""}`),
+    ``,
+    `*Generated by fundgraph*`,
+  ].join("\n");
+  await navigator.clipboard.writeText(md);
+  toast("Brief copied as Markdown", "good");
 }
 
 /* ---------- warm path ---------- */
@@ -186,11 +288,11 @@ $("#find-path").addEventListener("click", async () => {
   const from = nameToId.get($("#path-from").value.trim().toLowerCase());
   const to = nameToId.get($("#path-to").value.trim().toLowerCase());
   const out = $("#path-result");
-  if (!from || !to) { out.innerHTML = `<p class="hint">pick two people from the list</p>`; return; }
-  const { path, introducers } = await api(`/api/path?from=${from}&to=${to}`);
+  if (!from || !to) { out.innerHTML = `<div class="empty"><p>Pick two people from the suggestions.</p></div>`; return; }
+  const { path, introducers } = await api(`/api/path?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
   let html = "";
   if (!path) {
-    html += `<p class="hint">no connecting path found</p>`;
+    html += `<div class="empty"><p>No connecting path found within 4 hops.</p></div>`;
     highlightPath([]);
   } else {
     highlightPath(path.path.map((s) => s.entity));
@@ -200,7 +302,7 @@ $("#find-path").addEventListener("click", async () => {
          <span>${esc(s.name)}</span></div>`).join("");
   }
   if (introducers.length) {
-    html += `<h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px">Best introducers</h3>`;
+    html += `<h3 class="section-title">Best introducers</h3>`;
     html += introducers.map((i) =>
       `<div class="conn"><span style="flex:1">${esc(i.name)}</span>
         <span class="pct">${pct(i.strengthToYou)} / ${pct(i.strengthToTarget)}</span></div>`).join("");
@@ -222,19 +324,98 @@ async function renderReviews() {
          <button class="accept" data-id="${esc(r.id)}" data-d="accept">✓ Same person</button>
          <button class="reject" data-id="${esc(r.id)}" data-d="reject">✗ Different</button>
        </div>
-     </div>`).join("") : `<p class="hint">queue is empty — everything resolved deterministically.</p>`;
+     </div>`).join("") : `<div class="empty"><p>Queue is empty — everything resolved deterministically.</p></div>`;
   for (const btn of document.querySelectorAll("#reviews button")) {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
-      await api(`/api/reviews/${btn.dataset.id}`, {
+      await api(`/api/reviews/${encodeURIComponent(btn.dataset.id)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ decision: btn.dataset.d }),
       });
+      toast(btn.dataset.d === "accept" ? "Identities merged" : "Kept as separate people", "good");
       await Promise.all([renderReviews(), renderStats(), renderGraph()]);
     });
   }
 }
+
+/* ---------- data tab ---------- */
+async function renderData() {
+  const [docs, audit] = await Promise.all([api("/api/documents"), api("/api/audit?limit=15")]);
+  $("#sources").innerHTML = docs.sources.length
+    ? `<table class="mini"><tr><th>Source</th><th>Kinds</th><th style="text-align:right">Docs</th><th>Latest</th></tr>` +
+      docs.sources.map((s) =>
+        `<tr><td>${esc(s.source)}</td>
+           <td>${esc(Object.entries(s.kinds).map(([k, v]) => `${v} ${k}`).join(", "))}</td>
+           <td class="num">${s.count}</td>
+           <td>${s.latest ? esc(s.latest.slice(0, 10)) : "—"}</td></tr>`).join("") + `</table>`
+    : `<div class="empty"><p>Nothing ingested yet.</p></div>`;
+  $("#audit").innerHTML = audit.length ? audit.map((a) =>
+    `<div class="audit-row"><span class="when">${esc(String(a.at).slice(0, 16).replace("T", " "))}</span>
+       · ${esc(a.action)}${a.detail?.file ? ` · ${esc(a.detail.file)}` : ""}${a.detail?.mention?.name ? ` · ${esc(a.detail.mention.name)}` : ""}</div>`).join("")
+    : `<div class="empty"><p>No activity recorded yet.</p></div>`;
+}
+
+/* ---------- settings tab ---------- */
+const WEIGHT_LABELS = {
+  meeting: "Meeting notes (per meeting)",
+  event: "Calendar co-attendance",
+  email: "Direct email (from ↔ to)",
+  emailCc: "Cc'd on an email",
+  doc: "Co-authored document",
+  note: "Shared note",
+  record: "CRM co-mention",
+  mentionedFactor: "Merely-mentioned multiplier",
+};
+
+async function renderSettings() {
+  const [s, health] = await Promise.all([api("/api/settings"), api("/api/health")]);
+  $("#settings-form").innerHTML =
+    Object.entries(s.weights).map(([k, v]) =>
+      `<div class="weight-row"><label for="w-${esc(k)}">${esc(WEIGHT_LABELS[k] ?? k)}</label>
+         <input id="w-${esc(k)}" name="${esc(k)}" type="number" step="0.1" min="0" max="100" value="${esc(v)}"></div>`).join("") +
+    `<div class="weight-row"><label for="w-halfLifeDays">Recency half-life (days)</label>
+       <input id="w-halfLifeDays" name="halfLifeDays" type="number" step="1" min="1" max="3650" value="${esc(s.halfLifeDays)}"></div>
+     <div class="weight-row"><label for="w-saturation">Evidence saturation</label>
+       <input id="w-saturation" name="saturation" type="number" step="0.5" min="0.5" max="100" value="${esc(s.saturation)}"></div>`;
+  $("#about").textContent = `fundgraph v${health.version} · up ${Math.floor(health.uptimeSeconds / 60)}m · MIT licensed`;
+}
+
+$("#save-settings").addEventListener("click", async () => {
+  const patch = { weights: {} };
+  for (const input of document.querySelectorAll("#settings-form input")) {
+    const v = Number(input.value);
+    if (input.name === "halfLifeDays") patch.halfLifeDays = v;
+    else if (input.name === "saturation") patch.saturation = v;
+    else patch.weights[input.name] = v;
+  }
+  const btn = $("#save-settings");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    toast(`Saved — graph rebuilt (${res.edges.edges} connections)`, "good");
+    await Promise.all([renderStats(), renderGraph()]);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#reresolve").addEventListener("click", async () => {
+  if (!confirm("Re-run entity resolution from scratch? Pending review questions will be re-asked.")) return;
+  const btn = $("#reresolve");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/reresolve", { method: "POST" });
+    toast(`Rebuilt: ${res.stats.entities} entities, ${res.stats.edges} connections`, "good");
+    await Promise.all([renderStats(), renderGraph()]);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 /* ---------- ingest ---------- */
 const dz = $("#dropzone");
@@ -260,14 +441,47 @@ async function uploadFile(file) {
     });
     out.innerHTML = `<span class="ok">✓</span> ${res.ingested.docCount} docs, ${res.ingested.mentionCount} mentions ·
       resolved ${res.resolved.attached + res.resolved.created}, queued ${res.resolved.queued} for review ·
-      ${res.edges.edges} edges`;
-    await Promise.all([renderStats(), renderGraph()]);
+      ${res.edges.edges} connections`;
+    toast(`Ingested ${file.name}`, "good");
+    await Promise.all([renderStats(), renderGraph(), renderData()]);
   } catch (err) {
     out.innerHTML = `<span class="err">✗ ${esc(err.message)}</span>`;
   }
 }
 
+/* ---------- onboarding ---------- */
+$("#ob-sample").addEventListener("click", async () => {
+  const btn = $("#ob-sample");
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  try {
+    const res = await api("/api/sample", { method: "POST" });
+    $("#onboarding").hidden = true;
+    toast(`Sample loaded: ${res.stats.entities} entities, ${res.stats.edges} connections`, "good");
+    await Promise.all([renderStats(), renderGraph()]);
+    setTimeout(fitView, 1600);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Load sample dataset";
+  }
+});
+$("#ob-upload").addEventListener("click", () => {
+  $("#onboarding").hidden = true;
+  document.querySelector('[data-tab="data"]').click();
+  $("#file-input").click();
+});
+
 /* ---------- boot ---------- */
-renderStats();
-renderGraph();
-addEventListener("resize", () => renderGraph());
+(async () => {
+  const s = await renderStats();
+  await renderGraph();
+  if (s.documents > 0) setTimeout(fitView, 1700);
+})();
+let resizeTimer = null;
+addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(async () => {
+    await renderGraph();
+    setTimeout(fitView, 1500);
+  }, 250);
+});

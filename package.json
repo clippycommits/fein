@@ -1,6 +1,6 @@
 {
   "name": "fundgraph",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Open-source agentic data layer for investment teams: entity-resolved knowledge graph + relationship intelligence, exposed over MCP",
   "type": "module",
   "license": "MIT",
@@ -8,8 +8,10 @@
     "fundgraph": "./src/cli.js"
   },
   "scripts": {
+    "start": "node src/cli.js web",
     "mcp": "node src/cli.js mcp",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "test": "node scripts/smoke.js && node scripts/api-test.js"
   },
   "engines": {
     "node": ">=20"

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,6 +74,8 @@ const c3 = await counts(db);
 check(c3.entities === 12, "re-ingest + re-resolve creates no new entities", c3);
 check(c3.pendingReviews === 0, "re-ingest re-asks no answered questions", c3);
 check(c3.unresolvedMentions === 0, "all re-ingested mentions resolve", { c3, res2 });
+const { rows: kept } = await db.query(`select count(*) as n from review_queue where status = 'accepted'`);
+check(Number(kept[0].n) === 1, "accepted review history survives re-ingest (stable mention ids)", kept);
 
 console.log("[7/9] reversed-name blocking");
 await ingestDocs(db, [{
@@ -86,7 +88,7 @@ const c4 = await counts(db);
 check(c4.entities === 12, "'Whitfield, Dana' attaches to Dana, no duplicate entity", c4);
 check(c4.unresolvedMentions === 0 && c4.pendingReviews === 0, "reversed name auto-attached", c4);
 
-console.log("[8/9] multi-source adapters (mbox / ics / csv)");
+console.log("[8/10] multi-source adapters (mbox / ics / csv)");
 {
   const { loadMbox } = await import(join(root, "src/ingest/mbox.js"));
   const { loadIcs } = await import(join(root, "src/ingest/ics.js"));
@@ -123,7 +125,72 @@ console.log("[8/9] multi-source adapters (mbox / ics / csv)");
   check(kai?.canonical_name === "Kai Tanaka", "email-only entity upgrades to display name", kai);
 }
 
-console.log("[9/9] hop-budget pathfinding");
+console.log("[9/10] parser + resolution safety rails");
+{
+  const { loadMbox, parseAddressList, decodeRfc2047 } = await import(join(root, "src/ingest/mbox.js"));
+  const { loadIcs } = await import(join(root, "src/ingest/ics.js"));
+
+  // Unescaped "From " in a body must not fabricate a phantom message.
+  const phantomPath = join(dataDir, "phantom.mbox");
+  writeFileSync(phantomPath, [
+    "From alice@x.com Mon Jul 27 09:15:00 2026",
+    "From: Alice <alice@x.com>", "To: bob@y.com",
+    "Subject: hi", "Date: Mon, 27 Jul 2026 09:15:00 +0000", "",
+    "From my side all good. Quoting the thread:",
+    "From: Carol Attacker <carol@evil.example>", "To: victim@x.com", "",
+  ].join("\n"));
+  check(loadMbox(phantomPath).length === 1, "body 'From ' lines don't fabricate messages");
+
+  check(decodeRfc2047("=?utf-8?Q?Hyperlon?= =?utf-8?Q?gword?=") === "Hyperlongword",
+    "adjacent RFC 2047 words join without a space");
+  const commented = parseAddressList("maya@x.com (Maya Chen)");
+  check(commented.length === 1 && commented[0].email === "maya@x.com" && commented[0].name === "Maya Chen",
+    "RFC 5322 comment becomes display name, address stays clean", commented);
+  const grouped = parseAddressList("Investors: maya@x.com, tom@y.com;");
+  check(grouped.length === 2 && grouped[0].email === "maya@x.com" && grouped[1].email === "tom@y.com",
+    "group syntax yields clean addresses", grouped);
+  const quotedPair = parseAddressList('"Chen \\"The, Closer\\" Maya" <maya@x.com>, tom@y.com');
+  check(quotedPair.length === 2 && quotedPair[0].name === 'Chen "The, Closer" Maya',
+    "quoted-pair escapes survive tokenizing and unquoting", quotedPair);
+
+  // VALARM properties must not leak into the event.
+  const alarmPath = join(dataDir, "alarm.ics");
+  writeFileSync(alarmPath, [
+    "BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:evt-1",
+    "SUMMARY:Board meeting with LPs", "DTSTART:20260810T100000Z",
+    "ATTENDEE;CN=Dana Whitfield:mailto:dana@foxglove.vc",
+    "ATTENDEE;CN=Maya Chen:mailto:maya@nordwind.vc",
+    "BEGIN:VALARM", "ACTION:EMAIL", "SUMMARY:Reminder: leave now",
+    "ATTENDEE:mailto:alerts@pagerduty.example", "TRIGGER:-PT15M",
+    "END:VALARM", "END:VEVENT", "END:VCALENDAR",
+  ].join("\r\n"));
+  const alarmEvents = loadIcs(alarmPath);
+  check(alarmEvents.length === 1 && alarmEvents[0].title === "Board meeting with LPs" &&
+    alarmEvents[0].people.length === 2, "VALARM does not overwrite title or inject attendees", alarmEvents);
+
+  // Same name + conflicting work domain and org must ask a human, not merge.
+  await ingestDocs(db, [
+    { source: "crm", kind: "record", external_id: "js-1", title: "Contact: John Smith",
+      occurred_at: "2026-08-01T00:00:00Z",
+      people: [{ name: "John Smith", email: "jsmith@acme.com", org: "Acme Capital", role: "mentioned" }] },
+  ]);
+  await resolveMentions(db);
+  await ingestDocs(db, [
+    { source: "crm", kind: "record", external_id: "js-2", title: "Contact: John Smith (Zenith)",
+      occurred_at: "2026-08-02T00:00:00Z",
+      people: [{ name: "John Smith", email: "john@zenith.io", org: "Zenith Partners", role: "mentioned" }] },
+  ]);
+  await resolveMentions(db);
+  const c6 = await counts(db);
+  check(c6.pendingReviews === 1, "same-named stranger with conflicting evidence queues for review", c6);
+  const [johnReview] = (await listReviews(db)).filter((r) => r.mention_email === "john@zenith.io");
+  check(!!johnReview, "the queued review is the Zenith John Smith", johnReview);
+  await resolveReview(db, johnReview.id, "reject");
+  const smiths = await searchEntities(db, "john smith");
+  check(smiths.length === 2, "reject keeps two distinct John Smiths", smiths.map((s) => s.emails));
+}
+
+console.log("[10/10] hop-budget pathfinding");
 // Cheap 4-hop chain A-B-C-D-E must not shadow the 2-hop route to E: with
 // maxHops=4 the only viable path to T is A->G->E->T (3 hops).
 const syn = [

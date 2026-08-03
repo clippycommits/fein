@@ -56,6 +56,20 @@ create table if not exists edges (
   primary key (a, b)
 );
 
+create table if not exists settings (
+  key        text primary key,
+  value      jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists audit_log (
+  id     text primary key,
+  at     timestamptz not null default now(),
+  actor  text not null default 'local',
+  action text not null,   -- ingest | review_accept | review_reject | settings_update | reresolve
+  detail jsonb
+);
+
 create index if not exists mentions_unresolved on mentions (entity_id) where entity_id is null;
 create index if not exists mentions_norm_email on mentions (norm_email);
 create index if not exists edges_a on edges (a);

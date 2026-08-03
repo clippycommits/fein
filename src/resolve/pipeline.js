@@ -60,10 +60,19 @@ function scorePerson(mention, entity) {
   }
   let best = 0;
   for (const n of entity.normNames) best = Math.max(best, nameSimilarity(mention.norm_name, n));
-  // Exact-name fast path (mirrors scoreOrg): identical normalized names
-  // auto-attach; the ambiguity guard in resolveMentions queues the case
-  // where several entities share the name.
-  if (best >= 0.999) return { score: 0.96, reason: "exact name match" };
+  // Exact-name fast path: identical normalized names auto-attach — but only
+  // when nothing contradicts the match. Same-named strangers are common; a
+  // conflicting work domain or org hint drops to the similarity path below
+  // (0.90 for an exact name), which lands in the review band.
+  const mDomain = mention.norm_email?.split("@")[1];
+  const entDomains = entity.emails.map((e) => e.split("@")[1]);
+  const domainConflict = mDomain && !FREEMAIL.has(mDomain) &&
+    entDomains.some((d) => !FREEMAIL.has(d)) && !entDomains.includes(mDomain);
+  const mentionOrg = normOrgName(mention.org_hint);
+  const orgConflict = mentionOrg && entity.orgs.length > 0 && !entity.orgs.includes(mentionOrg);
+  if (best >= 0.999 && !domainConflict && !orgConflict) {
+    return { score: 0.96, reason: "exact name match" };
+  }
   let score = 0.9 * best;
   const reasons = [`name similarity ${best.toFixed(2)}`];
 
@@ -188,11 +197,12 @@ export async function resolveMentions(db) {
     let best = scored[0] ?? null;
     // Ambiguity guard: if two entities both clear the auto-merge bar (e.g. two
     // distinct "John Smith"s), a human decides — never merge on a coin flip.
-    // An exact email match is exempt: the address pins identity even when the
-    // display name also matches some other entity (a merge candidate, not an
-    // attachment ambiguity).
+    // A UNIQUE exact email match is exempt: the address pins identity even
+    // when the display name also matches some other entity. If two entities
+    // both hold the email, that is exactly a coin flip — queue it.
+    const emailMatches = scored.filter((s) => s.reason === "exact email match").length;
     const ambiguous = scored.length > 1 && scored[1].score >= AUTO_MERGE &&
-      best.reason !== "exact email match";
+      (best.reason !== "exact email match" || emailMatches > 1);
 
     if (best && best.score >= AUTO_MERGE && !ambiguous) {
       absorb(best.entity, m);

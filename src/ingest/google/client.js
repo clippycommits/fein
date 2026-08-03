@@ -76,7 +76,15 @@ async function loopbackConsent(creds) {
       console.error(`\nOpen this URL to authorize fundgraph (read-only scopes):\n\n  ${url}\n`);
       spawn("open", [url], { stdio: "ignore" }).on("error", () => {});
       server.on("request", async (req, res) => {
-        const code = new URL(req.url, redirect).searchParams.get("code");
+        const params = new URL(req.url, redirect).searchParams;
+        const code = params.get("code");
+        const error = params.get("error");
+        if (error) {
+          res.end(`authorization failed: ${error} — you can close this tab.`);
+          server.close();
+          reject(new Error(`Google authorization was refused (${error})`));
+          return;
+        }
         res.end(code ? "fundgraph authorized — you can close this tab." : "missing code");
         if (!code) return;
         server.close();
@@ -102,20 +110,27 @@ export async function authorize() {
   const creds = loadCreds();
   let token = loadToken();
   const expired = !token || !token.expiry || token.expiry < Date.now() + 60_000;
-  if (token?.refresh_token && expired) {
-    const fresh = await tokenRequest({
-      refresh_token: token.refresh_token,
-      client_id: creds.client_id,
-      client_secret: creds.client_secret,
-      grant_type: "refresh_token",
-    });
-    token = { ...token, ...fresh, expiry: Date.now() + fresh.expires_in * 1000 };
-    saveToken(token);
-  } else if (!token) {
-    const fresh = await loopbackConsent(creds);
-    token = { ...fresh, expiry: Date.now() + fresh.expires_in * 1000 };
-    saveToken(token);
+  if (!expired) return token.access_token;
+
+  if (token?.refresh_token) {
+    try {
+      const fresh = await tokenRequest({
+        refresh_token: token.refresh_token,
+        client_id: creds.client_id,
+        client_secret: creds.client_secret,
+        grant_type: "refresh_token",
+      });
+      token = { ...token, ...fresh, expiry: Date.now() + fresh.expires_in * 1000 };
+      saveToken(token);
+      return token.access_token;
+    } catch (err) {
+      console.error(`token refresh failed (${err.message}) — re-running consent`);
+    }
   }
+  // No usable token: run (or re-run) the consent flow.
+  const fresh = await loopbackConsent(creds);
+  token = { ...fresh, expiry: Date.now() + fresh.expires_in * 1000 };
+  saveToken(token);
   return token.access_token;
 }
 

@@ -1,6 +1,8 @@
 # Demo script (~7 minutes)
 
-Setup: `node src/cli.js demo && node src/cli.js web` → http://localhost:4321
+Setup: `npm start` → http://localhost:4321. On an empty database you get the
+onboarding screen — "Load sample dataset" is itself a demo moment (data lands,
+resolves, and the graph appears in one click).
 
 ## 1. The problem (30s)
 
@@ -40,14 +42,23 @@ reversed-name form, an RFC-2047-encoded name, a CSV contact — all land on the
 right entities. Works the same with a Gmail Takeout mbox, a calendar .ics, or an
 Attio CSV export.
 
-## 6. Agents on top (1 min)
+## 6. Make it yours (45s)
+
+Settings tab. "What counts as a strong relationship differs by firm — maybe
+meetings matter 10x more than emails for you." Bump the meeting weight, hit
+Save — the graph rebuilds live, edge weights visibly change. Every decision
+is recorded in the audit trail (Data tab).
+
+## 7. Agents on top (1 min)
 
 "The same graph is one MCP endpoint" — in Claude:
 
-> *Who can best intro me to Priya Nair, and what's the context?*
+> *Prep me for my meeting with Priya Nair. I'm Dana.*
 
-Claude calls `find_introducers` + `entity_brief` and answers from the graph with
-receipts, not retrieval guesses.
+Claude calls `meeting_prep` and gets, in one shot: her profile, relationship
+history with receipts, recent shared documents, and Dana's warm paths and best
+introducers to her — then writes the brief. Structured data from the graph,
+prose from the model, nothing hallucinated.
 
 ## Live-data variant
 

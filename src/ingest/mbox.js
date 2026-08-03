@@ -4,9 +4,15 @@ import { readFileSync } from "node:fs";
  * Gmail/Takeout mbox adapter — zero OAuth. Parses message headers only
  * (From/To/Cc/Subject/Date/Message-ID); bodies are never read or stored.
  */
+
+// A real mbox postmark: "From <addr> <asctime>" — classic asctime, spool, and
+// Gmail Takeout forms. Body lines starting "From " (unescaped in mboxcl and
+// hand-rolled exports) don't match and must not fabricate phantom messages.
+const POSTMARK = /^From \S+ +(?:\w{3} )?\w{3} [ \d]\d [\d:]{5,8}(?: [+-]\d{4})? \d{4}/;
+
 export function loadMbox(path) {
   const raw = readFileSync(path, "utf8");
-  const chunks = raw.split(/\r?\n(?=From )/).filter((c) => c.startsWith("From "));
+  const chunks = raw.split(/\r?\n(?=From )/).filter((c) => POSTMARK.test(c));
   const docs = [];
   for (const chunk of chunks) {
     const headerBlock = chunk.split(/\r?\n\r?\n/)[0];
@@ -51,7 +57,13 @@ export function parseAddressList(value) {
   const tokens = [];
   let cur = "";
   let inQuotes = false;
-  for (const ch of value) {
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (inQuotes && ch === "\\" && i + 1 < value.length) {
+      cur += ch + value[i + 1]; // RFC 5322 quoted-pair: consume both chars
+      i++;
+      continue;
+    }
     if (ch === '"') inQuotes = !inQuotes;
     if (ch === "," && !inQuotes) {
       tokens.push(cur);
@@ -66,10 +78,26 @@ export function parseAddressList(value) {
     if (!t) continue;
     const angle = t.match(/<([^>]+)>/);
     if (angle) {
-      const name = decodeRfc2047(t.slice(0, angle.index).trim().replace(/^"|"$/g, "").trim());
+      let raw = t.slice(0, angle.index).trim();
+      if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+        raw = raw.slice(1, -1).replace(/\\(.)/g, "$1"); // unquote + unescape quoted-pairs
+      }
+      const name = decodeRfc2047(raw.trim());
       people.push({ name: name || null, email: angle[1].trim() });
     } else if (t.includes("@")) {
-      people.push({ name: null, email: t.replace(/^"|"$/g, "") });
+      // Bare addr-spec, possibly with RFC 5322 comment or group syntax:
+      // "maya@x.com (Maya Chen)" / "Investors: maya@x.com" / "tom@y.com;"
+      const comment = t.match(/\(([^)]*)\)/);
+      const addr = t
+        .replace(/\([^)]*\)/g, "")
+        .replace(/^[^:]+:\s*/, "")
+        .replace(/\s*;$/, "")
+        .trim()
+        .replace(/^"|"$/g, "");
+      if (/^\S+@\S+$/.test(addr)) {
+        const name = comment ? decodeRfc2047(comment[1].trim()) : "";
+        people.push({ name: name || null, email: addr });
+      }
     }
   }
   return people;
@@ -78,6 +106,11 @@ export function parseAddressList(value) {
 /** Minimal RFC 2047 encoded-word decoding: =?utf-8?Q?...?= and ?B?. */
 export function decodeRfc2047(value) {
   if (!value || !value.includes("=?")) return value;
+  // RFC 2047 §6.2: whitespace between two adjacent encoded words is deleted.
+  value = value.replace(
+    /(=\?[^?]+\?[QqBb]\?[^?]*\?=)\s+(?==\?[^?]+\?[QqBb]\?[^?]*\?=)/g,
+    "$1"
+  );
   return value.replace(/=\?([^?]+)\?([QqBb])\?([^?]*)\?=/g, (_, charset, enc, text) => {
     try {
       const buf = enc.toLowerCase() === "b"
