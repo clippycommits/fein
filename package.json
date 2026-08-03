@@ -1,0 +1,23 @@
+{
+  "name": "fundgraph",
+  "version": "0.1.0",
+  "description": "Open-source agentic data layer for investment teams: entity-resolved knowledge graph + relationship intelligence, exposed over MCP",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "fundgraph": "./src/cli.js"
+  },
+  "scripts": {
+    "mcp": "node src/cli.js mcp",
+    "smoke": "node scripts/smoke.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "pg": "^8.13.0",
+    "zod": "^3.24.0"
+  }
+}
