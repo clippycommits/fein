@@ -130,9 +130,16 @@ async function renderGraph() {
       .on("end", (ev, d) => { if (!ev.active) simulation.alphaTarget(0); d.fx = d.fy = null; }));
 
   node.append("circle").attr("r", (d) => 6 + Math.min(10, d.degree * 1.6));
+  // On a large graph, labelling every node is unreadable: label the best-
+  // connected ones and let hover/selection reveal the rest.
+  const LABEL_BUDGET = 28;
+  const labelFloor = graphData.nodes.length > LABEL_BUDGET
+    ? [...graphData.nodes].sort((a, b) => b.degree - a.degree)[LABEL_BUDGET - 1].degree
+    : -1;
   node.append("text")
     .attr("dx", (d) => 9 + Math.min(10, d.degree * 1.6))
     .attr("dy", 4)
+    .classed("faint", (d) => d.degree < labelFloor)
     .text((d) => d.name);
 
   const tooltip = $("#tooltip");
@@ -146,7 +153,8 @@ async function renderGraph() {
         `<div class="t-sub">${esc(d.orgs.join(", ") || "no org on record")} · ${d.degree} connection${d.degree === 1 ? "" : "s"}</div>`;
     })
     .on("mouseleave", () => { tooltip.hidden = true; })
-    .on("click", (ev, d) => showBrief(d.id));
+    .on("click", (ev, d) => showBrief(d.id))
+    .on("mouseenter", function () { d3.select(this).raise().select("text").classed("faint", false); });
 
   link
     .on("mousemove", (ev, d) => {
@@ -165,6 +173,10 @@ async function renderGraph() {
       .distance((d) => 80 + (1 - d.strength) * 160))
     .force("charge", d3.forceManyBody().strength(-420))
     .force("center", d3.forceCenter(width / 2, height / 2))
+    // Weak pull toward centre: without it, disconnected components (e.g. two
+    // unrelated data sources) drift apart until the whole graph is unreadable.
+    .force("x", d3.forceX(width / 2).strength(0.045))
+    .force("y", d3.forceY(height / 2).strength(0.06))
     .force("collide", d3.forceCollide(26))
     .on("tick", () => {
       link.attr("x1", (d) => d.source.x).attr("y1", (d) => d.source.y)
@@ -186,14 +198,23 @@ function zoomTo(entityId) {
 
 function fitView() {
   if (!graphData.nodes.length || graphData.nodes[0].x === undefined) return;
-  const xs = graphData.nodes.map((n) => n.x);
-  const ys = graphData.nodes.map((n) => n.y);
+  // Trim outliers: a couple of far-flung 2-node components must not shrink the
+  // main cluster to a dot. Fit the 2nd–98th percentile of positions.
+  const span = (values) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const lo = sorted[Math.floor(sorted.length * 0.02)];
+    const hi = sorted[Math.ceil(sorted.length * 0.98) - 1];
+    return [lo, hi];
+  };
+  const [loX, hiX] = span(graphData.nodes.map((n) => n.x));
+  const [loY, hiY] = span(graphData.nodes.map((n) => n.y));
   const pad = 60;
-  const [minX, maxX] = [Math.min(...xs) - pad, Math.max(...xs) + pad];
-  const [minY, maxY] = [Math.min(...ys) - pad, Math.max(...ys) + pad];
+  const [minX, maxX] = [loX - pad, hiX + pad];
+  const [minY, maxY] = [loY - pad, hiY + pad];
   const svg = d3.select("#graph");
   const { width, height } = svg.node().getBoundingClientRect();
-  const scale = Math.min(2.5, 0.95 * Math.min(width / (maxX - minX), height / (maxY - minY)));
+  const scale = Math.max(0.35,
+    Math.min(2.5, 0.95 * Math.min(width / (maxX - minX), height / (maxY - minY))));
   svg.transition().duration(500).call(
     zoomBehavior.transform,
     d3.zoomIdentity

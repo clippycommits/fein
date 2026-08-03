@@ -325,6 +325,8 @@ table.mini td.num { text-align: right; font-variant-numeric: tabular-nums; }
   stroke-width: 3px;
 }
 .node.dim text { opacity: 0.2; }
+.node text.faint { display: none; }
+.node.on-path text.faint { display: block; }
 line.link { stroke: var(--edge); }
 line.link.dim { opacity: 0.15; }
 line.link.on-path { stroke: var(--series-2); }

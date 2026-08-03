@@ -48,6 +48,10 @@
   rebuilds, GET failures surface as toasts instead of dead buttons, onboarding
   can't resurrect over 0-document upload feedback, settings weight validation
   rejects prototype names.
+- Graph readability at real-data scale: a weak centring force keeps
+  disconnected components together, fit-view trims positional outliers so a
+  stray pair can't shrink the main cluster to a dot, and labels are budgeted to
+  the best-connected nodes (hover or select reveals the rest).
 
 **First two passes:**
 - Resolution: exact-name merges are now conflict-gated (same-named strangers
