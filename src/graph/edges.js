@@ -7,13 +7,16 @@ import { getSettings } from "../settings.js";
  * toward 1.
  */
 function pairWeight(cfg, kind, roleA, roleB) {
-  if (kind === "email") {
-    const direct = (r) => r === "from" || r === "to";
-    return direct(roleA) && direct(roleB) ? cfg.weights.email : cfg.weights.emailCc;
-  }
   // Being mentioned in a doc is far weaker evidence than attending/authoring it.
   const damp = (r) => (r === "mentioned" ? cfg.weights.mentionedFactor : 1);
-  return (cfg.weights[kind] ?? 1) * damp(roleA) * damp(roleB);
+  if (kind === "email") {
+    const direct = (r) => r === "from" || r === "to";
+    const base = direct(roleA) && direct(roleB) ? cfg.weights.email : cfg.weights.emailCc;
+    return base * damp(roleA) * damp(roleB);
+  }
+  // `kind` is ingested data: own-property lookup only, never the prototype chain.
+  const base = Object.hasOwn(cfg.weights, kind) ? cfg.weights[kind] : 1;
+  return base * damp(roleA) * damp(roleB);
 }
 
 function decay(cfg, occurredAt, now) {
@@ -54,7 +57,7 @@ export async function rebuildEdges(db, now = Date.now()) {
         const [eb, rb] = people[j];
         const [a, b] = ea < eb ? [ea, eb] : [eb, ea];
         const key = `${a}|${b}`;
-        if (!acc.has(key)) acc.set(key, { a, b, signals: {}, weight: 0, lastSeen: null });
+        if (!acc.has(key)) acc.set(key, { a, b, signals: Object.create(null), weight: 0, lastSeen: null });
         const rec = acc.get(key);
         rec.signals[doc.kind] = (rec.signals[doc.kind] ?? 0) + 1;
         rec.weight += pairWeight(cfg, doc.kind, ra, rb) * d;
@@ -69,6 +72,7 @@ export async function rebuildEdges(db, now = Date.now()) {
     await tx.query(`delete from edges`);
     for (const rec of acc.values()) {
       const strength = 1 - Math.exp(-rec.weight / cfg.saturation);
+      if (!Number.isFinite(strength)) throw new Error(`non-finite strength for ${rec.a}|${rec.b}`);
       await tx.query(
         `insert into edges (a, b, signals, strength, last_seen) values ($1, $2, $3, $4, $5)`,
         [rec.a, rec.b, JSON.stringify(rec.signals), strength, rec.lastSeen]

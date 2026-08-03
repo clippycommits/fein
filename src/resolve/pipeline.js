@@ -171,12 +171,21 @@ export async function createEntityFromMention(db, index, mention) {
   return entity;
 }
 
+/** Stable key for "the same person as far as a review decision is concerned". */
+export function mentionIdentity(normName, normEmailValue) {
+  return `${normName ?? ""} ${normEmailValue ?? ""}`;
+}
+
 /**
  * Four stages: blocking -> candidate generation -> probabilistic matching -> review.
  * Deterministic merge at >= 0.95; 0.70-0.95 goes to the review queue; below
  * that a new entity is created. Order is fixed so runs are reproducible.
+ *
+ * `defer` holds mention identities carrying a human decision that has not been
+ * replayed yet (see reresolve): those must not be finalized as new entities
+ * mid-replay, or the decision can never be applied.
  */
-export async function resolveMentions(db) {
+export async function resolveMentions(db, { defer } = {}) {
   const index = await loadIndex(db);
   const { rows: mentions } = await db.query(
     `select m.* from mentions m
@@ -232,6 +241,7 @@ export async function resolveMentions(db) {
         stats.queued++;
       }
     } else {
+      if (defer?.has(mentionIdentity(m.norm_name, m.norm_email))) continue;
       // The new entity is indexed, so later mentions of the same person attach to it.
       const entity = await createEntityFromMention(db, index, m);
       await db.query(`update mentions set entity_id = $2 where id = $1`, [m.id, entity.id]);

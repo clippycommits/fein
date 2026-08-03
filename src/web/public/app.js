@@ -22,8 +22,9 @@ async function api(path, opts) {
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // Surface every failure — a silent dead button is worse than an error.
     const msg = body.error ?? res.statusText;
-    if (opts?.method && opts.method !== "GET") toast(msg, "err");
+    toast(msg, "err");
     throw new Error(msg);
   }
   return body;
@@ -61,6 +62,8 @@ addEventListener("keydown", (ev) => {
 });
 
 /* ---------- stat tiles ---------- */
+let onboardingDismissed = false;
+
 async function renderStats() {
   const s = await api("/api/stats");
   const tiles = [
@@ -76,7 +79,7 @@ async function renderStats() {
   const chip = $("#review-count");
   chip.hidden = !s.pendingReviews;
   chip.textContent = s.pendingReviews;
-  $("#onboarding").hidden = s.documents > 0;
+  $("#onboarding").hidden = onboardingDismissed || s.documents > 0;
   return s;
 }
 
@@ -109,6 +112,9 @@ async function renderGraph() {
   const root = svg.append("g");
   zoomBehavior = d3.zoom().scaleExtent([0.2, 4]).on("zoom", (ev) => root.attr("transform", ev.transform));
   svg.call(zoomBehavior);
+  // The svg node keeps its old __zoom across re-renders; re-apply it through
+  // the new behavior so the next gesture doesn't jump the viewport.
+  svg.call(zoomBehavior.transform, d3.zoomTransform(svg.node()));
 
   const link = root.append("g").selectAll("line")
     .data(graphData.links).join("line")
@@ -196,8 +202,12 @@ function fitView() {
   );
 }
 $("#zoom-fit").addEventListener("click", fitView);
-$("#zoom-in").addEventListener("click", () => d3.select("#graph").transition().call(zoomBehavior.scaleBy, 1.35));
-$("#zoom-out").addEventListener("click", () => d3.select("#graph").transition().call(zoomBehavior.scaleBy, 1 / 1.35));
+$("#zoom-in").addEventListener("click", () => {
+  if (zoomBehavior) d3.select("#graph").transition().call(zoomBehavior.scaleBy, 1.35);
+});
+$("#zoom-out").addEventListener("click", () => {
+  if (zoomBehavior) d3.select("#graph").transition().call(zoomBehavior.scaleBy, 1 / 1.35);
+});
 
 function highlightPath(ids) {
   const onPath = new Set(ids);
@@ -245,13 +255,15 @@ async function showBrief(id) {
      <h3 class="section-title">Strongest connections</h3>` +
     (b.connections.length ? b.connections.map((c) =>
       `<div class="conn" data-id="${esc(c.entity)}">
-         <span style="flex:1">${esc(c.name)}</span>
-         <span class="bar-wrap"><span class="bar" style="width:${pct(c.strength)}"></span></span>
+         <span class="grow">${esc(c.name)}</span>
+         <span class="bar-wrap"><span class="bar" data-w="${pct(c.strength)}"></span></span>
          <span class="pct">${pct(c.strength)}</span>
        </div>`).join("") : `<div class="empty"><p>No scored relationships yet.</p></div>`) +
     `<h3 class="section-title">Recent documents</h3>` +
     (b.recentDocuments.length ? b.recentDocuments.map((d) =>
       `<div class="doc-row">${esc(d.title ?? "(untitled)")} <span class="src">· ${esc(d.source)}${d.occurred_at ? " · " + esc(d.occurred_at.slice(0, 10)) : ""}</span></div>`).join("") : `<div class="empty"><p>None.</p></div>`);
+  // CSSOM writes aren't governed by style-src, unlike parsed style attributes.
+  for (const bar of document.querySelectorAll("#brief .bar")) bar.style.width = bar.dataset.w;
   for (const row of document.querySelectorAll("#brief .conn")) {
     row.addEventListener("click", () => showBrief(row.dataset.id));
   }
@@ -304,7 +316,7 @@ $("#find-path").addEventListener("click", async () => {
   if (introducers.length) {
     html += `<h3 class="section-title">Best introducers</h3>`;
     html += introducers.map((i) =>
-      `<div class="conn"><span style="flex:1">${esc(i.name)}</span>
+      `<div class="conn"><span class="grow">${esc(i.name)}</span>
         <span class="pct">${pct(i.strengthToYou)} / ${pct(i.strengthToTarget)}</span></div>`).join("");
   }
   out.innerHTML = html;
@@ -343,7 +355,7 @@ async function renderReviews() {
 async function renderData() {
   const [docs, audit] = await Promise.all([api("/api/documents"), api("/api/audit?limit=15")]);
   $("#sources").innerHTML = docs.sources.length
-    ? `<table class="mini"><tr><th>Source</th><th>Kinds</th><th style="text-align:right">Docs</th><th>Latest</th></tr>` +
+    ? `<table class="mini"><tr><th>Source</th><th>Kinds</th><th class="num">Docs</th><th>Latest</th></tr>` +
       docs.sources.map((s) =>
         `<tr><td>${esc(s.source)}</td>
            <td>${esc(Object.entries(s.kinds).map(([k, v]) => `${v} ${k}`).join(", "))}</td>
@@ -466,6 +478,7 @@ $("#ob-sample").addEventListener("click", async () => {
   }
 });
 $("#ob-upload").addEventListener("click", () => {
+  onboardingDismissed = true; // a 0-doc upload must not slam the modal back
   $("#onboarding").hidden = true;
   document.querySelector('[data-tab="data"]').click();
   $("#file-input").click();

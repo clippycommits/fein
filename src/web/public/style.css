@@ -195,8 +195,9 @@ button.small {
   font-size: 13px;
   cursor: pointer;
 }
+.conn .grow { flex: 1; }
 .conn .bar-wrap { flex: 0 0 64px; height: 4px; background: var(--grid); border-radius: 2px; }
-.conn .bar { height: 4px; border-radius: 2px; background: var(--series-1); }
+.conn .bar { display: block; height: 4px; border-radius: 2px; background: var(--series-1); }
 .conn .pct { color: var(--muted); font-size: 11.5px; min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
 .doc-row { font-size: 12.5px; padding: 4px 0; color: var(--ink-2); border-bottom: 1px solid var(--grid); overflow-wrap: anywhere; }
 .doc-row .src { color: var(--muted); font-size: 11px; white-space: nowrap; }
@@ -253,6 +254,7 @@ button.small {
 #ingest-result .err { color: var(--critical); }
 
 table.mini { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.mini th.num { text-align: right; }
 table.mini th {
   text-align: left;
   color: var(--muted);

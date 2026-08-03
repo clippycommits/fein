@@ -41,7 +41,7 @@ export async function putSettings(db, patch) {
     saturation: current.saturation,
   };
   for (const [k, v] of Object.entries(patch.weights ?? {})) {
-    if (!(k in DEFAULT_SETTINGS.weights)) throw new Error(`unknown weight "${k}"`);
+    if (!Object.hasOwn(DEFAULT_SETTINGS.weights, k)) throw new Error(`unknown weight "${k}"`);
     next.weights[k] = clampNumber(v, `weights.${k}`);
   }
   if (patch.halfLifeDays !== undefined) {

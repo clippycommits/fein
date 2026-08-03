@@ -26,7 +26,30 @@
 - **API test suite** (`npm test`): 22 endpoint assertions on a throwaway
   database, plus the 38-assertion resolution smoke suite.
 
-### Fixed (18 confirmed findings from two adversarial review passes)
+### Fixed (27 confirmed findings from three adversarial review passes)
+
+**Third pass (pre-ship hardening):**
+- A malformed request target (`//%ff`) crashed the whole server process; targets
+  are now parsed defensively and rejected with 400, plus last-resort process
+  handlers.
+- Ingested document `kind` reached prototype-chain lookups, silently zeroing
+  real relationships (`kind: "toString"`); own-property lookups and
+  null-prototype accumulators throughout, and non-finite strengths now throw.
+- The CSP blocked the app's own inline styles, so relationship strength bars
+  rendered at zero width; widths are set via CSSOM.
+- `reresolve` lost human decisions when a display name had been upgraded, and
+  dropped chained decisions entirely; replay now matches on stable identity
+  (emails/aliases), iterates to a fixpoint with deferred mentions, and runs in
+  one transaction so a crash can't wipe review history.
+- `mentionedFactor` was never applied to email documents.
+- Client errors returned 500 with internal messages; now classified 400/404 with
+  internal details logged, not returned.
+- Frontend: zoom buttons no longer throw before first render, viewport survives
+  rebuilds, GET failures surface as toasts instead of dead buttons, onboarding
+  can't resurrect over 0-document upload feedback, settings weight validation
+  rejects prototype names.
+
+**First two passes:**
 - Resolution: exact-name merges are now conflict-gated (same-named strangers
   with different work domains/orgs queue for review instead of silently
   merging); a mention's email exempts it from the ambiguity guard only when

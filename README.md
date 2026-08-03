@@ -95,10 +95,10 @@ Each co-occurrence contributes `weight(kind) × decay(age)`: meetings 3, calenda
 ## Testing
 
 ```bash
-npm test    # 38-assertion resolution smoke suite + 22-assertion API suite
+npm test    # 38-assertion resolution smoke suite + 34-assertion API suite
 ```
 
-Both suites run on throwaway databases. The codebase has been through two adversarial multi-agent review passes; all 27 confirmed findings are fixed with regression coverage (see CHANGELOG).
+Both suites run on throwaway databases. The codebase has been through three adversarial multi-agent review passes; all 27 confirmed findings are fixed with regression coverage (see CHANGELOG).
 
 ## Status & roadmap
 

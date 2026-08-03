@@ -39,20 +39,36 @@ export async function startWebServer(port = 4321) {
 
   const server = createServer(async (req, res) => {
     const t0 = Date.now();
-    const url = new URL(req.url, `http://localhost:${port}`);
+    // Node's URL parser throws on targets like "//%ff" — parse before the
+    // logger closes over `url`, and never let it escape as a rejection.
+    let url;
+    try {
+      url = new URL(req.url, `http://localhost:${port}`);
+    } catch {
+      res.writeHead(400, { "content-type": "application/json", ...SECURITY_HEADERS });
+      res.end('{"error":"bad request target"}');
+      return;
+    }
     res.on("finish", () => {
       console.log(`${req.method} ${url.pathname} ${res.statusCode} ${Date.now() - t0}ms`);
     });
     try {
       await route(db, req, res, url, port);
     } catch (err) {
-      const status = err.statusCode ?? (/(not found|no entity)/i.test(err.message) ? 404 : 500);
-      json(res, { error: err.message }, status);
+      const status = err.statusCode ?? classify(err);
+      // Only messages we authored are safe to return; anything else is internal.
+      const message = status >= 500 ? "internal error" : err.message;
+      if (status >= 500) console.error(`${req.method} ${url.pathname}:`, err);
+      json(res, { error: message }, status);
     }
   });
 
   await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
   console.log(`fundgraph ${VERSION} — http://localhost:${port}`);
+
+  // A single bad request must never take the server down.
+  process.on("unhandledRejection", (err) => console.error("unhandled rejection:", err));
+  process.on("uncaughtException", (err) => console.error("uncaught exception:", err));
 
   const shutdown = async () => {
     console.log("shutting down…");
@@ -207,7 +223,9 @@ async function documentsPayload(db) {
   const bySource = new Map();
   let total = 0;
   for (const r of rows) {
-    if (!bySource.has(r.source)) bySource.set(r.source, { source: r.source, count: 0, kinds: {}, latest: null });
+    if (!bySource.has(r.source)) {
+      bySource.set(r.source, { source: r.source, count: 0, kinds: Object.create(null), latest: null });
+    }
     const s = bySource.get(r.source);
     const n = Number(r.n);
     s.count += n;
@@ -252,6 +270,14 @@ function withStatus(err, code) {
   return err;
 }
 
+/** Map known user-error shapes to 4xx; everything else is a 500. */
+function classify(err) {
+  const m = err.message ?? "";
+  if (/(not found|no entity|no pending review)/i.test(m)) return 404;
+  if (/(unknown weight|must be a number|must be accept or reject|unsupported|invalid|decision )/i.test(m)) return 400;
+  return 500;
+}
+
 function required(url, name) {
   const v = url.searchParams.get(name);
   if (!v) throw withStatus(new Error(`missing required param: ${name}`), 400);
@@ -278,8 +304,9 @@ function readBody(req) {
     req.on("data", (c) => {
       size += c.length;
       if (size > MAX_UPLOAD) {
+        // Pause rather than destroy, so the 413 body actually reaches the client.
+        req.pause();
         reject(withStatus(new Error("upload too large (50MB max)"), 413));
-        req.destroy();
         return;
       }
       chunks.push(c);

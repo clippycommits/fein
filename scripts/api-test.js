@@ -35,7 +35,7 @@ const send = async (method, path, body, headers = {}) => {
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 
-console.log("[1/6] health, security, empty state");
+console.log("[1/7] health, security, empty state");
 {
   const h = await get("/api/health");
   check(h.status === 200 && h.body.ok === true && h.body.version, "health reports ok + version", h.body);
@@ -49,14 +49,14 @@ console.log("[1/6] health, security, empty state");
   check(missing.status === 404, "unknown API route 404s");
 }
 
-console.log("[2/6] onboarding: load sample dataset");
+console.log("[2/7] onboarding: load sample dataset");
 {
   const res = await send("POST", "/api/sample", {}, { origin: BASE });
   check(res.status === 200 && res.body.stats.documents === 24, "sample dataset loads (24 docs)", res.body.stats);
   check(res.body.stats.entities === 14, "sample resolves to 14 entities", res.body.stats);
 }
 
-console.log("[3/6] read endpoints");
+console.log("[3/7] read endpoints");
 {
   const graph = await get("/api/graph");
   check(graph.body.nodes.length === 8 && graph.body.links.length > 5, "graph payload has people + links",
@@ -76,7 +76,7 @@ console.log("[3/6] read endpoints");
   check(docs.body.total === 24 && docs.body.sources.length >= 4, "documents breakdown by source", docs.body.sources.map((s) => s.source));
 }
 
-console.log("[4/6] review flow + audit");
+console.log("[4/7] review flow + audit");
 {
   const reviews = await get("/api/reviews");
   check(reviews.body.length === 1, "one pending review (M. Chen)", reviews.body.length);
@@ -89,7 +89,7 @@ console.log("[4/6] review flow + audit");
     audit.body.map((a) => a.action));
 }
 
-console.log("[5/6] settings: customization rebuilds the graph");
+console.log("[5/7] settings: customization rebuilds the graph");
 {
   const before = await get("/api/settings");
   check(before.body.weights.meeting === 3 && before.body.halfLifeDays === 180, "default settings served", before.body);
@@ -102,10 +102,38 @@ console.log("[5/6] settings: customization rebuilds the graph");
   check(afterStrength > beforeStrength, "weight change strengthens edges",
     { before: beforeStrength, after: afterStrength });
   const invalid = await send("PUT", "/api/settings", { weights: { nonsense: 5 } });
-  check(invalid.status === 500 || invalid.status === 400, "unknown weight is rejected", invalid.status);
+  check(invalid.status === 400, "unknown weight is rejected with 400", invalid.status);
+  check(/unknown weight/.test(invalid.body?.error ?? ""), "client error message is preserved", invalid.body);
 }
 
-console.log("[6/6] upload + reresolve");
+console.log("[6/7] hostile input");
+{
+  // Malformed request targets must not crash the process.
+  for (const target of ["//%ff", "//[", "//:", "//%c0%ae", "//"]) {
+    await fetch(BASE + target).catch(() => {});
+  }
+  const alive = await get("/api/health");
+  check(alive.status === 200, "server survives malformed request targets", alive.status);
+
+  // Prototype-named document kinds must not poison scoring or the graph.
+  const poison = JSON.stringify({
+    source: "local", kind: "toString", external_id: "poison-1",
+    title: "prototype probe", occurred_at: "2026-08-01T00:00:00Z",
+    people: [{ name: "Maya Chen", email: "maya@nordwind.vc", role: "from" },
+             { name: "Dana Whitfield", email: "dana@foxglove.vc", role: "to" }],
+  });
+  const pRes = await send("POST", "/api/ingest?name=poison.jsonl", poison);
+  check(pRes.status === 200, "prototype-named kind ingests without error", pRes.status);
+  const g = await get("/api/graph");
+  const bad = g.body.links.filter((l) => !Number.isFinite(l.strength));
+  check(bad.length === 0, "no non-finite edge strengths after prototype probe", bad);
+  check(g.body.links.length > 5, "relationships survive the prototype probe", g.body.links.length);
+
+  const protoWeight = await send("PUT", "/api/settings", { weights: { toString: 9 } });
+  check(protoWeight.status === 400, "prototype-named weight is rejected with 400", protoWeight);
+}
+
+console.log("[7/7] upload + reresolve");
 {
   const csv = readFileSync(join(root, "sample/contacts.csv"), "utf8");
   const up = await send("POST", "/api/ingest?name=contacts.csv", csv);
@@ -113,7 +141,14 @@ console.log("[6/6] upload + reresolve");
   const badUp = await send("POST", "/api/ingest?name=evil.exe", "MZ");
   check(badUp.status === 400, "unsupported upload type 400s", badUp.status);
   const rr = await send("POST", "/api/reresolve", {});
-  check(rr.status === 200 && rr.body.stats.entities === 14, "reresolve rebuilds cleanly", rr.body.stats);
+  check(rr.status === 200, "reresolve succeeds", rr.status);
+  check(rr.body.replayed === 1 && (rr.body.dropped ?? []).length === 0,
+    "the accepted review decision is replayed, not lost", { replayed: rr.body.replayed, dropped: rr.body.dropped });
+  const maya = (await get("/api/search?q=maya")).body[0];
+  check(maya.emails.includes("mchen@gmail.com"),
+    "replayed accept restores the merged gmail alias", maya.emails);
+  const post = await get("/api/reviews");
+  check(post.body.length === 0, "no re-asked question after replay", post.body.length);
 }
 
 server.close();
