@@ -113,6 +113,18 @@ async function main() {
       out({ resolve: r, edges: e, stats: await counts(db) });
       break;
     }
+    case "reresolve": {
+      // Wipe derived state and re-run resolution from raw mentions. Discards
+      // pending review questions (they will be re-asked) but not documents.
+      await db.query(`delete from review_queue`);
+      await db.query(`update mentions set entity_id = null`);
+      await db.query(`delete from entities`);
+      await db.query(`delete from edges`);
+      const r = await resolveMentions(db);
+      const e = await rebuildEdges(db);
+      out({ resolve: r, edges: e, stats: await counts(db) });
+      break;
+    }
     case "resolve":
       out(await resolveMentions(db));
       break;

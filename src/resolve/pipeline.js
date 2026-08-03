@@ -131,9 +131,11 @@ function absorb(entity, mention) {
   if (mOrg && !entity.orgs.includes(mOrg)) entity.orgs.push(mOrg);
   if (mention.norm_name) {
     entity.normNames.add(mention.norm_name);
-    // Prefer the fullest observed display name ("M. Chen" -> "Maya Chen").
+    // Prefer the fullest observed display name ("M. Chen" -> "Maya Chen"),
+    // and any real name over an email-derived one ("tom@x.com" -> "Tom Merrill").
     const current = mentionNormName(entity.canonical_name) ?? "";
-    if (mention.norm_name.split(" ").length > current.split(" ").length) {
+    const currentIsEmail = entity.canonical_name.includes("@");
+    if (currentIsEmail || mention.norm_name.split(" ").length > current.split(" ").length) {
       entity.canonical_name = mention.name;
     }
   }

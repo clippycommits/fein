@@ -106,6 +106,21 @@ console.log("[8/9] multi-source adapters (mbox / ics / csv)");
   // resolve to existing entities across all three formats.
   check(c5.entities === 14, "cross-source resolution: only Theo + CasselBlu are new", c5);
   check(c5.pendingReviews === 0 && c5.unresolvedMentions === 0, "no reviews or strays from adapters", c5);
+
+  // A person first seen as a bare address must pick up their display name later.
+  await ingestDocs(db, [
+    { source: "gmail", kind: "email", external_id: "up-1", title: "bare address",
+      occurred_at: "2026-08-01T00:00:00Z",
+      people: [{ email: "kai@vellum.fund", role: "from" },
+               { name: "Dana Whitfield", email: "dana@foxglove.vc", role: "to" }] },
+    { source: "gmail", kind: "email", external_id: "up-2", title: "named",
+      occurred_at: "2026-08-02T00:00:00Z",
+      people: [{ name: "Kai Tanaka", email: "kai@vellum.fund", role: "from" },
+               { name: "Dana Whitfield", email: "dana@foxglove.vc", role: "to" }] },
+  ]);
+  await resolveMentions(db);
+  const [kai] = await searchEntities(db, "vellum.fund");
+  check(kai?.canonical_name === "Kai Tanaka", "email-only entity upgrades to display name", kai);
 }
 
 console.log("[9/9] hop-budget pathfinding");
