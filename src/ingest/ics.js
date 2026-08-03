@@ -25,6 +25,7 @@ export function loadIcs(path) {
           title: event.summary ?? "(untitled event)",
           occurred_at: event.start ?? null,
           people: event.people,
+          ...(event.description ? { body: event.description } : {}),
         });
       }
       event = null;
@@ -48,6 +49,10 @@ export function loadIcs(path) {
       }
     } else if (name === "SUMMARY") {
       event.summary = unescapeIcs(value);
+    } else if (name === "DESCRIPTION") {
+      // Agendas and dial-in notes routinely name people who aren't invitees —
+      // captured as the body so extraction can mine them.
+      event.description = unescapeIcsBody(value);
     } else if (name === "UID") {
       event.uid = value;
     } else if (name === "DTSTART") {
@@ -106,4 +111,9 @@ function parseIcsDate(value) {
 
 function unescapeIcs(s) {
   return s.replace(/\\n/g, " ").replace(/\\([,;\\])/g, "$1");
+}
+
+/** Like unescapeIcs, but \n stays a newline — descriptions are multi-line prose. */
+function unescapeIcsBody(s) {
+  return s.replace(/\\n/gi, "\n").replace(/\\([,;\\])/g, "$1");
 }

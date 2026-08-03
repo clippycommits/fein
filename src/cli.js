@@ -21,7 +21,12 @@ const USAGE = `fundgraph — open-source agentic data layer for investment teams
                                      gmail extras: [query] [max])
   fundgraph ingest-google <service> live pull via Google APIs: gmail | calendar | drive
                                     (needs GOOGLE_OAUTH_CREDENTIALS; prefer ingest-gog if you have gog)
-  fundgraph sync                    resolve + rebuild edges in one step
+  fundgraph ingest-attio            pull people, companies + notes from an Attio workspace
+                                    (needs ATTIO_API_KEY; pass --no-notes to skip notes)
+  fundgraph sync [--extract]        resolve + rebuild edges (add --extract to mine bodies first)
+  fundgraph extract [--limit N]     LLM mention extraction over unprocessed document bodies
+                                    (Anthropic API: set ANTHROPIC_API_KEY or use \`ant auth login\`;
+                                     FUNDGRAPH_EXTRACT_MODEL overrides the model, default claude-opus-5)
   fundgraph reresolve               re-run entity resolution from scratch (documents kept;
                                     review decisions are replayed, pending questions re-asked)
   fundgraph web [port]              start the web dashboard (default port 4321)
@@ -44,6 +49,17 @@ async function loadFile(path) {
   if (ext === "ics") return (await import("./ingest/ics.js")).loadIcs(path);
   if (ext === "csv") return (await import("./ingest/csv.js")).loadCsv(path);
   throw new Error(`unsupported file type .${ext} — expected .jsonl, .mbox, .ics, or .csv`);
+}
+
+function extractTicker() {
+  let last = 0;
+  return (s) => {
+    const done = s.extracted + s.failed;
+    if (done !== last) {
+      last = done;
+      process.stderr.write(`  …${done} docs (${s.mentions} mentions, ${s.tokens.input + s.tokens.output} tokens)\n`);
+    }
+  };
 }
 
 async function refOrDie(db, r) {
@@ -78,7 +94,20 @@ async function main() {
   switch (cmd) {
     case "ingest": {
       if (!args[0]) throw new Error("usage: fundgraph ingest <file.{jsonl,mbox,ics,csv}>");
-      out(await ingestDocs(db, await loadFile(args[0])));
+      // A Takeout mbox can be tens of gigabytes: stream it in batches rather
+      // than materializing every message first.
+      if (args[0].toLowerCase().endsWith(".mbox")) {
+        const { streamMbox } = await import("./ingest/mbox.js");
+        const { ingestStream } = await import("./ingest/index.js");
+        let ticks = 0;
+        out(await ingestStream(db, streamMbox(args[0]), {
+          onProgress: (t) => {
+            if (++ticks % 5 === 0) process.stderr.write(`  …${t.docCount.toLocaleString()} messages\n`);
+          },
+        }));
+      } else {
+        out(await ingestDocs(db, await loadFile(args[0])));
+      }
       break;
     }
     case "ingest-granola": {
@@ -98,6 +127,11 @@ async function main() {
       out(await ingestDocs(db, docs));
       break;
     }
+    case "ingest-attio": {
+      const { fetchAttio } = await import("./ingest/attio.js");
+      out(await ingestDocs(db, await fetchAttio({ includeNotes: args[0] !== "--no-notes" })));
+      break;
+    }
     case "ingest-google": {
       const service = args[0] ?? "gmail";
       const g = await import("./ingest/google/fetchers.js");
@@ -110,9 +144,26 @@ async function main() {
       break;
     }
     case "sync": {
+      let extract = null;
+      if (args.includes("--extract")) {
+        const { extractPending } = await import("./extract/pipeline.js");
+        extract = await extractPending(db, { onProgress: extractTicker() });
+      }
       const r = await resolveMentions(db);
       const e = await rebuildEdges(db);
-      out({ resolve: r, edges: e, stats: await counts(db) });
+      out({ ...(extract ? { extract } : {}), resolve: r, edges: e, stats: await counts(db) });
+      break;
+    }
+    case "extract": {
+      const { extractPending } = await import("./extract/pipeline.js");
+      const limitIx = args.indexOf("--limit");
+      const limit = limitIx !== -1 ? Number(args[limitIx + 1]) : Infinity;
+      if (limitIx !== -1 && !Number.isFinite(limit)) throw new Error("usage: fundgraph extract [--limit N]");
+      const result = await extractPending(db, { limit, onProgress: extractTicker() });
+      // Newly extracted mentions still need resolution + edges to reach the graph.
+      const resolve = result.extracted > 0 ? await resolveMentions(db) : null;
+      const edges = result.extracted > 0 ? await rebuildEdges(db) : null;
+      out({ extract: result, ...(resolve ? { resolve, edges } : {}), stats: await counts(db) });
       break;
     }
     case "reresolve": {

@@ -93,7 +93,7 @@ console.log("[8/10] multi-source adapters (mbox / ics / csv)");
   const { loadMbox } = await import(join(root, "src/ingest/mbox.js"));
   const { loadIcs } = await import(join(root, "src/ingest/ics.js"));
   const { loadCsv } = await import(join(root, "src/ingest/csv.js"));
-  const mbox = loadMbox(join(root, "sample/sample.mbox"));
+  const mbox = await loadMbox(join(root, "sample/sample.mbox"));
   check(mbox.length === 3, "mbox parses 3 messages", mbox.length);
   check(mbox[0].people.some((p) => p.name === "Chen, Maya"), "mbox parses quoted display names", mbox[0].people);
   check(mbox[0].people.some((p) => p.name === "Elena Ruiz"), "mbox decodes RFC 2047 names", mbox[0].people);
@@ -101,6 +101,21 @@ console.log("[8/10] multi-source adapters (mbox / ics / csv)");
   check(ics.length === 2 && ics[0].people.length === 4, "ics parses events + attendees", ics);
   const csv = loadCsv(join(root, "sample/contacts.csv"));
   check(csv.length === 3, "csv parses 3 contacts", csv);
+
+  // Google Contacts / Workspace Takeout column names differ from every other
+  // tool's ("E-mail 1 - Value", "Organization Name", split first/last).
+  const gPath = join(dataDir, "google-contacts.csv");
+  writeFileSync(gPath, [
+    "First Name,Middle Name,Last Name,Organization Name,Organization Title,E-mail 1 - Label,E-mail 1 - Value,E-mail 2 - Value",
+    "Maya,,Chen,Nordwind Ventures,Partner,* ,maya@nordwind.vc,mchen@gmail.com",
+    "Priya,,Nair,Meridian Wealth,Director,* ,priya.nair@meridianwealth.co.uk,",
+  ].join("\n"));
+  const gc = loadCsv(gPath);
+  check(gc.length === 2, "Google Contacts export parses", gc.length);
+  check(gc[0].people[0].name === "Maya Chen", "split first/last columns build the full name", gc[0].people[0]);
+  check(gc[0].people.map((p) => p.email).join(",") === "maya@nordwind.vc,mchen@gmail.com",
+    "both numbered email columns are read", gc[0].people.map((p) => p.email));
+  check(gc[0].people[0].org === "Nordwind Ventures", "Organization Name maps to org", gc[0].people[0].org);
   await ingestDocs(db, [...mbox, ...ics, ...csv]);
   await resolveMentions(db);
   const c5 = await counts(db);
@@ -139,7 +154,25 @@ console.log("[9/10] parser + resolution safety rails");
     "From my side all good. Quoting the thread:",
     "From: Carol Attacker <carol@evil.example>", "To: victim@x.com", "",
   ].join("\n"));
-  check(loadMbox(phantomPath).length === 1, "body 'From ' lines don't fabricate messages");
+  check((await loadMbox(phantomPath)).length === 1, "body 'From ' lines don't fabricate messages");
+
+  // Batched streaming: a Takeout archive must never be materialized whole.
+  const { streamMbox } = await import(join(root, "src/ingest/mbox.js"));
+  const { ingestStream } = await import(join(root, "src/ingest/index.js"));
+  const streamPath = join(dataDir, "stream.mbox");
+  writeFileSync(streamPath, Array.from({ length: 25 }, (_, i) => [
+    `From s${i}@example.com Mon Jul 27 09:15:00 2026`,
+    `From: Streamer ${i} <s${i}@example.com>`,
+    "To: Maya Chen <maya@nordwind.vc>",
+    `Subject: streamed ${i}`, "Date: Mon, 27 Jul 2026 09:15:00 +0000",
+    `Message-ID: <s${i}@example.com>`, "", "body text", "",
+  ].join("\n")).join(""));
+  let batches = 0;
+  const streamed = await ingestStream(db, streamMbox(streamPath), {
+    batchSize: 10, onProgress: () => batches++,
+  });
+  check(streamed.docCount === 25 && batches === 3, "streamed mbox ingests in batches",
+    { streamed, batches });
 
   check(decodeRfc2047("=?utf-8?Q?Hyperlon?= =?utf-8?Q?gword?=") === "Hyperlongword",
     "adjacent RFC 2047 words join without a space");

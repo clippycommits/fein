@@ -14,7 +14,7 @@ function docId(doc) {
  * mention rows, or their review-queue history (a FK cascade) is silently
  * destroyed. The ordinal disambiguates identical entries within one doc.
  */
-function mentionId(did, kind, role, normName, normEmailValue, ordinal) {
+export function mentionId(did, kind, role, normName, normEmailValue, ordinal) {
   const key = `${did}:${kind}:${role}:${normEmailValue ?? ""}|${normName ?? ""}#${ordinal}`;
   return "men_" + createHash("sha1").update(key).digest("hex").slice(0, 20);
 }
@@ -25,17 +25,44 @@ export async function ingestDocs(outerDb, docs) {
   return outerDb.tx((db) => ingestInTx(db, docs));
 }
 
+/**
+ * Ingest an async iterable of documents in batches, so a multi-gigabyte
+ * archive never has to fit in memory. Each batch is its own transaction.
+ */
+export async function ingestStream(outerDb, source, { batchSize = 2000, onProgress } = {}) {
+  const totals = { docCount: 0, mentionCount: 0 };
+  let batch = [];
+  const flush = async () => {
+    if (!batch.length) return;
+    const res = await outerDb.tx((db) => ingestInTx(db, batch));
+    totals.docCount += res.docCount;
+    totals.mentionCount += res.mentionCount;
+    batch = [];
+    onProgress?.(totals);
+  };
+  for await (const doc of source) {
+    batch.push(doc);
+    if (batch.length >= batchSize) await flush();
+  }
+  await flush();
+  return totals;
+}
+
 async function ingestInTx(db, docs) {
   let docCount = 0;
   let mentionCount = 0;
   for (const doc of docs) {
     const did = docId(doc);
+    // `coalesce` on body: a re-ingest from a body-less adapter (e.g. a
+    // headers-only pass over the same mbox) must not erase a body captured
+    // earlier — extraction state hangs off it.
     await db.query(
-      `insert into documents (id, source, kind, external_id, title, occurred_at, raw)
-       values ($1, $2, $3, $4, $5, $6, $7)
-       on conflict (id) do update set title = $5, occurred_at = $6, raw = $7`,
+      `insert into documents (id, source, kind, external_id, title, occurred_at, raw, body)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)
+       on conflict (id) do update set title = $5, occurred_at = $6, raw = $7,
+         body = coalesce($8, documents.body)`,
       [did, doc.source, doc.kind, doc.external_id ?? null, doc.title ?? null,
-       doc.occurred_at ?? null, JSON.stringify(doc.raw ?? {})]
+       doc.occurred_at ?? null, JSON.stringify(doc.raw ?? {}), doc.body ?? null]
     );
     docCount++;
 
@@ -76,14 +103,16 @@ async function ingestInTx(db, docs) {
       );
       mentionCount++;
     }
+    // Structured mentions only: extracted mentions belong to the extraction
+    // pipeline, which does its own replace when the body's hash changes.
     if (keep.length) {
       const placeholders = keep.map((_, i) => `$${i + 2}`).join(", ");
       await db.query(
-        `delete from mentions where document_id = $1 and id not in (${placeholders})`,
+        `delete from mentions where document_id = $1 and origin = 'structured' and id not in (${placeholders})`,
         [did, ...keep]
       );
     } else {
-      await db.query(`delete from mentions where document_id = $1`, [did]);
+      await db.query(`delete from mentions where document_id = $1 and origin = 'structured'`, [did]);
     }
   }
   return { docCount, mentionCount };

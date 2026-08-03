@@ -56,6 +56,26 @@ create table if not exists edges (
   primary key (a, b)
 );
 
+-- Unstructured extraction: document bodies + per-document bookkeeping.
+-- `body` is captured by adapters; mentions gain provenance so extracted
+-- mentions are distinguishable from structured-metadata ones.
+alter table documents add column if not exists body text;
+alter table mentions add column if not exists origin text not null default 'structured';
+alter table mentions add column if not exists confidence real;
+alter table mentions add column if not exists context text;
+
+create table if not exists extractions (
+  document_id   text primary key references documents(id) on delete cascade,
+  status        text not null,              -- ok | failed
+  model         text,
+  input_sha256  text not null,              -- hash of (prompt version | model | body); re-extract when it drifts
+  mentions_found int not null default 0,
+  input_tokens  int,
+  output_tokens int,
+  error         text,
+  updated_at    timestamptz not null default now()
+);
+
 create table if not exists settings (
   key        text primary key,
   value      jsonb not null,

@@ -1,0 +1,208 @@
+/**
+ * Attio adapter — pulls people, companies, and (optionally) notes from an
+ * Attio workspace via the REST API v2.
+ *
+ * Auth: create an access token in Attio → Workspace settings → Developers →
+ * "Create integration"/API key, grant it read scopes for the objects you want
+ * (record:read, object_configuration:read, and note:read for notes), then set
+ * ATTIO_API_KEY.
+ *
+ * Attio's data model is a table of records with attribute arrays; only
+ * identity attributes are read (names, email addresses, company links,
+ * note participants) — never note bodies or deal content.
+ */
+
+const API = "https://api.attio.com/v2";
+const PAGE = 500; // Attio's max page size for record queries
+
+function apiKey() {
+  const key = process.env.ATTIO_API_KEY;
+  if (!key) {
+    throw new Error(
+      "set ATTIO_API_KEY — create one in Attio under Workspace settings → " +
+      "Developers, with read access to records (and notes, if you want them)"
+    );
+  }
+  return key;
+}
+
+async function attio(path, { method = "POST", body } = {}) {
+  const res = await fetch(API + path, {
+    method,
+    headers: {
+      authorization: `Bearer ${apiKey()}`,
+      "content-type": "application/json",
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`Attio rejected the API key (${res.status}). Check the token and its scopes: ${text.slice(0, 200)}`);
+    }
+    if (res.status === 404) {
+      throw new Error(`Attio object not found (${path}) — does this workspace use a custom object name? ${text.slice(0, 200)}`);
+    }
+    throw new Error(`Attio ${path} -> ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
+/** Page through an object's records. */
+async function queryRecords(object, max) {
+  const out = [];
+  let offset = 0;
+  while (out.length < max) {
+    const res = await attio(`/objects/${object}/records/query`, {
+      body: { limit: Math.min(PAGE, max - out.length), offset },
+    });
+    const batch = res.data ?? [];
+    out.push(...batch);
+    if (batch.length < PAGE) break;
+    offset += batch.length;
+  }
+  return out;
+}
+
+/* ---------- attribute readers (Attio values are arrays of typed cells) ---------- */
+
+const cells = (record, attr) => record?.values?.[attr] ?? [];
+
+function personName(record) {
+  for (const c of cells(record, "name")) {
+    if (c.full_name) return c.full_name;
+    const parts = [c.first_name, c.last_name].filter(Boolean);
+    if (parts.length) return parts.join(" ");
+  }
+  return null;
+}
+
+function personEmails(record) {
+  return cells(record, "email_addresses")
+    .map((c) => c.email_address ?? c.value ?? c.original_email_address)
+    .filter((e) => typeof e === "string" && e.includes("@"));
+}
+
+function companyName(record) {
+  for (const c of cells(record, "name")) {
+    const v = c.value ?? c.full_name;
+    if (v) return v;
+  }
+  return null;
+}
+
+/** Person -> company link, so a contact carries its org for entity resolution. */
+function linkedCompanyIds(record) {
+  return cells(record, "company")
+    .map((c) => c.target_record_id)
+    .filter(Boolean);
+}
+
+function recordId(record) {
+  return record?.id?.record_id ?? null;
+}
+
+function timestamp(record) {
+  const t = record?.created_at ?? record?.values?.created_at?.[0]?.value;
+  if (!t) return null;
+  const d = new Date(t);
+  return isNaN(d) ? null : d.toISOString();
+}
+
+/**
+ * Fetch people + companies as documents. Each person becomes one CRM record
+ * carrying every known address (so resolution links the addresses together)
+ * and their linked company name as the org hint.
+ */
+export async function fetchAttio({ maxPeople = 5000, maxCompanies = 5000, includeNotes = true } = {}) {
+  const companies = await queryRecords("companies", maxCompanies);
+  const companyNameById = new Map();
+  for (const c of companies) {
+    const id = recordId(c);
+    const name = companyName(c);
+    if (id && name) companyNameById.set(id, name);
+  }
+
+  const docs = [];
+  for (const c of companies) {
+    const name = companyName(c);
+    if (!name) continue;
+    docs.push({
+      source: "attio",
+      kind: "record",
+      external_id: `attio-company-${recordId(c)}`,
+      title: `Company: ${name}`,
+      occurred_at: timestamp(c),
+      people: [],
+      orgs: [name],
+    });
+  }
+
+  const people = await queryRecords("people", maxPeople);
+  for (const p of people) {
+    const name = personName(p);
+    const emails = personEmails(p);
+    if (!name && !emails.length) continue;
+    const org = linkedCompanyIds(p).map((id) => companyNameById.get(id)).find(Boolean) ?? null;
+    const mentions = emails.length
+      ? emails.map((email) => ({ name, email, org, role: "mentioned" }))
+      : [{ name, email: null, org, role: "mentioned" }];
+    docs.push({
+      source: "attio",
+      kind: "record",
+      external_id: `attio-person-${recordId(p)}`,
+      title: `Contact: ${name ?? emails[0]}`,
+      occurred_at: timestamp(p),
+      people: mentions,
+      orgs: org ? [org] : [],
+    });
+  }
+
+  if (includeNotes) {
+    try {
+      docs.push(...(await fetchAttioNotes(people)));
+    } catch (err) {
+      // Notes need a separate scope; missing it shouldn't fail the whole pull.
+      console.error(`attio: skipping notes (${err.message})`);
+    }
+  }
+  return docs;
+}
+
+/**
+ * Notes are the relationship signal in a CRM: a note on a person's record is
+ * evidence of contact. Titles and participants only — never note bodies.
+ */
+async function fetchAttioNotes(people) {
+  const byId = new Map();
+  for (const p of people) {
+    const id = recordId(p);
+    if (id) byId.set(id, { name: personName(p), email: personEmails(p)[0] ?? null });
+  }
+
+  const notes = [];
+  let offset = 0;
+  while (true) {
+    const res = await attio(`/notes?limit=${PAGE}&offset=${offset}`, { method: "GET" });
+    const batch = res.data ?? [];
+    notes.push(...batch);
+    if (batch.length < PAGE) break;
+    offset += batch.length;
+  }
+
+  const docs = [];
+  for (const n of notes) {
+    const target = n.parent_record_id ?? n.parent_object_id;
+    const person = byId.get(target);
+    if (!person || (!person.name && !person.email)) continue;
+    docs.push({
+      source: "attio",
+      kind: "note",
+      external_id: `attio-note-${n.id?.note_id ?? n.id}`,
+      title: n.title || "(untitled note)",
+      occurred_at: n.created_at ? new Date(n.created_at).toISOString() : null,
+      people: [{ name: person.name, email: person.email, role: "mentioned" }],
+    });
+  }
+  return docs;
+}

@@ -47,12 +47,52 @@ First run shows onboarding: load the bundled (fictional) sample dataset with one
 
 | Source | Command | Setup needed |
 |---|---|---|
-| Gmail export (Takeout) | `fundgraph ingest export.mbox` | none |
+| Gmail export (Takeout) | `fundgraph ingest export.mbox` | none — streamed, so multi-GB archives are fine |
 | Calendar export | `fundgraph ingest calendar.ics` | none |
-| CRM contacts (Attio/Affinity/any) | `fundgraph ingest contacts.csv` | none |
+| Contacts (Google Contacts, Attio, Affinity, any CSV) | `fundgraph ingest contacts.csv` | none |
 | Granola (macOS) | `fundgraph ingest-granola` | none — reads the local cache |
+| **Attio workspace (live)** | `fundgraph ingest-attio` | `ATTIO_API_KEY` — see below |
 | Live Gmail/Calendar/Drive via [gog](https://github.com/steipete/gogcli) | `fundgraph ingest-gog gmail` | gog already authenticated (local, or remote via `FUNDGRAPH_GOG_SSH=user@host`) |
 | Live Gmail/Calendar/Drive via Google APIs | `fundgraph ingest-google gmail` | a Desktop OAuth client JSON in `GOOGLE_OAUTH_CREDENTIALS` |
+
+### From a Google Workspace / Takeout export
+
+Works on any account, including one you no longer actively use — you only need
+to be able to sign in once.
+
+1. At [takeout.google.com](https://takeout.google.com) (signed in as that
+   account) choose **Mail**, **Calendar**, and **Contacts**. For Mail, use
+   "All Mail data included" or select specific labels; export as `.zip`.
+2. Unzip. You'll get `Takeout/Mail/All mail Including Spam and Trash.mbox`,
+   `Takeout/Calendar/*.ics`, and `Takeout/Contacts/contacts.csv`.
+3. Ingest — order doesn't matter, entity resolution links them:
+
+```bash
+fundgraph ingest "Takeout/Mail/All mail Including Spam and Trash.mbox"
+for f in Takeout/Calendar/*.ics; do fundgraph ingest "$f"; done
+fundgraph ingest Takeout/Contacts/contacts.csv
+fundgraph sync
+```
+
+The mbox is streamed and ingested in batches, so archive size is not bounded by
+memory (measured ~420 messages/sec — a 100k-message account takes a few
+minutes). Contacts exports use Google's own column names
+(`E-mail 1 - Value`, `Organization Name`, split first/last), which the CSV
+adapter handles directly; multiple addresses on one contact become one entity.
+
+### From an Attio workspace
+
+1. In Attio: **Workspace settings → Developers → Create an integration**, then
+   generate an access token with read scopes for `record` and
+   `object_configuration` (add `note` to include notes).
+2. `export ATTIO_API_KEY=...`
+3. `fundgraph ingest-attio && fundgraph sync`
+
+Pulls people, companies, and notes. A person's linked company becomes their org
+hint, and all of a contact's addresses are attached to one entity — so an Attio
+contact and their emails in Gmail resolve to the same person. Pass
+`--no-notes` to skip notes (or if your token lacks the scope, notes are skipped
+with a warning rather than failing the pull).
 
 Then `fundgraph sync` (resolve + rebuild edges). **Only metadata and participant identities are read — message bodies, transcripts, and file contents are never fetched or stored.**
 

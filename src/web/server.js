@@ -12,6 +12,8 @@ import { rebuildEdges } from "../graph/edges.js";
 import { findWarmPath, findIntroducers } from "../graph/paths.js";
 import { searchEntities, entityBrief, counts, getEntity } from "../graph/queries.js";
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
+import { extractPending, extractionStats } from "../extract/pipeline.js";
+import { extractConfig } from "../extract/client.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const PUBLIC = join(ROOT, "src/web/public");
@@ -33,6 +35,7 @@ const SECURITY_HEADERS = {
 
 const MAX_UPLOAD = 50 * 1024 * 1024;
 const STARTED = Date.now();
+let extracting = false; // single-flight: extraction holds the API budget, never run two
 
 export async function startWebServer(port = 4321) {
   const db = await getDb();
@@ -108,6 +111,18 @@ async function route(db, req, res, url, port) {
     if (path === "/api/settings") return json(res, await getSettings(db));
     if (path === "/api/audit") return json(res, await listAudit(db, boundedInt(url, "limit", 50, 1, 500)));
     if (path === "/api/reviews") return json(res, await listReviews(db));
+    if (path === "/api/extract/status") {
+      const cfg = extractConfig();
+      return json(res, {
+        ...(await extractionStats(db)),
+        running: extracting,
+        model: cfg.model,
+        // Presence only, never values. "ambient" = the SDK may still find an
+        // `ant auth login` profile; running an extraction is the real test.
+        credentials: process.env.ANTHROPIC_API_KEY ? "api-key"
+          : process.env.ANTHROPIC_AUTH_TOKEN ? "auth-token" : "ambient",
+      });
+    }
     if (path === "/api/graph") return json(res, await graphPayload(db));
     if (path === "/api/documents") return json(res, await documentsPayload(db));
     if (path === "/api/search") {
@@ -164,11 +179,20 @@ async function route(db, req, res, url, port) {
   }
 
   if (req.method === "POST" && path === "/api/sample") {
+    const { readdirSync } = await import("node:fs");
+    const fixtureDir = join(ROOT, "sample/fixtures");
+    let fixtures = [];
+    try {
+      fixtures = readdirSync(fixtureDir)
+        .filter((f) => f.endsWith(".jsonl"))
+        .flatMap((f) => loadJsonl(join(fixtureDir, f)));
+    } catch {} // fixtures are optional
     const docs = [
       ...loadJsonl(join(ROOT, "sample/seed.jsonl")),
-      ...(await import("../ingest/mbox.js")).loadMbox(join(ROOT, "sample/sample.mbox")),
+      ...(await (await import("../ingest/mbox.js")).loadMbox(join(ROOT, "sample/sample.mbox"))),
       ...(await import("../ingest/ics.js")).loadIcs(join(ROOT, "sample/sample.ics")),
       ...(await import("../ingest/csv.js")).loadCsv(join(ROOT, "sample/contacts.csv")),
+      ...fixtures,
     ];
     const ingested = await ingestDocs(db, docs);
     const resolved = await resolveMentions(db);
@@ -181,6 +205,30 @@ async function route(db, req, res, url, port) {
     const { reresolveAll } = await import("../resolve/reresolve.js");
     const result = await reresolveAll(db);
     return json(res, { ...result, stats: await counts(db) });
+  }
+
+  if (req.method === "POST" && path === "/api/extract") {
+    if (extracting) return json(res, { error: "an extraction run is already in progress" }, 409);
+    const body = parseJson(await readBody(req));
+    const limit = Number.isFinite(Number(body.limit)) && Number(body.limit) > 0 ? Number(body.limit) : Infinity;
+    extracting = true;
+    try {
+      const extract = await extractPending(db, { limit });
+      // Extracted mentions reach the graph through the same pipeline as
+      // structured ones: resolve, then rebuild the read model.
+      const resolved = extract.extracted > 0 ? await resolveMentions(db) : null;
+      const edges = extract.extracted > 0 ? await rebuildEdges(db) : null;
+      await audit(db, "extract", {
+        extracted: extract.extracted, failed: extract.failed, mentions: extract.mentions,
+        model: extract.model, tokens: extract.tokens,
+      });
+      return json(res, { extract, resolved, edges, stats: await counts(db) });
+    } catch (err) {
+      // Credential/config problems are the caller's to fix — surface the message.
+      throw withStatus(new Error(err.message), 400);
+    } finally {
+      extracting = false;
+    }
   }
 
   json(res, { error: "not found" }, 404);

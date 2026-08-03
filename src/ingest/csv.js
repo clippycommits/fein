@@ -1,47 +1,96 @@
 import { readFileSync } from "node:fs";
 
 /**
- * CRM contacts CSV adapter — works with Attio, Affinity, HubSpot, or any
- * spreadsheet export. Auto-detects name/email/company columns from the header.
+ * Contacts CSV adapter — works with Google Contacts / Workspace Takeout,
+ * Attio, Affinity, HubSpot, or any spreadsheet export. Column names differ
+ * wildly between tools ("Email", "E-mail 1 - Value", "Primary Email"), so
+ * headers are normalized before matching.
  */
+const norm = (h) => h.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+
 export function loadCsv(path) {
   const rows = parseCsv(readFileSync(path, "utf8"));
   if (rows.length < 2) return [];
-  const header = rows[0].map((h) => h.trim().toLowerCase());
+  const header = rows[0].map(norm);
 
-  const emailCol = header.findIndex((h) => h.includes("email"));
-  const nameCol = header.findIndex((h) =>
-    ["name", "full name", "contact", "contact name", "person"].includes(h)
-  );
-  const firstCol = header.findIndex((h) => h === "first name" || h === "firstname");
-  const lastCol = header.findIndex((h) => h === "last name" || h === "lastname");
-  const orgCol = header.findIndex((h) =>
-    ["company", "company name", "organisation", "organization", "org", "employer", "account", "firm"].includes(h)
-  );
-  if (emailCol === -1 && nameCol === -1 && firstCol === -1) {
-    throw new Error(`no name or email column found in header: ${header.join(", ")}`);
+  // Google exports numbered, labelled columns ("E-mail 1 - Value"); take the
+  // value columns in order, and never the "label"/"type" ones beside them.
+  const emailCols = header
+    .map((h, i) => ({ h, i }))
+    .filter(({ h }) => h.includes("email") && !/(label|type)$/.test(h))
+    .map(({ i }) => i);
+
+  // Exact-only: a partial match on "name" would grab "First Name" and drop
+  // the surname. Split first/last columns are handled below instead.
+  const nameCol = findCol(header, ["fullname", "displayname", "contactname", "name", "contact", "person"],
+    { exactOnly: true });
+  const firstCol = findCol(header, ["firstname", "givenname"]);
+  const middleCol = findCol(header, ["middlename"]);
+  const lastCol = findCol(header, ["lastname", "familyname", "surname"]);
+  const orgCol = findCol(header, [
+    "company", "companyname", "organisation", "organization", "organizationname",
+    "organisationname", "org", "employer", "account", "accountname", "firm",
+  ]);
+  // CRM notes fields are unstructured gold ("intro'd by X", "knows Y at Z") —
+  // captured as the document body for the extraction pipeline.
+  const notesCol = findCol(header, ["notes", "note", "description", "comments", "background"]);
+
+  if (!emailCols.length && nameCol === -1 && firstCol === -1) {
+    throw new Error(
+      `no name or email column found. Header was: ${rows[0].join(", ")}`
+    );
   }
 
   const docs = [];
   rows.slice(1).forEach((row, i) => {
-    const email = emailCol >= 0 ? row[emailCol]?.trim() : null;
-    let name = nameCol >= 0 ? row[nameCol]?.trim() : null;
-    if (!name && firstCol >= 0) {
-      name = [row[firstCol], lastCol >= 0 ? row[lastCol] : null].filter(Boolean).join(" ").trim();
+    const emails = emailCols.map((c) => row[c]?.trim()).filter((e) => e && e.includes("@"));
+    // Split columns win: they carry the full name, a lone "Name" column may not.
+    let name = null;
+    if (firstCol >= 0 || lastCol >= 0) {
+      name = [firstCol >= 0 ? row[firstCol] : null,
+              middleCol >= 0 ? row[middleCol] : null,
+              lastCol >= 0 ? row[lastCol] : null]
+        .map((p) => p?.trim())
+        .filter(Boolean)
+        .join(" ");
     }
-    if (!name && !email) return;
+    if (!name && nameCol >= 0) name = row[nameCol]?.trim();
+    if (!name && !emails.length) return;
     const org = orgCol >= 0 ? row[orgCol]?.trim() : null;
+
+    // A contact with several addresses becomes several mentions of one person,
+    // so entity resolution links the addresses together rather than splitting.
+    const people = emails.length
+      ? emails.map((email) => ({ name: name || null, email, org: org || null, role: "mentioned" }))
+      : [{ name, email: null, org: org || null, role: "mentioned" }];
+
+    const notes = notesCol >= 0 ? row[notesCol]?.trim() : null;
     docs.push({
       source: "crm",
       kind: "record",
-      external_id: email || `csv-row-${i + 2}`,
-      title: `Contact: ${name ?? email}`,
+      external_id: emails[0] || `csv-row-${i + 2}`,
+      title: `Contact: ${name || emails[0]}`,
       occurred_at: null,
-      people: [{ name: name || null, email: email || null, org: org || null, role: "mentioned" }],
+      people,
       orgs: org ? [org] : [],
+      ...(notes ? { body: notes } : {}),
     });
   });
   return docs;
+}
+
+function findCol(header, candidates, { exactOnly = false } = {}) {
+  for (const c of candidates) {
+    const exact = header.indexOf(c);
+    if (exact !== -1) return exact;
+  }
+  if (exactOnly) return -1;
+  // Fall back to a column that merely contains the term ("organizationname1").
+  for (const c of candidates) {
+    const partial = header.findIndex((h) => h.includes(c));
+    if (partial !== -1) return partial;
+  }
+  return -1;
 }
 
 /** Minimal RFC 4180 parser: quoted fields, "" escapes, newlines in quotes. */

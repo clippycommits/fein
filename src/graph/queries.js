@@ -60,6 +60,13 @@ export async function counts(db) {
     entities: await one(`select count(*) as n from entities where merged_into is null`),
     pendingReviews: await one(`select count(*) as n from review_queue where status = 'pending'`),
     edges: await one(`select count(*) as n from edges`),
+    // Bodies nobody has mined yet — agents see this via graph_stats and can
+    // suggest running extraction.
+    pendingExtraction: await one(
+      `select count(*) as n from documents d
+       where d.body is not null and length(d.body) >= 40
+         and not exists (select 1 from extractions e where e.document_id = d.id and e.status = 'ok')`
+    ),
   };
 }
 
