@@ -225,8 +225,8 @@ export async function extractPending(db, { limit = Infinity, generate = generate
       }
       if (isAuthError(err)) {
         throw new Error(
-          `extraction aborted: the API rejected our credentials (${err.status ?? "?"}). ` +
-          `Set ANTHROPIC_API_KEY (or run \`ant auth login\`) and re-run.`
+          `extraction aborted — ${err.message}. ` +
+          `Set ANTHROPIC_API_KEY (or run \`ant auth login\`) and re-run; nothing was marked failed.`
         );
       }
       await markFailed(db, doc.id, meta, err.message);

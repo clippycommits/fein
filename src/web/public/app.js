@@ -353,6 +353,8 @@ async function renderReviews() {
          ${r.mention_email ? `&lt;${esc(r.mention_email)}&gt;` : ""}
          (in “${esc(r.doc_title ?? r.doc_source)}”)<br>vs entity
          <strong>${esc(r.candidate_name)}</strong></div>
+       ${r.mention_origin === "extracted" && r.mention_context
+         ? `<div class="hint">extracted from text: “${esc(r.mention_context)}”</div>` : ""}
        <div class="actions">
          <button class="accept" data-id="${esc(r.id)}" data-d="accept">✓ Same person</button>
          <button class="reject" data-id="${esc(r.id)}" data-d="reject">✗ Different</button>
@@ -375,6 +377,8 @@ async function renderReviews() {
 /* ---------- data tab ---------- */
 async function renderData() {
   const [docs, audit] = await Promise.all([api("/api/documents"), api("/api/audit?limit=15")]);
+  renderExtractStatus(); // independent fetch; the tab must not block on it
+  renderAttio();
   $("#sources").innerHTML = docs.sources.length
     ? `<table class="mini"><tr><th>Source</th><th>Kinds</th><th class="num">Docs</th><th>Latest</th></tr>` +
       docs.sources.map((s) =>
@@ -388,6 +392,148 @@ async function renderData() {
        · ${esc(a.action)}${a.detail?.file ? ` · ${esc(a.detail.file)}` : ""}${a.detail?.mention?.name ? ` · ${esc(a.detail.mention.name)}` : ""}</div>`).join("")
     : `<div class="empty"><p>No activity recorded yet.</p></div>`;
 }
+
+/* ---------- Attio connector ---------- */
+async function renderAttio() {
+  const panel = $("#attio-panel");
+  let s;
+  try {
+    s = await api("/api/connectors/attio");
+  } catch {
+    panel.innerHTML = `<div class="empty"><p>Could not read connector status.</p></div>`;
+    return;
+  }
+
+  if (!s.connected) {
+    panel.innerHTML =
+      `<div class="connector">
+         <div class="status"><span class="dot"></span><strong>Not connected</strong></div>
+         <p class="hint">Paste an Attio access token to pull people, companies, and notes.
+           Create one in Attio under <em>Workspace settings → Developers</em> with read
+           access to records (add the notes scope to include notes).</p>
+         <input id="attio-key" type="password" placeholder="Attio API key" autocomplete="off" spellcheck="false">
+         <label class="check"><input id="attio-notes" type="checkbox" checked> Include notes</label>
+         <button id="attio-connect" class="primary">Connect &amp; sync</button>
+       </div>`;
+    $("#attio-key").addEventListener("keydown", (ev) => { if (ev.key === "Enter") connectAttio(); });
+    $("#attio-connect").addEventListener("click", connectAttio);
+    return;
+  }
+
+  const where = s.origin === "env" ? "from ATTIO_API_KEY" : `key ${s.keyHint}`;
+  panel.innerHTML =
+    `<div class="connector">
+       <div class="status"><span class="dot on"></span>
+         <strong>Connected</strong>${s.workspace ? ` · ${esc(s.workspace)}` : ""}</div>
+       <div class="meta">${esc(where)}${s.includeNotes ? " · notes included" : " · notes skipped"}<br>
+         ${s.lastSyncAt
+            ? `last sync ${esc(String(s.lastSyncAt).slice(0, 16).replace("T", " "))}${
+                s.lastDocCount != null ? ` · ${s.lastDocCount} records` : ""}`
+            : "not synced yet"}</div>
+       <div class="row">
+         <button id="attio-sync" class="primary">${s.lastSyncAt ? "Sync now" : "Sync workspace"}</button>
+         ${s.origin === "stored" ? `<button id="attio-disconnect" class="small">Disconnect</button>` : ""}
+       </div>
+       <div id="attio-result"></div>
+     </div>`;
+  $("#attio-sync").addEventListener("click", syncAttio);
+  $("#attio-disconnect")?.addEventListener("click", disconnectAttio);
+}
+
+async function connectAttio() {
+  const key = $("#attio-key").value.trim();
+  if (!key) { toast("Paste an Attio API key first", "err"); return; }
+  const btn = $("#attio-connect");
+  btn.disabled = true;
+  btn.textContent = "Verifying…";
+  try {
+    await api("/api/connectors/attio", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey: key, includeNotes: $("#attio-notes").checked }),
+    });
+    toast("Attio connected", "good");
+    await renderAttio();
+    await syncAttio(); // "paste it and it works" — connecting implies the first pull
+  } catch {
+    btn.disabled = false;
+    btn.textContent = "Connect & sync";
+  }
+}
+
+async function syncAttio() {
+  const btn = $("#attio-sync");
+  if (btn) { btn.disabled = true; btn.textContent = "Syncing…"; }
+  const out = $("#attio-result");
+  if (out) out.innerHTML = `<p class="hint">Pulling people, companies and notes…</p>`;
+  try {
+    const res = await api("/api/connectors/attio/sync", { method: "POST" });
+    toast(`Attio synced: ${res.ingested.docCount} records`, "good");
+    await Promise.all([renderStats(), renderGraph(), renderData()]);
+  } catch (err) {
+    if (out) out.innerHTML = `<p class="hint err">${esc(err.message)}</p>`;
+    if (btn) { btn.disabled = false; btn.textContent = "Sync now"; }
+  }
+}
+
+async function disconnectAttio() {
+  if (!confirm("Disconnect Attio? The stored key is deleted; data already ingested stays.")) return;
+  await api("/api/connectors/attio", { method: "DELETE" });
+  toast("Attio disconnected", "good");
+  await renderAttio();
+}
+
+/* ---------- extraction ---------- */
+async function renderExtractStatus() {
+  const el = $("#extract-status");
+  try {
+    const s = await api("/api/extract/status");
+    const creds = s.credentials === "ambient"
+      ? `no key in the server's environment — the SDK will try an <code>ant auth login</code> profile`
+      : `credentials: ${esc(s.credentials)}`;
+    el.innerHTML =
+      `<div class="hint">${s.docsWithBody} document${s.docsWithBody === 1 ? "" : "s"} with text bodies ·
+        ${s.extracted} extracted (${s.extractedMentions} mentions) ·
+        ${s.failed ? `<span class="err">${s.failed} failed</span> · ` : ""}
+        <strong>${s.pending} pending</strong><br>
+        model <code>${esc(s.model)}</code> · ${creds}</div>`;
+    const btn = $("#run-extract");
+    btn.hidden = false;
+    btn.disabled = s.running || (s.pending === 0 && s.failed === 0);
+    btn.textContent = s.running ? "Extraction running…"
+      : s.pending === 0 && s.failed === 0 ? "Nothing pending"
+      : `Extract ${s.pending + s.failed} document${s.pending + s.failed === 1 ? "" : "s"}`;
+  } catch {
+    el.innerHTML = `<div class="empty"><p>Extraction status unavailable.</p></div>`;
+  }
+}
+
+$("#run-extract").addEventListener("click", async () => {
+  const btn = $("#run-extract");
+  const out = $("#extract-result");
+  btn.disabled = true;
+  btn.textContent = "Extracting… (this calls the Anthropic API)";
+  out.innerHTML = "";
+  try {
+    const res = await api("/api/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const x = res.extract;
+    out.innerHTML = `<span class="ok">✓</span> ${x.extracted} docs mined · ${x.mentions} mentions extracted
+      (${x.dropped} dropped by grounding) ·
+      ${x.failed ? `<span class="err">${x.failed} failed</span> · ` : ""}
+      ${(x.tokens.input + x.tokens.output).toLocaleString()} tokens
+      ${res.resolved ? ` · resolved ${res.resolved.attached + res.resolved.created}, queued ${res.resolved.queued} for review` : ""}
+      ${x.aborted ? `<br><span class="err">${esc(x.aborted)}</span>` : ""}`;
+    toast(`Extraction complete: ${x.mentions} mentions from ${x.extracted} docs`, "good");
+    await Promise.all([renderStats(), renderGraph(), renderExtractStatus(), renderData()]);
+  } catch (err) {
+    out.innerHTML = `<span class="err">✗ ${esc(err.message)}</span>`;
+    await renderExtractStatus();
+  }
+});
 
 /* ---------- settings tab ---------- */
 const WEIGHT_LABELS = {
@@ -474,8 +620,12 @@ async function uploadFile(file) {
     });
     out.innerHTML = `<span class="ok">✓</span> ${res.ingested.docCount} docs, ${res.ingested.mentionCount} mentions ·
       resolved ${res.resolved.attached + res.resolved.created}, queued ${res.resolved.queued} for review ·
-      ${res.edges.edges} connections`;
+      ${res.edges.edges} connections` +
+      (res.stats.pendingExtraction > 0
+        ? `<br><span class="hint">${res.stats.pendingExtraction} document bodies ready for LLM extraction ↓</span>`
+        : "");
     toast(`Ingested ${file.name}`, "good");
+    renderExtractStatus();
     await Promise.all([renderStats(), renderGraph(), renderData()]);
   } catch (err) {
     out.innerHTML = `<span class="err">✗ ${esc(err.message)}</span>`;

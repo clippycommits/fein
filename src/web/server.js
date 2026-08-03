@@ -12,6 +12,7 @@ import { rebuildEdges } from "../graph/edges.js";
 import { findWarmPath, findIntroducers } from "../graph/paths.js";
 import { searchEntities, entityBrief, counts, getEntity } from "../graph/queries.js";
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
+import { putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
 import { extractPending, extractionStats } from "../extract/pipeline.js";
 import { extractConfig } from "../extract/client.js";
 
@@ -35,7 +36,8 @@ const SECURITY_HEADERS = {
 
 const MAX_UPLOAD = 50 * 1024 * 1024;
 const STARTED = Date.now();
-let extracting = false; // single-flight: extraction holds the API budget, never run two
+let extracting = false;   // single-flight: extraction holds the API budget, never run two
+let attioSyncing = false; // same for connector pulls — two concurrent syncs would duplicate work
 
 export async function startWebServer(port = 4321) {
   const db = await getDb();
@@ -123,6 +125,7 @@ async function route(db, req, res, url, port) {
           : process.env.ANTHROPIC_AUTH_TOKEN ? "auth-token" : "ambient",
       });
     }
+    if (path === "/api/connectors/attio") return json(res, await attioStatus(db));
     if (path === "/api/graph") return json(res, await graphPayload(db));
     if (path === "/api/documents") return json(res, await documentsPayload(db));
     if (path === "/api/search") {
@@ -231,7 +234,71 @@ async function route(db, req, res, url, port) {
     }
   }
 
+  // ---- Attio connector: the key is write-only, never returned ----
+  if (req.method === "POST" && path === "/api/connectors/attio") {
+    const body = parseJson(await readBody(req));
+    const apiKey = String(body.apiKey ?? "").trim();
+    if (!apiKey) throw withStatus(new Error("paste an Attio API key"), 400);
+    const { verifyAttioKey } = await import("../ingest/attio.js");
+    let info;
+    try {
+      info = await verifyAttioKey(apiKey);
+    } catch (err) {
+      throw withStatus(new Error(err.message), 400);
+    }
+    await putConnector(db, "attio", {
+      apiKey,
+      includeNotes: body.includeNotes !== false,
+      workspace: info.workspace,
+      connectedAt: new Date().toISOString(),
+    });
+    await audit(db, "connector_connect", { connector: "attio", workspace: info.workspace });
+    return json(res, { connected: true, ...(await attioStatus(db)) });
+  }
+
+  if (req.method === "POST" && path === "/api/connectors/attio/sync") {
+    if (attioSyncing) return json(res, { error: "an Attio sync is already running" }, 409);
+    const { key, config } = await resolveConnectorKey(db, "attio", "ATTIO_API_KEY");
+    if (!key) throw withStatus(new Error("connect an Attio API key first"), 400);
+    attioSyncing = true;
+    try {
+      const { fetchAttio } = await import("../ingest/attio.js");
+      const docs = await fetchAttio({ key, includeNotes: config.includeNotes !== false });
+      const ingested = await ingestDocs(db, docs);
+      const resolved = await resolveMentions(db);
+      const edges = await rebuildEdges(db);
+      await putConnector(db, "attio", { lastSyncAt: new Date().toISOString(), lastDocCount: ingested.docCount });
+      await audit(db, "ingest", { file: "attio workspace", ...ingested });
+      return json(res, { ingested, resolved, edges, stats: await counts(db), ...(await attioStatus(db)) });
+    } catch (err) {
+      throw withStatus(new Error(err.message), 400);
+    } finally {
+      attioSyncing = false;
+    }
+  }
+
+  if (req.method === "DELETE" && path === "/api/connectors/attio") {
+    await deleteConnector(db, "attio");
+    await audit(db, "connector_disconnect", { connector: "attio" });
+    return json(res, { connected: false, ...(await attioStatus(db)) });
+  }
+
   json(res, { error: "not found" }, 404);
+}
+
+/** Presence and a masked hint only — the stored key never leaves the server. */
+async function attioStatus(db) {
+  const { key, origin, config } = await resolveConnectorKey(db, "attio", "ATTIO_API_KEY");
+  return {
+    connected: Boolean(key),
+    origin,                       // "stored" (pasted here) | "env" (ATTIO_API_KEY) | null
+    keyHint: key ? maskKey(key) : null,
+    workspace: config.workspace ?? null,
+    includeNotes: config.includeNotes !== false,
+    lastSyncAt: config.lastSyncAt ?? null,
+    lastDocCount: config.lastDocCount ?? null,
+    syncing: attioSyncing,
+  };
 }
 
 /* ---------- payload builders ---------- */

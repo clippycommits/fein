@@ -59,10 +59,17 @@
         <input id="file-input" type="file" accept=".jsonl,.json,.mbox,.ics,.csv" hidden>
       </div>
       <div id="ingest-result"></div>
+      <h3 class="section-title">Unstructured extraction</h3>
+      <p class="hint">Mine document bodies (email text, meeting notes, memos) for people and organizations with an LLM. Every mention is grounded against the source text, then flows through the same resolve → review pipeline — nothing merges on a model's say-so.</p>
+      <div id="extract-status"><div class="empty"><p>Loading…</p></div></div>
+      <button id="run-extract" class="primary" hidden>Extract pending documents</button>
+      <div id="extract-result"></div>
+      <h3 class="section-title">Attio workspace</h3>
+      <div id="attio-panel"><div class="empty"><p>Loading…</p></div></div>
       <h3 class="section-title">Connected data</h3>
       <div id="sources"></div>
-      <h3 class="section-title">Live connectors</h3>
-      <p class="hint">Pull Gmail, Calendar, and Drive continuously from the CLI:<br>
+      <h3 class="section-title">Other live connectors</h3>
+      <p class="hint">Pull Gmail, Calendar, and Drive from the CLI:<br>
         <code>fundgraph ingest-gog gmail</code> · <code>ingest-granola</code> · <code>ingest-google gmail</code></p>
       <h3 class="section-title">Audit trail</h3>
       <div id="audit"></div>

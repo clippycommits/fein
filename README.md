@@ -82,11 +82,26 @@ adapter handles directly; multiple addresses on one contact become one entity.
 
 ### From an Attio workspace
 
-1. In Attio: **Workspace settings → Developers → Create an integration**, then
-   generate an access token with read scopes for `record` and
-   `object_configuration` (add `note` to include notes).
-2. `export ATTIO_API_KEY=...`
-3. `fundgraph ingest-attio && fundgraph sync`
+![Attio connector](docs/img/attio-connected.png)
+
+**In the dashboard** (no terminal): open the **Data** tab → *Attio workspace* →
+paste your access token → **Connect & sync**. The key is verified against Attio
+before anything is stored, the first pull runs immediately, and the panel then
+shows the workspace, last sync, and a **Sync now** button for later refreshes.
+
+Or from the CLI: `export ATTIO_API_KEY=... && fundgraph ingest-attio && fundgraph sync`.
+
+To create the token: in Attio go to **Workspace settings → Developers → Create
+an integration**, and grant read scopes for `record` and `object_configuration`
+(add `note` to include notes).
+
+A key pasted into the dashboard is stored in your local database and is
+**write-only across the API** — no endpoint ever returns it, status shows a
+masked hint (`····1234`) only, and it never reaches the audit log. It is stored
+in plain text at the same trust level as the graph itself, so for shared or
+server deployments prefer the `ATTIO_API_KEY` environment variable (which the
+dashboard will detect and use without storing anything). **Disconnect** deletes
+the stored key and leaves already-ingested data in place.
 
 Pulls people, companies, and notes. A person's linked company becomes their org
 hint, and all of a contact's addresses are attached to one entity — so an Attio
@@ -94,7 +109,9 @@ contact and their emails in Gmail resolve to the same person. Pass
 `--no-notes` to skip notes (or if your token lacks the scope, notes are skipped
 with a warning rather than failing the pull).
 
-Then `fundgraph sync` (resolve + rebuild edges). **Only metadata and participant identities are read — message bodies, transcripts, and file contents are never fetched or stored.**
+Then `fundgraph sync` (resolve + rebuild edges).
+
+**What gets read:** live connectors (Granola, gog, Google APIs, Attio people/companies) read metadata and participant identities only. File exports (`.mbox`, `.ics`, `.csv` notes, `.jsonl`) also capture a size-capped plain-text **body** per document — stored locally in your database and mined only when you explicitly run [unstructured extraction](#unstructured-extraction). Set `FUNDGRAPH_NO_BODIES=1` to skip body capture entirely and keep the old metadata-only behavior.
 
 Adapters emit a common JSONL shape (see `sample/seed.jsonl`); to add a source, emit that shape and `fundgraph ingest file.jsonl`. Ingestion is idempotent: re-ingesting updates in place, and review history is preserved.
 
@@ -122,11 +139,52 @@ fundgraph ingest <file>           .jsonl | .mbox | .ics | .csv
 fundgraph ingest-granola [path]   Granola local cache (macOS)
 fundgraph ingest-gog <service>    live pull via gog: gmail | calendar | drive
 fundgraph ingest-google <service> live pull via Google APIs
-fundgraph sync                    resolve + rebuild edges
+fundgraph sync [--extract]        resolve + rebuild edges (--extract mines bodies first)
+fundgraph extract [--limit N]     LLM mention extraction over unprocessed bodies
 fundgraph reresolve               rebuild entities from scratch (decisions replayed)
 fundgraph entities | brief | path | intros | review | stats
 fundgraph mcp                     MCP server (stdio)
 ```
+
+## Unstructured extraction
+
+Headers and attendee lists are a fraction of what a fund knows. The bodies — "our
+IC chair Alistair Penhale has asked…", "Sam Okafor at Halcyon co-invested with us
+on three deals" — name people and organizations no structured field ever sees.
+`fundgraph extract` mines them with an LLM and feeds the results through the
+*same* resolution, review, and edge pipeline as everything else:
+
+```bash
+export ANTHROPIC_API_KEY=...      # or `ant auth login`
+fundgraph extract                 # mine all unprocessed bodies
+fundgraph sync --extract          # or as part of a sync
+```
+
+(Or press **Extract pending documents** on the dashboard's Data tab.)
+
+Extraction never gets to bend the graph's rules:
+
+- **Structured output, not free text** — the model can only return typed
+  mention candidates; a prompt-injected document can at worst distort which
+  candidates come back, never make the pipeline do something.
+- **Deterministic grounding** — every candidate must literally appear in the
+  document text. Names not in the text are dropped; emails are kept only if the
+  exact address string is present (a model can never "complete"
+  `name@domain` into existence); low-confidence candidates are dropped.
+- **Same trust model as any mention** — extracted mentions carry
+  `origin='extracted'`, a confidence, and a verbatim source quote; they resolve
+  through blocking → matching → human review like structured mentions, and
+  co-occurrence is damped by the merely-`mentioned` factor. Connection strength
+  stays deterministic (principle 4): the LLM proposes candidates; it never
+  scores a relationship.
+- **Idempotent + resumable** — each document records a hash of
+  (prompt version, model, body); re-runs skip clean documents, re-extract
+  changed ones, and retry failures. Three consecutive failures abort the run.
+
+Configuration: `FUNDGRAPH_EXTRACT_MODEL` (default `claude-opus-5`;
+`claude-haiku-4-5` is the budget option), `FUNDGRAPH_EXTRACT_EFFORT`
+(default `low`), `FUNDGRAPH_EXTRACT_MIN_CONFIDENCE` (default `0.6`).
+Details, cost notes, and the threat model: [docs/extraction.md](docs/extraction.md).
 
 ## How connection strength works
 
@@ -135,8 +193,12 @@ Each co-occurrence contributes `weight(kind) × decay(age)`: meetings 3, calenda
 ## Testing
 
 ```bash
-npm test    # 38-assertion resolution smoke suite + 34-assertion API suite
+npm test    # resolution smoke suite + API suite + extraction suite
 ```
+
+The extraction suite runs the full pipeline against a scripted fake model —
+grounding, idempotency, failure isolation, and resolution integration are all
+covered offline; no API key needed.
 
 Both suites run on throwaway databases. The codebase has been through three adversarial multi-agent review passes; all 27 confirmed findings are fixed with regression coverage (see CHANGELOG).
 
@@ -145,7 +207,8 @@ Both suites run on throwaway databases. The codebase has been through three adve
 Working today: everything above. Not yet built (PRs welcome):
 
 - **Privacy layers** — per-user private sources contributing to shared answers without exposing underlying data ("a warm path exists via X" without X's emails)
-- **LLM mention extraction** — pulling people/orgs out of unstructured doc bodies (adapters currently use structured metadata only)
+- **Bodies from live connectors** — file exports capture bodies today; the Granola/gog/Google/Attio live pulls are still metadata-only
+- **Batch extraction** — large backfills through the Anthropic Batches API at 50% token cost
 - **Merge/split tooling** — merging two entities discovered to be the same person; undo for bad merges
 - **Access control** — role-based visibility for multi-user teams
 - **Scheduled sync** — periodic re-pull from live sources

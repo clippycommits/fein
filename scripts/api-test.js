@@ -11,6 +11,37 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 4977;
 const BASE = `http://127.0.0.1:${PORT}`;
 
+// Attio is mocked at the fetch boundary so the connector is covered without a
+// live workspace; everything else falls through to the real fetch.
+delete process.env.ATTIO_API_KEY;
+const realFetch = globalThis.fetch;
+const attioJson = (data) => ({ ok: true, status: 200, json: async () => ({ data }), text: async () => "" });
+globalThis.fetch = async (url, opts = {}) => {
+  const u = String(url);
+  if (!u.startsWith("https://api.attio.com")) return realFetch(url, opts);
+  if (!(opts.headers?.authorization ?? "").includes("good-key")) {
+    return { ok: false, status: 401, text: async () => "invalid token", json: async () => ({}) };
+  }
+  const b = opts.body ? JSON.parse(opts.body) : {};
+  if (u.endsWith("/self")) {
+    return { ok: true, status: 200, json: async () => ({ data: { workspace_name: "Test Workspace" } }), text: async () => "" };
+  }
+  if (u.includes("companies")) {
+    return b.offset ? attioJson([]) : attioJson([{ id: { record_id: "co-1" }, values: { name: [{ value: "Nordwind Ventures" }] } }]);
+  }
+  if (u.includes("people")) {
+    return b.offset ? attioJson([]) : attioJson([{ id: { record_id: "p-1" },
+      values: { name: [{ full_name: "Maya Chen" }],
+                email_addresses: [{ email_address: "maya@nordwind.vc" }],
+                company: [{ target_record_id: "co-1" }] } }]);
+  }
+  if (u.includes("/notes")) {
+    return u.includes("offset=500") ? attioJson([])
+      : attioJson([{ id: { note_id: "n1" }, parent_record_id: "p-1", title: "Coffee re co-invest", created_at: "2026-07-01T00:00:00Z" }]);
+  }
+  return attioJson([]);
+};
+
 const { startWebServer } = await import(join(root, "src/web/server.js"));
 const server = await startWebServer(PORT);
 
@@ -35,7 +66,7 @@ const send = async (method, path, body, headers = {}) => {
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 
-console.log("[1/7] health, security, empty state");
+console.log("[1/8] health, security, empty state");
 {
   const h = await get("/api/health");
   check(h.status === 200 && h.body.ok === true && h.body.version, "health reports ok + version", h.body);
@@ -49,17 +80,19 @@ console.log("[1/7] health, security, empty state");
   check(missing.status === 404, "unknown API route 404s");
 }
 
-console.log("[2/7] onboarding: load sample dataset");
+console.log("[2/8] onboarding: load sample dataset");
 {
   const res = await send("POST", "/api/sample", {}, { origin: BASE });
-  check(res.status === 200 && res.body.stats.documents === 24, "sample dataset loads (24 docs)", res.body.stats);
-  check(res.body.stats.entities === 14, "sample resolves to 14 entities", res.body.stats);
+  // 24 core docs + 20 extraction fixtures (sample/fixtures/*.jsonl, bodies included)
+  check(res.status === 200 && res.body.stats.documents === 44, "sample dataset loads (44 docs)", res.body.stats);
+  check(res.body.stats.entities === 23, "sample resolves to 23 entities", res.body.stats);
+  check(res.body.stats.pendingExtraction === 20, "fixture bodies are pending extraction", res.body.stats);
 }
 
-console.log("[3/7] read endpoints");
+console.log("[3/8] read endpoints");
 {
   const graph = await get("/api/graph");
-  check(graph.body.nodes.length === 8 && graph.body.links.length > 5, "graph payload has people + links",
+  check(graph.body.nodes.length === 12 && graph.body.links.length > 5, "graph payload has people + links",
     { nodes: graph.body.nodes.length, links: graph.body.links.length });
   const search = await get("/api/search?q=maya");
   check(search.body.length >= 1 && search.body[0].canonical_name === "Maya Chen", "search finds Maya", search.body);
@@ -73,10 +106,10 @@ console.log("[3/7] read endpoints");
   const badPath = await get("/api/path?from=onlyone");
   check(badPath.status === 400, "missing param 400s", badPath);
   const docs = await get("/api/documents");
-  check(docs.body.total === 24 && docs.body.sources.length >= 4, "documents breakdown by source", docs.body.sources.map((s) => s.source));
+  check(docs.body.total === 44 && docs.body.sources.length >= 4, "documents breakdown by source", docs.body.sources.map((s) => s.source));
 }
 
-console.log("[4/7] review flow + audit");
+console.log("[4/8] review flow + audit");
 {
   const reviews = await get("/api/reviews");
   check(reviews.body.length === 1, "one pending review (M. Chen)", reviews.body.length);
@@ -89,7 +122,7 @@ console.log("[4/7] review flow + audit");
     audit.body.map((a) => a.action));
 }
 
-console.log("[5/7] settings: customization rebuilds the graph");
+console.log("[5/8] settings: customization rebuilds the graph");
 {
   const before = await get("/api/settings");
   check(before.body.weights.meeting === 3 && before.body.halfLifeDays === 180, "default settings served", before.body);
@@ -106,7 +139,7 @@ console.log("[5/7] settings: customization rebuilds the graph");
   check(/unknown weight/.test(invalid.body?.error ?? ""), "client error message is preserved", invalid.body);
 }
 
-console.log("[6/7] hostile input");
+console.log("[6/8] hostile input");
 {
   // Malformed request targets must not crash the process.
   for (const target of ["//%ff", "//[", "//:", "//%c0%ae", "//"]) {
@@ -133,7 +166,32 @@ console.log("[6/7] hostile input");
   check(protoWeight.status === 400, "prototype-named weight is rejected with 400", protoWeight);
 }
 
-console.log("[7/7] upload + reresolve");
+console.log("[7/8] attio connector (mocked workspace)");
+{
+  check((await get("/api/connectors/attio")).body.connected === false, "starts disconnected");
+  const bad = await send("POST", "/api/connectors/attio", { apiKey: "wrong" });
+  check(bad.status === 400 && /rejected/i.test(bad.body.error), "bad key rejected with a useful message", bad.body);
+  check((await get("/api/connectors/attio")).body.connected === false, "a failed connect stores nothing");
+
+  const ok = await send("POST", "/api/connectors/attio", { apiKey: "good-key-abcd1234" });
+  check(ok.status === 200 && ok.body.connected, "valid key connects", ok.body);
+  check(ok.body.keyHint === "····1234" && !JSON.stringify(ok.body).includes("good-key-abcd1234"),
+    "only a masked hint is returned, never the key", ok.body.keyHint);
+
+  const sync = await send("POST", "/api/connectors/attio/sync");
+  check(sync.status === 200 && sync.body.ingested.docCount === 3, "sync ingests people, companies and notes", sync.body.ingested);
+  const maya = (await get("/api/search?q=maya")).body[0];
+  check(maya?.emails.includes("maya@nordwind.vc"), "Attio contact merges with the existing person", maya?.emails);
+
+  const audit = await get("/api/audit");
+  check(!JSON.stringify(audit.body).includes("good-key"), "the key never reaches the audit log");
+  const gone = await send("DELETE", "/api/connectors/attio");
+  check(gone.body.connected === false, "disconnect clears the key", gone.body);
+  const docs = await get("/api/documents");
+  check(docs.body.sources.some((s) => s.source === "attio"), "disconnect keeps ingested data");
+}
+
+console.log("[8/8] upload + reresolve");
 {
   const csv = readFileSync(join(root, "sample/contacts.csv"), "utf8");
   const up = await send("POST", "/api/ingest?name=contacts.csv", csv);

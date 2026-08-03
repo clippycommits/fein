@@ -42,6 +42,15 @@ reversed-name form, an RFC-2047-encoded name, a CSV contact — all land on the
 right entities. Works the same with a Gmail Takeout mbox, a calendar .ics, or an
 Attio CSV export.
 
+## 5b. Connect the CRM live (1 min)
+
+Data tab → *Attio workspace*. Paste an access token, hit **Connect & sync** —
+the key is verified against Attio, then people, companies, and notes pull in
+and resolve against what's already there. The point to make out loud: an Attio
+contact and that same person's Gmail address collapse into **one** entity, so
+the CRM's structure and the inbox's behavioural signal end up on the same node.
+Attio can't do that on its own — it has no view of who actually emails whom.
+
 ## 6. Make it yours (45s)
 
 Settings tab. "What counts as a strong relationship differs by firm — maybe

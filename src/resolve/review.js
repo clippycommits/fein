@@ -6,6 +6,7 @@ export async function listReviews(db) {
   const { rows } = await db.query(
     `select r.id, r.score, r.detail, r.status,
             m.name as mention_name, m.email as mention_email, m.org_hint,
+            m.origin as mention_origin, m.context as mention_context,
             e.canonical_name as candidate_name, e.id as candidate_id,
             d.title as doc_title, d.source as doc_source
      from review_queue r

@@ -266,6 +266,29 @@ table.mini th {
 table.mini td { padding: 5px 6px; border-bottom: 1px solid var(--grid); vertical-align: top; }
 table.mini td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
+.connector {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 13px;
+}
+.connector .status { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.connector .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+.connector .dot.on { background: var(--good); }
+.connector .meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+.connector .row { display: flex; gap: 8px; }
+.connector .row button { flex: 1; }
+.connector label.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 10px;
+  font-size: 12px;
+}
+.connector label.check input { width: auto; margin: 0; }
+.connector a { color: var(--series-1); }
+.connector .hint.err { color: var(--critical); }
+
 .audit-row { font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--grid); color: var(--ink-2); }
 .audit-row .when { color: var(--muted); font-size: 11px; }
 

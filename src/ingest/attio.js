@@ -15,22 +15,23 @@
 const API = "https://api.attio.com/v2";
 const PAGE = 500; // Attio's max page size for record queries
 
-function apiKey() {
-  const key = process.env.ATTIO_API_KEY;
+function apiKey(explicit) {
+  const key = explicit ?? process.env.ATTIO_API_KEY;
   if (!key) {
     throw new Error(
-      "set ATTIO_API_KEY — create one in Attio under Workspace settings → " +
+      "no Attio API key — paste one in the dashboard's Data tab, or set " +
+      "ATTIO_API_KEY. Create it in Attio under Workspace settings → " +
       "Developers, with read access to records (and notes, if you want them)"
     );
   }
   return key;
 }
 
-async function attio(path, { method = "POST", body } = {}) {
+async function attio(path, { method = "POST", body, key } = {}) {
   const res = await fetch(API + path, {
     method,
     headers: {
-      authorization: `Bearer ${apiKey()}`,
+      authorization: `Bearer ${apiKey(key)}`,
       "content-type": "application/json",
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -48,13 +49,38 @@ async function attio(path, { method = "POST", body } = {}) {
   return res.json();
 }
 
+/**
+ * Cheap credential check: confirms the token is valid and reports what it can
+ * see, without pulling the workspace. Returns { workspace, scopes }.
+ */
+export async function verifyAttioKey(key) {
+  const res = await fetch(`${API}/self`, {
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+  });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error("Attio rejected that API key — check it was copied whole and is still active");
+  }
+  if (res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const d = body.data ?? body;
+    return {
+      workspace: d.workspace_name ?? d.workspace_id ?? null,
+      scopes: Array.isArray(d.scopes) ? d.scopes : typeof d.scope === "string" ? d.scope.split(/[\s,]+/) : [],
+    };
+  }
+  // Older tokens or a changed endpoint: fall back to a minimal record query.
+  await attio(`/objects/people/records/query`, { body: { limit: 1 }, key });
+  return { workspace: null, scopes: [] };
+}
+
 /** Page through an object's records. */
-async function queryRecords(object, max) {
+async function queryRecords(object, max, key) {
   const out = [];
   let offset = 0;
   while (out.length < max) {
     const res = await attio(`/objects/${object}/records/query`, {
       body: { limit: Math.min(PAGE, max - out.length), offset },
+      key,
     });
     const batch = res.data ?? [];
     out.push(...batch);
@@ -114,8 +140,8 @@ function timestamp(record) {
  * carrying every known address (so resolution links the addresses together)
  * and their linked company name as the org hint.
  */
-export async function fetchAttio({ maxPeople = 5000, maxCompanies = 5000, includeNotes = true } = {}) {
-  const companies = await queryRecords("companies", maxCompanies);
+export async function fetchAttio({ maxPeople = 5000, maxCompanies = 5000, includeNotes = true, key } = {}) {
+  const companies = await queryRecords("companies", maxCompanies, key);
   const companyNameById = new Map();
   for (const c of companies) {
     const id = recordId(c);
@@ -138,7 +164,7 @@ export async function fetchAttio({ maxPeople = 5000, maxCompanies = 5000, includ
     });
   }
 
-  const people = await queryRecords("people", maxPeople);
+  const people = await queryRecords("people", maxPeople, key);
   for (const p of people) {
     const name = personName(p);
     const emails = personEmails(p);
@@ -160,7 +186,7 @@ export async function fetchAttio({ maxPeople = 5000, maxCompanies = 5000, includ
 
   if (includeNotes) {
     try {
-      docs.push(...(await fetchAttioNotes(people)));
+      docs.push(...(await fetchAttioNotes(people, key)));
     } catch (err) {
       // Notes need a separate scope; missing it shouldn't fail the whole pull.
       console.error(`attio: skipping notes (${err.message})`);
@@ -173,7 +199,7 @@ export async function fetchAttio({ maxPeople = 5000, maxCompanies = 5000, includ
  * Notes are the relationship signal in a CRM: a note on a person's record is
  * evidence of contact. Titles and participants only — never note bodies.
  */
-async function fetchAttioNotes(people) {
+async function fetchAttioNotes(people, key) {
   const byId = new Map();
   for (const p of people) {
     const id = recordId(p);
@@ -183,7 +209,7 @@ async function fetchAttioNotes(people) {
   const notes = [];
   let offset = 0;
   while (true) {
-    const res = await attio(`/notes?limit=${PAGE}&offset=${offset}`, { method: "GET" });
+    const res = await attio(`/notes?limit=${PAGE}&offset=${offset}`, { method: "GET", key });
     const batch = res.data ?? [];
     notes.push(...batch);
     if (batch.length < PAGE) break;

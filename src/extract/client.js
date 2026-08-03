@@ -18,12 +18,28 @@ export function extractConfig() {
 
 let _client = null;
 function client() {
-  if (!_client) _client = new Anthropic({ maxRetries: 3 });
+  if (!_client) {
+    try {
+      _client = new Anthropic({ maxRetries: 3 });
+    } catch (err) {
+      // No key, no auth token, no profile: fail the whole run immediately
+      // with instructions instead of writing a `failed` row per document.
+      throw Object.assign(
+        new Error(`no Anthropic credentials found (${err.message})`),
+        { isAuthProblem: true }
+      );
+    }
+  }
   return _client;
 }
 
 export function isAuthError(err) {
-  return err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError;
+  return err?.isAuthProblem === true ||
+    err instanceof Anthropic.AuthenticationError ||
+    err instanceof Anthropic.PermissionDeniedError ||
+    // The SDK throws a generic AnthropicError (not AuthenticationError) when
+    // no credential source resolves at request time.
+    /could not resolve authentication method/i.test(err?.message ?? "");
 }
 
 /** One extraction request for one chunk. Returns {people, orgs, usage}. */
