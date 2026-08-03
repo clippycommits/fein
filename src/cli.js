@@ -14,7 +14,15 @@ const [, , cmd, ...args] = process.argv;
 
 const USAGE = `fundgraph — open-source agentic data layer for investment teams
 
-  fundgraph ingest <file.jsonl>     ingest documents (see sample/seed.jsonl for the shape)
+  fundgraph ingest <file>           ingest a file: .jsonl | .mbox (Gmail export) | .ics | .csv (CRM export)
+  fundgraph ingest-granola [path]   ingest meetings from the local Granola cache (macOS)
+  fundgraph ingest-gog <service>    live pull via the gog CLI: gmail | calendar | drive
+                                    (set FUNDGRAPH_GOG_SSH=user@host to run gog on a remote machine;
+                                     gmail extras: [query] [max])
+  fundgraph ingest-google <service> live pull via Google APIs: gmail | calendar | drive
+                                    (needs GOOGLE_OAUTH_CREDENTIALS; prefer ingest-gog if you have gog)
+  fundgraph sync                    resolve + rebuild edges in one step
+  fundgraph web [port]              start the web dashboard (default port 4321)
   fundgraph resolve                 run entity resolution over unresolved mentions
   fundgraph edges                   rebuild the relationship graph
   fundgraph stats                   counts of docs / mentions / entities / edges
@@ -26,6 +34,15 @@ const USAGE = `fundgraph — open-source agentic data layer for investment teams
   fundgraph review accept|reject <review_id>
   fundgraph demo                    ingest sample data + resolve + edges
   fundgraph mcp                     start the MCP server (stdio)`;
+
+async function loadFile(path) {
+  const ext = path.toLowerCase().split(".").pop();
+  if (ext === "jsonl" || ext === "json") return loadJsonl(path);
+  if (ext === "mbox") return (await import("./ingest/mbox.js")).loadMbox(path);
+  if (ext === "ics") return (await import("./ingest/ics.js")).loadIcs(path);
+  if (ext === "csv") return (await import("./ingest/csv.js")).loadCsv(path);
+  throw new Error(`unsupported file type .${ext} — expected .jsonl, .mbox, .ics, or .csv`);
+}
 
 async function refOrDie(db, r) {
   const res = await resolveRef(db, r);
@@ -47,14 +64,53 @@ async function main() {
     await startMcpServer();
     return; // stays alive on stdio
   }
+  if (cmd === "web") {
+    const { startWebServer } = await import("./web/server.js");
+    await startWebServer(Number(args[0] ?? process.env.FUNDGRAPH_PORT ?? 4321));
+    return; // stays alive serving http
+  }
 
   const db = await getDb();
   const out = (o) => console.log(JSON.stringify(o, null, 2));
 
   switch (cmd) {
     case "ingest": {
-      if (!args[0]) throw new Error("usage: fundgraph ingest <file.jsonl>");
-      out(await ingestDocs(db, loadJsonl(args[0])));
+      if (!args[0]) throw new Error("usage: fundgraph ingest <file.{jsonl,mbox,ics,csv}>");
+      out(await ingestDocs(db, await loadFile(args[0])));
+      break;
+    }
+    case "ingest-granola": {
+      const { loadGranola } = await import("./ingest/granola.js");
+      out(await ingestDocs(db, loadGranola(args[0])));
+      break;
+    }
+    case "ingest-gog": {
+      const service = args[0] ?? "gmail";
+      const gog = await import("./ingest/gog.js");
+      let docs;
+      if (service === "gmail") {
+        docs = gog.fetchGogGmail({ query: args[1] ?? "in:anywhere", max: Number(args[2] ?? 200) });
+      } else if (service === "calendar") docs = gog.fetchGogCalendar({ max: Number(args[1] ?? 500) });
+      else if (service === "drive") docs = gog.fetchGogDrive({ max: Number(args[1] ?? 500) });
+      else throw new Error("usage: fundgraph ingest-gog gmail|calendar|drive");
+      out(await ingestDocs(db, docs));
+      break;
+    }
+    case "ingest-google": {
+      const service = args[0] ?? "gmail";
+      const g = await import("./ingest/google/fetchers.js");
+      let docs;
+      if (service === "gmail") docs = await g.fetchGmail({ query: args[1] ?? "", max: Number(args[2] ?? 300) });
+      else if (service === "calendar") docs = await g.fetchCalendar({});
+      else if (service === "drive") docs = await g.fetchDrive({});
+      else throw new Error("usage: fundgraph ingest-google gmail|calendar|drive");
+      out(await ingestDocs(db, docs));
+      break;
+    }
+    case "sync": {
+      const r = await resolveMentions(db);
+      const e = await rebuildEdges(db);
+      out({ resolve: r, edges: e, stats: await counts(db) });
       break;
     }
     case "resolve":

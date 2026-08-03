@@ -1,0 +1,20 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//fundgraph//sample//EN
+BEGIN:VEVENT
+UID:ics-evt-001@sample
+SUMMARY:Autumn co-invest summit
+DTSTART:20260805T140000Z
+ORGANIZER;CN="Chen, Maya":mailto:maya@nordwind.vc
+ATTENDEE;CN=Dana Whitfield;RSVP=TRUE:mailto:dana@foxglove.vc
+ATTENDEE;CN=Priya Nair;RSVP=TRUE:mailto:priya.nair@meridianwealth.co.uk
+ATTENDEE;CN=Theo Marchetti;RSVP=TRUE:mailto:theo@casselblu.com
+END:VEVENT
+BEGIN:VEVENT
+UID:ics-evt-002@sample
+SUMMARY:Fund II legal sync
+DTSTART:20260806T090000Z
+ORGANIZER;CN=Jonas Berg:mailto:jonas@nordwind.vc
+ATTENDEE;CN=Tom Voss;RSVP=TRUE:mailto:t.voss@meridianwealth.co.uk
+END:VEVENT
+END:VCALENDAR

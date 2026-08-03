@@ -186,7 +186,11 @@ export async function resolveMentions(db) {
     let best = scored[0] ?? null;
     // Ambiguity guard: if two entities both clear the auto-merge bar (e.g. two
     // distinct "John Smith"s), a human decides — never merge on a coin flip.
-    const ambiguous = scored.length > 1 && scored[1].score >= AUTO_MERGE;
+    // An exact email match is exempt: the address pins identity even when the
+    // display name also matches some other entity (a merge candidate, not an
+    // attachment ambiguity).
+    const ambiguous = scored.length > 1 && scored[1].score >= AUTO_MERGE &&
+      best.reason !== "exact email match";
 
     if (best && best.score >= AUTO_MERGE && !ambiguous) {
       absorb(best.entity, m);
@@ -195,14 +199,26 @@ export async function resolveMentions(db) {
       await db.query(`update mentions set entity_id = $2 where id = $1`, [m.id, best.entity.id]);
       stats.attached++;
     } else if (best && (best.score >= REVIEW || ambiguous)) {
-      await db.query(
-        `insert into review_queue (id, mention_id, candidate_entity_id, score, detail)
-         values ($1, $2, $3, $4, $5)`,
-        [id("rev"), m.id, best.entity.id, best.score,
-         JSON.stringify({ reason: best.reason, mention_name: m.name, mention_email: m.email,
-                          candidate_name: best.entity.canonical_name })]
+      // One question per identity, not per mention: skip if an identical
+      // pending review (same candidate, same normalized identity) exists.
+      const { rows: dupes } = await db.query(
+        `select 1 from review_queue r join mentions m2 on m2.id = r.mention_id
+         where r.status = 'pending' and r.candidate_entity_id = $1
+           and m2.norm_name is not distinct from $2
+           and m2.norm_email is not distinct from $3
+         limit 1`,
+        [best.entity.id, m.norm_name, m.norm_email]
       );
-      stats.queued++;
+      if (!dupes.length) {
+        await db.query(
+          `insert into review_queue (id, mention_id, candidate_entity_id, score, detail)
+           values ($1, $2, $3, $4, $5)`,
+          [id("rev"), m.id, best.entity.id, best.score,
+           JSON.stringify({ reason: best.reason, mention_name: m.name, mention_email: m.email,
+                            candidate_name: best.entity.canonical_name })]
+        );
+        stats.queued++;
+      }
     } else {
       // The new entity is indexed, so later mentions of the same person attach to it.
       const entity = await createEntityFromMention(db, index, m);

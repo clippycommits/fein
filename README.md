@@ -62,7 +62,30 @@ Or in any MCP client config:
 
 Tools exposed: `search_entities`, `entity_brief`, `find_warm_path`, `find_introducers`, `strongest_connections`, `graph_stats`, `review_queue`, `review_resolve`.
 
+## Web dashboard
+
+```bash
+node src/cli.js web          # http://localhost:4321
+```
+
+Interactive network graph (strength-weighted, with signal receipts on hover),
+entity briefs, warm-path finder with ranked introducers, the human review queue,
+and drag-and-drop ingestion. See `DEMO.md` for a walkthrough.
+
 ## Ingesting your own data
+
+| Source | Command | Setup needed |
+|---|---|---|
+| Gmail export (Takeout) | `fundgraph ingest export.mbox` | none |
+| Calendar export | `fundgraph ingest calendar.ics` | none |
+| CRM contacts (Attio/Affinity/any) | `fundgraph ingest contacts.csv` | none |
+| Granola (macOS) | `fundgraph ingest-granola` | none — reads the local cache |
+| Live Gmail/Calendar/Drive via [gog](https://github.com/steipete/gogcli) | `fundgraph ingest-gog gmail` | gog already authenticated (local, or remote via `FUNDGRAPH_GOG_SSH=user@host`) |
+| Live Gmail/Calendar/Drive via Google APIs | `fundgraph ingest-google gmail` | a Desktop OAuth client JSON in `GOOGLE_OAUTH_CREDENTIALS` |
+
+Then `fundgraph sync` (resolve + rebuild edges). Only metadata and participant
+identities are read — message bodies, transcripts, and file contents are never
+fetched or stored.
 
 Adapters emit a common JSONL shape (see `sample/seed.jsonl`) — one document per line:
 
@@ -89,14 +112,14 @@ All weights are in `src/graph/edges.js` — tune them to your data.
 
 ## Status & roadmap
 
-Working today: local JSONL ingestion, entity resolution + review queue, relationship graph, warm paths, MCP server, embedded or real Postgres.
+Working today: ingestion from mbox/ICS/CSV/Granola/JSONL plus live Gmail·Calendar·Drive (via gog or Google APIs), entity resolution + review queue, relationship graph, warm paths, web dashboard, MCP server, embedded or real Postgres.
 
 Not yet built (PRs welcome):
-- **Live source adapters** — Gmail, Google Calendar, Drive, Granola, Attio/CRM pull sync
 - **Privacy layers** — per-user private sources contributing to shared answers without exposing underlying data ("a warm path exists via X" without X's emails)
 - **LLM mention extraction** — pulling people/orgs out of unstructured doc bodies (current adapters use structured metadata only)
-- **Merge/split tooling** — undo for bad merges, bulk review
+- **Merge/split tooling** — merging two entities discovered to be the same person, undo for bad merges, bulk review
 - **Access control** — role-based visibility for multi-user teams
+- **Scheduled sync** — periodic re-pull from live sources
 
 ## License
 

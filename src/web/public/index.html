@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fundgraph</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🕸️</text></svg>">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>fundgraph</h1>
+    <span class="tagline">the map of reality your agents navigate</span>
+  </div>
+  <div class="tiles" id="tiles"></div>
+  <button id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
+</header>
+
+<main>
+  <aside id="sidebar">
+    <nav class="tabs">
+      <button class="tab active" data-tab="explore">Explore</button>
+      <button class="tab" data-tab="path">Warm path</button>
+      <button class="tab" data-tab="reviews">Review queue <span id="review-count" class="chip" hidden></span></button>
+      <button class="tab" data-tab="ingest">Add data</button>
+    </nav>
+
+    <section id="tab-explore" class="tab-panel active">
+      <input id="search" type="search" placeholder="Search people &amp; orgs…" autocomplete="off">
+      <div id="search-results"></div>
+      <div id="brief"></div>
+    </section>
+
+    <section id="tab-path" class="tab-panel">
+      <label>From <input id="path-from" list="people-list" placeholder="person…"></label>
+      <label>To <input id="path-to" list="people-list" placeholder="person…"></label>
+      <datalist id="people-list"></datalist>
+      <button id="find-path" class="primary">Find warm path</button>
+      <div id="path-result"></div>
+    </section>
+
+    <section id="tab-reviews" class="tab-panel">
+      <p class="hint">Matches scoring between 0.70 and 0.95 wait for a human — the system never merges on a guess.</p>
+      <div id="reviews"></div>
+    </section>
+
+    <section id="tab-ingest" class="tab-panel">
+      <div id="dropzone">
+        <p><strong>Drop a file</strong> or click to choose</p>
+        <p class="hint">.mbox (Gmail export) · .ics (calendar) · .csv (CRM contacts) · .jsonl</p>
+        <input id="file-input" type="file" accept=".jsonl,.json,.mbox,.ics,.csv" hidden>
+      </div>
+      <div id="ingest-result"></div>
+    </section>
+  </aside>
+
+  <section id="canvas">
+    <svg id="graph" role="img" aria-label="Relationship graph: people as circles, connection strength as line weight"></svg>
+    <div id="tooltip" hidden></div>
+    <div id="legend" class="hint">circle size = connections · line weight = relationship strength</div>
+  </section>
+</main>
+
+<script src="/vendor/d3.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
