@@ -153,9 +153,10 @@ async function route(db, req, res, url, port) {
     }
     if (path === "/api/connectors/attio") return json(res, await attioStatus(db));
     if (path === "/api/graph") return json(res, await graphPayload(db, await viewerOf(db, url)));
-    if (path === "/api/documents") return json(res, await documentsPayload(db));
+    if (path === "/api/documents") return json(res, await documentsPayload(db, await viewerOf(db, url)));
     if (path === "/api/search") {
-      return json(res, await searchEntities(db, String(url.searchParams.get("q") ?? "").slice(0, 200), 12));
+      return json(res, await searchEntities(db, String(url.searchParams.get("q") ?? "").slice(0, 200), 12,
+        { viewer: await viewerOf(db, url) }));
     }
     if (path.startsWith("/api/entity/")) {
       const brief = await entityBrief(db, path.slice("/api/entity/".length), { viewer: await viewerOf(db, url) });
@@ -385,12 +386,19 @@ async function attioStatus(db) {
 /* ---------- payload builders ---------- */
 
 async function graphPayload(db, viewer = null) {
-  const { rows: people } = await db.query(
-    `select id, canonical_name, orgs from entities where kind = 'person' and merged_into is null`
-  );
   const cfg = await getSettings(db);
   const layers = visibleLayers(viewer);
   const lph = layers.map((_, i) => `$${i + 1}`).join(", ");
+  // Under the default "hide" policy, a person only a colleague has ever
+  // corresponded with is not drawn at all — their name can be the secret.
+  const nodeGate = cfg.privateEntityVisibility === "reveal" ? "" : `
+       and exists (select 1 from mentions mm join documents dd on dd.id = mm.document_id
+                   where mm.entity_id = entities.id and dd.owner in (${lph}))`;
+  const { rows: people } = await db.query(
+    `select id, canonical_name, orgs from entities
+     where kind = 'person' and merged_into is null ${nodeGate}`,
+    cfg.privateEntityVisibility === "reveal" ? [] : layers
+  );
 
   // Visible evidence is summed across the viewer's layers, then saturated once.
   const { rows: edges } = await db.query(
@@ -436,10 +444,13 @@ async function graphPayload(db, viewer = null) {
   };
 }
 
-async function documentsPayload(db) {
+async function documentsPayload(db, viewer = null) {
+  const layers = visibleLayers(viewer);
+  const lph = layers.map((_, i) => `$${i + 1}`).join(", ");
   const { rows } = await db.query(
     `select source, kind, count(*) as n, max(occurred_at) as latest
-     from documents group by source, kind order by source, kind`
+     from documents where owner in (${lph}) group by source, kind order by source, kind`,
+    layers
   );
   const bySource = new Map();
   let total = 0;
@@ -455,11 +466,18 @@ async function documentsPayload(db) {
     const latest = r.latest ? new Date(r.latest).toISOString() : null;
     if (latest && (!s.latest || latest > s.latest)) s.latest = latest;
   }
+  // Titles are content: only from layers the viewer may see.
   const { rows: recent } = await db.query(
     `select source, kind, title, occurred_at from documents
-     order by occurred_at desc nulls last limit 12`
+     where owner in (${lph}) order by occurred_at desc nulls last limit 12`,
+    layers
   );
-  return { total, sources: [...bySource.values()], recent };
+  const { rows: hidden } = await db.query(
+    `select count(*) as n from documents where owner <> '' and owner not in (${lph})`,
+    layers
+  );
+  const withheld = Number(hidden[0].n);
+  return { total, sources: [...bySource.values()], recent, ...(withheld ? { withheld } : {}) };
 }
 
 /* ---------- plumbing ---------- */

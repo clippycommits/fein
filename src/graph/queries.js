@@ -1,14 +1,25 @@
 import { strongestConnections } from "./paths.js";
 import { visibleLayers } from "../members.js";
+import { getSettings } from "../settings.js";
 
-export async function searchEntities(db, query, limit = 10) {
+export async function searchEntities(db, query, limit = 10, { viewer = null } = {}) {
   const q = `%${query.toLowerCase()}%`;
+  const { privateEntityVisibility } = await getSettings(db);
+  const layers = visibleLayers(viewer);
+  // Under the default "hide" policy an entity whose every mention lives in a
+  // layer the viewer can't see is invisible: the NAME itself can be the secret.
+  const gate = privateEntityVisibility === "reveal" ? "" : `
+       and exists (
+         select 1 from mentions mm join documents dd on dd.id = mm.document_id
+         where mm.entity_id = entities.id and dd.owner in (${layers.map((_, i) => `$${i + 3}`).join(", ")})
+       )`;
   const { rows } = await db.query(
     `select id, kind, canonical_name, emails, orgs, aliases from entities
      where merged_into is null
        and (lower(canonical_name) like $1 or lower(emails::text) like $1 or lower(orgs::text) like $1)
+       ${gate}
      order by canonical_name limit $2`,
-    [q, limit]
+    privateEntityVisibility === "reveal" ? [q, limit] : [q, limit, ...layers]
   );
   return rows.map(parseEntity);
 }

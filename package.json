@@ -11,7 +11,7 @@
     "start": "node src/cli.js web",
     "mcp": "node src/cli.js mcp",
     "smoke": "node scripts/smoke.js",
-    "test": "node scripts/smoke.js && node scripts/api-test.js && node scripts/test-extract.js && node scripts/test-privacy.js && node scripts/test-radar.js && node scripts/test-automated.js && node scripts/test-merge.js"
+    "test": "node scripts/smoke.js && node scripts/api-test.js && node scripts/test-extract.js && node scripts/test-privacy.js && node scripts/test-radar.js && node scripts/test-automated.js && node scripts/test-merge.js && node scripts/test-leaks.js"
   },
   "engines": {
     "node": ">=20"

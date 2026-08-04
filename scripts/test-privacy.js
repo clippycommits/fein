@@ -40,6 +40,11 @@ await ingestDocs(db, [
     occurred_at: "2026-07-21T10:00:00Z",
     people: [person("Tom Merrill", "tom@ridgeline.vc", "attendee"),
              person("Dana Whitfield", "dana@foxglove.vc", "attendee")] },
+  // Priya is a known name at the firm — she appears in a shared document — but
+  // only Seb actually corresponds with her. This is the case the feature is for.
+  { source: "crm", kind: "record", external_id: "sh-3", title: "Contact: Priya Nair",
+    occurred_at: "2026-07-01T10:00:00Z",
+    people: [person("Priya Nair", "priya.nair@meridianwealth.co.uk", "mentioned")] },
 ]);
 // Seb's private layer: only he corresponds with Priya.
 await ingestDocs(db, [
@@ -57,7 +62,7 @@ const built = await rebuildEdges(db);
 
 console.log("[1/6] layered rebuild");
 check(built.layers === 2, "edges are built per privacy layer", built);
-const id = async (q) => (await searchEntities(db, q))[0]?.id;
+const id = async (q, viewer = null) => (await searchEntities(db, q, 10, { viewer }))[0]?.id;
 const [tomE, sebE, priyaE] = [await id("Tom Merrill"), await id("Seb Larkin"), await id("Priya Nair")];
 check(tomE && sebE && priyaE, "all three people resolved");
 
@@ -74,11 +79,14 @@ console.log("[2/6] evidence is scoped to the viewer");
 console.log("[3/6] documents never leak, only their count");
 {
   const sebBrief = await entityBrief(db, priyaE, { viewer: seb.id });
-  check(sebBrief.recentDocuments.length === 2, "Seb sees his 2 private documents", sebBrief.recentDocuments.length);
+  check(sebBrief.recentDocuments.length === 3,
+    "Seb sees his 2 private documents plus the shared CRM record", sebBrief.recentDocuments.length);
   check(!sebBrief.withheldDocuments, "nothing is withheld from their owner");
   const tomBrief = await entityBrief(db, priyaE, { viewer: tom.id });
-  check(tomBrief.recentDocuments.length === 0, "Tom sees no document content", tomBrief.recentDocuments);
-  check(tomBrief.withheldDocuments === 2, "Tom is told how many exist, nothing more", tomBrief.withheldDocuments);
+  const tomTitles = tomBrief.recentDocuments.map((d) => d.title);
+  check(tomTitles.length === 1 && tomTitles[0] === "Contact: Priya Nair",
+    "Tom sees the shared record and nothing else", tomTitles);
+  check(tomBrief.withheldDocuments === 2, "Tom is told how many are withheld, nothing more", tomBrief.withheldDocuments);
   const titles = JSON.stringify(tomBrief);
   check(!titles.includes("confidential") && !titles.includes("Meridian terms"),
     "no private title appears anywhere in another member's brief");
@@ -110,10 +118,34 @@ console.log("[5/6] a viewer with no membership sees only the shared layer");
   check(anon?.privatePath?.owners?.length === 1, "existence is still shared", anon?.privatePath?.owners);
 }
 
+console.log("[5b/6] private-only entities are hidden by default");
+{
+  // A company that exists ONLY inside Seb's private mail: its NAME is the secret.
+  await ingestDocs(db, [{
+    source: "gmail", kind: "email", external_id: "sp-3", title: "Project Nightjar",
+    occurred_at: "2026-07-27T10:00:00Z",
+    people: [person("Seb Larkin", "seb@ridgeline.vc", "from"),
+             person("Nightjar Founder", "founder@nightjar.example", "to")],
+  }], { owner: seb.id });
+  await resolveMentions(db);
+  check((await searchEntities(db, "Nightjar", 10, { viewer: tom.id })).length === 0,
+    "Tom cannot even see that a private-only person exists (default 'hide')");
+  check((await searchEntities(db, "Nightjar", 10, { viewer: seb.id })).length === 1,
+    "its owner sees it normally");
+  check((await searchEntities(db, "Priya", 10, { viewer: tom.id })).length === 1,
+    "but a person the FIRM knows stays visible — that's what makes 'ask Seb' work");
+
+  const { putSettings } = await import(join(root, "src/settings.js"));
+  await putSettings(db, { privateEntityVisibility: "reveal" });
+  check((await searchEntities(db, "Nightjar", 10, { viewer: tom.id })).length === 1,
+    "'reveal' opts into the names-are-shared model deliberately");
+  await putSettings(db, { privateEntityVisibility: "hide" });
+}
+
 console.log("[6/6] removing a member disposes of their layer");
 {
   const gone = await removeMember(db, seb.id);
-  check(gone.documents === 2, "their private documents are deleted with them", gone);
+  check(gone.documents === 3, "their private documents are deleted with them", gone);
   await rebuildEdges(db);
   const after = await findWarmPath(db, tomE, priyaE, { viewer: tom.id });
   check(!after?.path && !after?.privatePath, "the private route disappears too", after);

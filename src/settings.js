@@ -18,6 +18,15 @@ export const DEFAULT_SETTINGS = {
   },
   halfLifeDays: 180, // recency decay half-life
   saturation: 6,     // strength = 1 - e^(-W/saturation)
+  // Privacy: may a viewer see that an entity EXISTS when every document
+  // mentioning it lives in someone else's private layer?
+  //   "hide"   — no. An entity with no visible evidence is invisible. Safest,
+  //              and the default: a company name that appears only in a
+  //              colleague's private email is itself confidential.
+  //   "reveal" — yes. Names are shared, evidence is not, so you can ask
+  //              "who can reach X" about people you'd otherwise never find.
+  //              This is the model Vicunea describes; choose it knowingly.
+  privateEntityVisibility: "hide",
 };
 
 const NUMERIC_LIMITS = { min: 0, max: 100 };
@@ -39,6 +48,7 @@ export async function putSettings(db, patch) {
     weights: { ...current.weights },
     halfLifeDays: current.halfLifeDays,
     saturation: current.saturation,
+    privateEntityVisibility: current.privateEntityVisibility,
   };
   for (const [k, v] of Object.entries(patch.weights ?? {})) {
     if (!Object.hasOwn(DEFAULT_SETTINGS.weights, k)) throw new Error(`unknown weight "${k}"`);
@@ -49,6 +59,12 @@ export async function putSettings(db, patch) {
   }
   if (patch.saturation !== undefined) {
     next.saturation = clampNumber(patch.saturation, "saturation", 0.1, 100);
+  }
+  if (patch.privateEntityVisibility !== undefined) {
+    if (!["hide", "reveal"].includes(patch.privateEntityVisibility)) {
+      throw new Error('privateEntityVisibility must be "hide" or "reveal"');
+    }
+    next.privateEntityVisibility = patch.privateEntityVisibility;
   }
   await db.query(
     `insert into settings (key, value, updated_at) values ('scoring', $1, now())

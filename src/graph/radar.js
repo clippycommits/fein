@@ -51,7 +51,7 @@ export async function relationshipRadar(db, entityId, { viewer = null, limit = 2
 
   // Every dated document the pair both appear in, newest first.
   const { rows } = await db.query(
-    `select other.entity_id as other, d.occurred_at, d.kind, d.title, d.source
+    `select other.entity_id as other, d.id as doc_id, d.occurred_at, d.kind, d.title, d.source
      from mentions me
      join documents d on d.id = me.document_id
      join mentions other on other.document_id = d.id and other.entity_id <> me.entity_id
@@ -64,17 +64,33 @@ export async function relationshipRadar(db, entityId, { viewer = null, limit = 2
   );
 
   const byOther = new Map();
+  const seen = new Map();
   for (const r of rows) {
-    if (!byOther.has(r.other)) byOther.set(r.other, []);
-    const list = byOther.get(r.other);
+    if (!byOther.has(r.other)) { byOther.set(r.other, []); seen.set(r.other, new Set()); }
     // One document is one contact event, however many mentions it produced.
-    if (list.at(-1)?.at === r.occurred_at) continue;
-    list.push({ at: r.occurred_at, kind: r.kind, title: r.title, source: r.source });
+    const docs = seen.get(r.other);
+    if (docs.has(r.doc_id)) continue;
+    docs.add(r.doc_id);
+    byOther.get(r.other).push({ at: r.occurred_at, kind: r.kind, title: r.title, source: r.source });
   }
 
   const out = [];
   for (const [other, events] of byOther) {
-    const times = events.map((e) => new Date(e.at).getTime()).sort((a, b) => b - a);
+    const all = events.map((e) => new Date(e.at).getTime()).sort((a, b) => b - a);
+    // A meeting on next week's calendar is not contact that has happened:
+    // counting it would make `daysSince` negative and read as "active".
+    const times = all.filter((t) => t <= now);
+    const nextScheduled = all.filter((t) => t > now).at(-1) ?? null;
+    if (!times.length) {
+      out.push({
+        entity: other, status: "new", contacts: 0, lastContact: null,
+        daysSinceContact: null, cadenceDays: null, overdueBy: null, trend: null,
+        nextScheduled: new Date(nextScheduled).toISOString(),
+        lastTouch: null,
+      });
+      continue;
+    }
+    const firstPast = events.find((e) => new Date(e.at).getTime() <= now);
     const last = times[0];
     const daysSince = Math.floor((now - last) / DAY);
     const gaps = [];
@@ -101,7 +117,8 @@ export async function relationshipRadar(db, entityId, { viewer = null, limit = 2
       cadenceDays: cadenceDays === null ? null : Math.round(cadenceDays * 10) / 10,
       overdueBy: cadenceDays === null ? null : Math.max(0, Math.round(daysSince - cadenceDays)),
       trend,
-      lastTouch: { kind: events[0].kind, title: events[0].title, source: events[0].source },
+      nextScheduled: nextScheduled === null ? null : new Date(nextScheduled).toISOString(),
+      lastTouch: { kind: firstPast.kind, title: firstPast.title, source: firstPast.source },
     });
   }
 
@@ -144,7 +161,14 @@ export async function radarSummary(db, { viewer = null, limit = 20, now = Date.n
   const items = [];
   const counts = { active: 0, due: 0, overdue: 0, cold: 0, dormant: 0, new: 0 };
   for (const p of pairs.values()) {
-    const times = [...p.times].sort((x, y) => y - x);
+    // Scheduled-but-not-yet-happened contact is not history to be late against.
+    const times = [...p.times].filter((t) => t <= now).sort((x, y) => y - x);
+    if (!times.length) {
+      counts.new++;
+      items.push({ a: p.a, b: p.b, status: "new", contacts: 0,
+        daysSinceContact: null, cadenceDays: null, overdueBy: null });
+      continue;
+    }
     const daysSince = Math.floor((now - times[0]) / DAY);
     const gaps = [];
     for (let i = 0; i + 1 < times.length; i++) gaps.push((times[i] - times[i + 1]) / DAY);

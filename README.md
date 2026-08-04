@@ -194,11 +194,18 @@ In the dashboard, the **Viewing as** switch in the header changes layer; the
 Data tab manages members. For agents, `FUNDGRAPH_VIEWER=<member>` binds an MCP
 server to one person's view.
 
-**Trust model, stated plainly:** entity existence is shared by design — the
-graph of *who exists* is common ground, and only the evidence is partitioned.
+**What "existence is shared" actually means.** A person the firm already knows
+(they appear in any shared document) stays visible to everyone, and a colleague's
+private correspondence with them surfaces as a locked hop — that is the feature.
+But an entity that appears *only* inside one member's private layer is hidden
+entirely by default, because the name itself can be the secret ("Project
+Nightjar"). Set `privateEntityVisibility: "reveal"` in Settings to opt into the
+fully-shared-names model instead; it is a deliberate choice, not a default.
 Removing a member forces an explicit choice: delete their documents, or move
 them into the shared layer where everyone will see them. Enforcement is
-server-side on every query, but this is a **cooperative** model for a trusted
+server-side on every query and `npm test` includes a **leak probe** that stuffs
+markers into a private layer and greps every endpoint's response as another
+member, but this is a **cooperative** model for a trusted
 team on one local database, not a hostile-tenant boundary: anyone with
 filesystem access to `./data` or the ability to pass an arbitrary `?as=` can
 read any layer. Real multi-tenant isolation needs authentication, which is on
