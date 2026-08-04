@@ -439,3 +439,21 @@ line.link.private { stroke-dasharray: 4 4; opacity: 0.55; }
 .row-form { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
 .row-form input { margin: 0; }
 .row-form button { white-space: nowrap; }
+
+/* Radar */
+.radar-counts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.badge.cold { border-color: var(--critical); color: var(--critical); font-weight: 600; }
+.badge.overdue { border-color: var(--warning); color: var(--ink); font-weight: 600; }
+.badge.due { border-color: var(--series-2); color: var(--series-2); }
+.badge.active { border-color: var(--good); color: var(--good-text); }
+.radar-row { padding: 8px 0; border-bottom: 1px solid var(--grid); font-size: 13px; }
+.radar-pair { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.radar-meta { font-size: 11.5px; color: var(--muted); }

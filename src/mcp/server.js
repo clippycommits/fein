@@ -138,6 +138,27 @@ export async function startMcpServer() {
   );
 
   server.tool(
+    "relationship_radar",
+    "Timing intelligence: which relationships need attention now. Every pair has its own cadence learned from real contact history, so 'overdue' means overdue *for them* — three weeks is nothing for a quarterly contact and alarming for a weekly one. Give a person for their radar, or omit for the whole graph. Statuses: active, due, overdue, cold, dormant, new; trend is warming/steady/cooling.",
+    { entity: z.string().optional(), limit: z.number().optional() },
+    async ({ entity, limit }) => {
+      const { relationshipRadar, radarSummary } = await import("../graph/radar.js");
+      if (!entity) {
+        const summary = await radarSummary(db, { viewer, limit: limit ?? 20 });
+        for (const i of summary.needsAttention) {
+          i.aName = (await getEntity(db, i.a))?.canonical_name ?? i.a;
+          i.bName = (await getEntity(db, i.b))?.canonical_name ?? i.b;
+        }
+        return text(summary);
+      }
+      const e = await ref(db, entity);
+      const items = await relationshipRadar(db, e.id, { viewer, limit: limit ?? 25 });
+      for (const i of items) i.name = (await getEntity(db, i.entity))?.canonical_name ?? i.entity;
+      return text({ entity: e.canonical_name, radar: items });
+    }
+  );
+
+  server.tool(
     "graph_stats",
     "Counts of documents, mentions, entities, pending reviews, and edges.",
     {},

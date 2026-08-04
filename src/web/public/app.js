@@ -45,6 +45,7 @@ for (const tab of document.querySelectorAll(".tab")) {
     document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
     tab.classList.add("active");
     $(`#tab-${tab.dataset.tab}`).classList.add("active");
+    if (tab.dataset.tab === "radar") renderRadar();
     if (tab.dataset.tab === "reviews") renderReviews();
     if (tab.dataset.tab === "data") renderData();
     if (tab.dataset.tab === "settings") renderSettings();
@@ -406,6 +407,29 @@ $("#find-path").addEventListener("click", async () => {
   }
   out.innerHTML = html;
 });
+
+/* ---------- radar (timing intelligence) ---------- */
+const STATUS_LABEL = { cold: "cold", overdue: "overdue", due: "due now", dormant: "dormant", new: "new", active: "active" };
+
+async function renderRadar() {
+  const s = await api(`/api/radar${asParam()}`);
+  const order = ["cold", "overdue", "due", "active", "new", "dormant"];
+  $("#radar-counts").innerHTML =
+    `<div class="radar-counts">` +
+    order.filter((k) => s.counts[k]).map((k) =>
+      `<span class="badge ${esc(k)}">${s.counts[k]} ${esc(STATUS_LABEL[k])}</span>`).join("") +
+    `</div>`;
+  $("#radar").innerHTML = s.needsAttention.length
+    ? s.needsAttention.map((r) =>
+        `<div class="radar-row">
+           <div class="radar-pair"><span class="badge ${esc(r.status)}">${esc(STATUS_LABEL[r.status])}</span>
+             ${esc(r.aName)} ↔ ${esc(r.bName)}</div>
+           <div class="radar-meta">last contact ${r.daysSinceContact}d ago${
+             r.cadenceDays !== null ? ` · usually every ${r.cadenceDays}d` : ""}${
+             r.overdueBy ? ` · <strong>${r.overdueBy}d overdue</strong>` : ""} · ${r.contacts} touches</div>
+         </div>`).join("")
+    : `<div class="empty"><p>Nothing overdue — every relationship is inside its usual rhythm.</p></div>`;
+}
 
 /* ---------- review queue ---------- */
 async function renderReviews() {

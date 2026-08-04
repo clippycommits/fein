@@ -26,6 +26,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="explore">Explore</button>
       <button class="tab" data-tab="path">Warm path</button>
+      <button class="tab" data-tab="radar">Radar</button>
       <button class="tab" data-tab="reviews">Reviews <span id="review-count" class="chip" hidden></span></button>
       <button class="tab" data-tab="data">Data</button>
       <button class="tab" data-tab="settings">Settings</button>
@@ -49,6 +50,14 @@
       <div id="path-result">
         <div class="empty"><p>The best route to an introduction — hops are scored by real interaction history, and the path maximizes end-to-end strength.</p></div>
       </div>
+    </section>
+
+    <section id="tab-radar" class="tab-panel">
+      <p class="hint">Every relationship has its own rhythm. Radar learns each pair's usual
+        interval from real contact history, so <strong>overdue means overdue for them</strong> —
+        three weeks is nothing for a quarterly contact and alarming for a weekly one.</p>
+      <div id="radar-counts"></div>
+      <div id="radar"></div>
     </section>
 
     <section id="tab-reviews" class="tab-panel">

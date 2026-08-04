@@ -40,6 +40,8 @@ const USAGE = `fundgraph — open-source agentic data layer for investment teams
                                     (investments, passes + reasoning), with provenance
   fundgraph path <from> <to>        best warm-intro path between two people
   fundgraph intros <from> <to>      rank mutual connections as introducers
+  fundgraph radar [person]          relationships needing attention, by their own cadence
+                                    (a person = their radar; no arg = the whole graph)
   fundgraph review                  list pending resolution reviews
   fundgraph review accept|reject <review_id>
   fundgraph demo                    ingest sample data + resolve + edges
@@ -238,6 +240,23 @@ async function main() {
         const list = Array.isArray(res) ? res : res.introducers;
         for (const i of list) i.name = (await getEntity(db, i.entity))?.canonical_name;
         out(res);
+      }
+      break;
+    }
+    case "radar": {
+      const { relationshipRadar, radarSummary } = await import("./graph/radar.js");
+      if (args.length) {
+        const e = await refOrDie(db, args.join(" "));
+        const items = await relationshipRadar(db, e.id, { viewer });
+        for (const i of items) i.name = (await getEntity(db, i.entity))?.canonical_name;
+        out({ entity: e.canonical_name, radar: items });
+      } else {
+        const summary = await radarSummary(db, { viewer });
+        for (const i of summary.needsAttention) {
+          i.aName = (await getEntity(db, i.a))?.canonical_name;
+          i.bName = (await getEntity(db, i.b))?.canonical_name;
+        }
+        out(summary);
       }
       break;
     }

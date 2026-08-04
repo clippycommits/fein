@@ -38,6 +38,7 @@ First run shows onboarding: load the bundled (fictional) sample dataset with one
 | ![warm path](docs/img/warm-path.png) | ![review queue](docs/img/reviews.png) |
 
 - **Explore** — search, click a node, get a brief: strongest relationships *with the signals behind each score* ("3 meetings, 2 emails, 1 co-authored doc"), recent shared documents, one-click Markdown export.
+- **Radar** — which relationships need attention now, judged against each pair's own learned cadence.
 - **Warm path** — the best route to an introduction, maximizing end-to-end relationship strength, with introducers ranked by their *weaker* leg.
 - **Reviews** — matches scoring 0.70–0.95 wait for a human; the system never merges identities on a guess. Decisions are audited and survive rebuilds.
 - **Data** — drag-and-drop ingestion, live connectors, team members and their privacy layers, per-source breakdown, audit trail.
@@ -114,6 +115,28 @@ Then `fundgraph sync` (resolve + rebuild edges).
 **What gets read:** live connectors (Granola, gog, Google APIs, Attio people/companies) read metadata and participant identities only. File exports (`.mbox`, `.ics`, `.csv` notes, `.jsonl`) also capture a size-capped plain-text **body** per document — stored locally in your database and mined only when you explicitly run [unstructured extraction](#unstructured-extraction). Set `FUNDGRAPH_NO_BODIES=1` to skip body capture entirely and keep the old metadata-only behavior.
 
 Adapters emit a common JSONL shape (see `sample/seed.jsonl`); to add a source, emit that shape and `fundgraph ingest file.jsonl`. Ingestion is idempotent: re-ingesting updates in place, and review history is preserved.
+
+## Relationship radar — the timing layer
+
+![radar](docs/img/radar.png)
+
+Strength answers *who do I know well*. Radar answers *who should I contact now*.
+Each pair's natural cadence is learned from real contact history, so **overdue
+means overdue for them**: three weeks of silence is unremarkable with a
+quarterly contact and alarming with a weekly one.
+
+```bash
+fundgraph radar                      # whole graph, most actionable first
+fundgraph radar "Maya Chen"          # one person's relationships
+```
+
+Every row carries its receipts — "last contact 16d ago · usually every 10d ·
+6d overdue · 3 touches" — and statuses (`active`, `due`, `overdue`, `cold`,
+`dormant`, `new`) plus a warming/steady/cooling trend comparing the last 90 days
+with the 90 before. With no contact in either window the trend is `null` rather
+than a fabricated "steady". Entirely deterministic: intervals and dates, no
+model in the loop. Radar respects privacy layers, and agents get it as the
+`relationship_radar` MCP tool.
 
 ## Privacy layers
 

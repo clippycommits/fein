@@ -127,6 +127,22 @@ async function route(db, req, res, url, port) {
       });
     }
     if (path === "/api/members") return json(res, await listMembers(db));
+    if (path === "/api/radar") {
+      const { relationshipRadar, radarSummary } = await import("../graph/radar.js");
+      const viewer = await viewerOf(db, url);
+      const entity = url.searchParams.get("entity");
+      if (entity) {
+        const items = await relationshipRadar(db, entity, { viewer });
+        for (const i of items) i.name = (await getEntity(db, i.entity))?.canonical_name ?? i.entity;
+        return json(res, { radar: items });
+      }
+      const summary = await radarSummary(db, { viewer, limit: boundedInt(url, "limit", 25, 1, 200) });
+      for (const i of summary.needsAttention) {
+        i.aName = (await getEntity(db, i.a))?.canonical_name ?? i.a;
+        i.bName = (await getEntity(db, i.b))?.canonical_name ?? i.b;
+      }
+      return json(res, summary);
+    }
     if (path === "/api/connectors/attio") return json(res, await attioStatus(db));
     if (path === "/api/graph") return json(res, await graphPayload(db, await viewerOf(db, url)));
     if (path === "/api/documents") return json(res, await documentsPayload(db));
