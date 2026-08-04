@@ -113,7 +113,7 @@ async function route(db, req, res, url, port) {
     if (path === "/api/stats") return json(res, await counts(db));
     if (path === "/api/settings") return json(res, await getSettings(db));
     if (path === "/api/audit") return json(res, await listAudit(db, boundedInt(url, "limit", 50, 1, 500)));
-    if (path === "/api/reviews") return json(res, await listReviews(db));
+    if (path === "/api/reviews") return json(res, await listReviews(db, { viewer: await viewerOf(db, url) }));
     if (path === "/api/extract/status") {
       const cfg = extractConfig();
       return json(res, {

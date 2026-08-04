@@ -64,13 +64,17 @@ export async function relationshipRadar(db, entityId, { viewer = null, limit = 2
   );
 
   const byOther = new Map();
-  const seen = new Map();
+  const seenDocs = new Map();
   for (const r of rows) {
-    if (!byOther.has(r.other)) { byOther.set(r.other, []); seen.set(r.other, new Set()); }
-    // One document is one contact event, however many mentions it produced.
-    const docs = seen.get(r.other);
-    if (docs.has(r.doc_id)) continue;
-    docs.add(r.doc_id);
+    if (!byOther.has(r.other)) { byOther.set(r.other, []); seenDocs.set(r.other, new Set()); }
+    // One document is one contact event, however many mentions it produced
+    // (To + Cc, organizer + attendee, or two mentions repointed by a merge).
+    // Dedupe on the document id with a Set: timestamps come back as Date
+    // objects, so comparing them with === never matched, and two different
+    // documents can legitimately share an instant (all-day events are all
+    // written T00:00:00Z).
+    if (seenDocs.get(r.other).has(r.doc_id)) continue;
+    seenDocs.get(r.other).add(r.doc_id);
     byOther.get(r.other).push({ at: r.occurred_at, kind: r.kind, title: r.title, source: r.source });
   }
 

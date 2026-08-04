@@ -56,12 +56,20 @@ export async function removeMember(db, memberId, { reassign = null } = {}) {
 /** Accept an id, exact name, or email — CLI and API both take human input. */
 export async function resolveMember(db, ref) {
   if (!ref) return null;
+  const needle = String(ref).trim();
   const { rows } = await db.query(
     `select * from members
-     where id = $1 or lower(name) = lower($1) or lower(email) = lower($1) limit 1`,
-    [String(ref).trim()]
+     where id = $1 or lower(name) = lower($1) or lower(email) = lower($1)`,
+    [needle]
   );
   if (!rows.length) throw new Error(`no member matching "${ref}"`);
+  // Two people called "Tom" must never resolve to whichever the database
+  // returned first: the wrong answer here means writing into — or reading —
+  // the wrong person's private layer.
+  if (rows.length > 1) {
+    const options = rows.map((r) => `${r.name}${r.email ? ` <${r.email}>` : ""} (${r.id})`).join(", ");
+    throw new Error(`"${ref}" matches ${rows.length} members — use an email or id. Candidates: ${options}`);
+  }
   return rows[0];
 }
 

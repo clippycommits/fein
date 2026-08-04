@@ -55,7 +55,7 @@ async function loadGraph(db, viewerId) {
 
 /** Dijkstra over (node, hopCount) states so a cheap long path can't shadow a
  * hop-feasible shorter one. `edgesFor` supplies each node's usable neighbours. */
-function search(fromId, toId, maxHops, edgesFor) {
+function search(fromId, toId, maxHops, edgesFor, { fewestHops = false } = {}) {
   const key = (n, h) => `${h}|${n}`;
   const dist = new Map([[key(fromId, 0), 0]]);
   const prev = new Map();
@@ -64,7 +64,9 @@ function search(fromId, toId, maxHops, edgesFor) {
   let end = null;
 
   while (frontier.length) {
-    frontier.sort((x, y) => x[0] - y[0]); // fine at this scale; swap for a heap later
+    // Cheapest overall, or fewest hops with cost as the tie-break. Both keys
+    // are monotone along an edge, so Dijkstra stays correct either way.
+    frontier.sort((x, y) => (fewestHops && x[2] !== y[2] ? x[2] - y[2] : x[0] - y[0]));
     const [d, node, h] = frontier.shift();
     const k = key(node, h);
     if (done.has(k)) continue;
@@ -115,10 +117,16 @@ export async function findWarmPath(db, fromId, toId, options = {}) {
       }
     : null;
 
-  // Would another member's private layer get there — sooner, or at all?
-  const combined = search(fromId, toId, maxHops, (n) => [...(adj.get(n) ?? []), ...(hidden.get(n) ?? [])]);
+  // Would another member's private layer get there sooner, or at all? Compare
+  // like with like: the visible path reported above is the CHEAPEST one, whose
+  // hop count says nothing about reachability, so measure both candidates in
+  // hops. Otherwise a cheap winding visible route both hides real private
+  // shortcuts and produces false "ask for an intro" claims.
+  const combined = search(fromId, toId, maxHops,
+    (n) => [...(adj.get(n) ?? []), ...(hidden.get(n) ?? [])], { fewestHops: true });
+  const visibleHops = search(fromId, toId, maxHops, (n) => adj.get(n) ?? [], { fewestHops: true });
   const usesPrivate = combined?.some((s) => s.private);
-  if (combined && usesPrivate && (!visiblePath || combined.length < visiblePath.length)) {
+  if (combined && usesPrivate && (!visibleHops || combined.length < visibleHops.length)) {
     const owners = [...new Set(combined.filter((s) => s.private).map((s) => s.via))];
     return {
       ...(result ?? { path: null, pathStrength: null }),
@@ -150,13 +158,15 @@ export async function findIntroducers(db, fromId, toId, options = {}) {
 
   // Someone whose private layer reaches the target is a real introducer route,
   // even though the viewer cannot see the evidence.
-  const known = new Set(ranked.map((r) => r.entity));
-  const privateOwners = new Map();
+  // Two things are not introduction routes: evidence about the very pair being
+  // asked about, and a hop the viewer can already see for themselves.
+  const privateOwners = new Set();
   for (const e of hidden.get(toId) ?? []) {
-    if (!privateOwners.has(e.ownerName)) privateOwners.set(e.ownerName, new Set());
-    privateOwners.get(e.ownerName).add(e.to);
+    if (e.to === fromId) continue;
+    if (toN.has(e.to)) continue;
+    privateOwners.add(e.ownerName);
   }
-  const viaPrivate = [...privateOwners.keys()].map((ownerName) => ({
+  const viaPrivate = [...privateOwners].map((ownerName) => ({
     owner: ownerName,
     private: true,
     note: `${ownerName} has a private connection to this person.`,

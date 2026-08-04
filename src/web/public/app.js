@@ -465,7 +465,7 @@ async function renderRadar() {
 
 /* ---------- review queue ---------- */
 async function renderReviews() {
-  const reviews = await api("/api/reviews");
+  const reviews = await api(`/api/reviews${asParam()}`);
   $("#reviews").innerHTML = reviews.length ? reviews.map((r) =>
     `<div class="review">
        <div><span class="score">⚠ ${r.score.toFixed(2)}</span> — is this the same person?</div>
@@ -496,7 +496,7 @@ async function renderReviews() {
 
 /* ---------- data tab ---------- */
 async function renderData() {
-  const [docs, audit] = await Promise.all([api("/api/documents"), api("/api/audit?limit=15")]);
+  const [docs, audit] = await Promise.all([api(`/api/documents${asParam()}`), api("/api/audit?limit=15")]);
   renderExtractStatus(); // independent fetch; the tab must not block on it
   renderAttio();
   renderMembers();
@@ -508,6 +508,10 @@ async function renderData() {
            <td class="num">${s.count}</td>
            <td>${s.latest ? esc(s.latest.slice(0, 10)) : "—"}</td></tr>`).join("") + `</table>`
     : `<div class="empty"><p>Nothing ingested yet.</p></div>`;
+  if (docs.withheld) {
+    $("#sources").innerHTML +=
+      `<p class="hint">🔒 ${docs.withheld} document${docs.withheld === 1 ? "" : "s"} in other members' private layers.</p>`;
+  }
   $("#audit").innerHTML = audit.length ? audit.map((a) =>
     `<div class="audit-row"><span class="when">${esc(String(a.at).slice(0, 16).replace("T", " "))}</span>
        · ${esc(a.action)}${a.detail?.file ? ` · ${esc(a.detail.file)}` : ""}${a.detail?.mention?.name ? ` · ${esc(a.detail.mention.name)}` : ""}</div>`).join("")
@@ -548,18 +552,29 @@ $("#member-form").addEventListener("submit", async (ev) => {
 
 async function removeMember({ id, name, docs }) {
   const n = Number(docs);
-  // Deleting a member must not silently expose their private documents.
-  const question = n
-    ? `Remove ${name}? They own ${n} private document${n === 1 ? "" : "s"}.\n\n` +
-      `OK = delete those documents too.\nCancel = keep them, moved into the SHARED layer (everyone will see them).`
-    : `Remove ${name}?`;
-  if (n) {
-    const deleteThem = confirm(question);
-    const q = deleteThem ? "" : "?reassign=shared";
-    await api(`/api/members/${encodeURIComponent(id)}${q}`, { method: "DELETE" });
-  } else {
-    if (!confirm(question)) return;
+  if (!n) {
+    if (!confirm(`Remove ${name}?`)) return;
     await api(`/api/members/${encodeURIComponent(id)}`, { method: "DELETE" });
+  } else {
+    // Cancel/Escape must ABORT. A two-button confirm cannot offer three
+    // outcomes, and mapping Cancel to "publish their private mail to the whole
+    // team" is the worst possible default — so ask for the destination in
+    // words, and treat anything unrecognised (including dismissal) as abort.
+    const answer = prompt(
+      `Remove ${name}? They own ${n} private document${n === 1 ? "" : "s"}.\n\n` +
+      `Type DELETE to delete those documents with them,\n` +
+      `or SHARE to keep them by moving them into the shared layer (everyone will see them).\n\n` +
+      `Anything else cancels.`
+    );
+    const choice = answer?.trim().toUpperCase();
+    if (choice !== "DELETE" && choice !== "SHARE") { toast("Cancelled — nothing changed"); return; }
+    const q = choice === "SHARE" ? "?reassign=shared" : "";
+    await api(`/api/members/${encodeURIComponent(id)}${q}`, { method: "DELETE" });
+    toast(choice === "SHARE"
+      ? `Removed ${name}; their ${n} document${n === 1 ? "" : "s"} moved to the shared layer`
+      : `Removed ${name} and their ${n} private document${n === 1 ? "" : "s"}`, "good");
+    await Promise.all([renderMembers(), renderStats(), renderGraph()]);
+    return;
   }
   toast(`Removed ${name}`, "good");
   await Promise.all([renderMembers(), renderStats(), renderGraph()]);

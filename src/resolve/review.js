@@ -1,8 +1,16 @@
 import { normOrgName } from "./normalize.js";
 import { createEntityFromMention } from "./pipeline.js";
 import { audit } from "../settings.js";
+import { visibleLayers } from "../members.js";
 
-export async function listReviews(db) {
+/**
+ * Review cards quote the document a mention came from — its title, and for
+ * extracted mentions a verbatim snippet of its body. That is private content,
+ * so the queue is scoped to the viewer's layers like every other read.
+ */
+export async function listReviews(db, { viewer = null } = {}) {
+  const layers = visibleLayers(viewer);
+  const lph = layers.map((_, i) => `$${i + 1}`).join(", ");
   const { rows } = await db.query(
     `select r.id, r.score, r.detail, r.status,
             m.name as mention_name, m.email as mention_email, m.org_hint,
@@ -13,8 +21,9 @@ export async function listReviews(db) {
      join mentions m on m.id = r.mention_id
      join entities e on e.id = r.candidate_entity_id
      join documents d on d.id = m.document_id
-     where r.status = 'pending'
-     order by r.score desc`
+     where r.status = 'pending' and d.owner in (${lph})
+     order by r.score desc`,
+    layers
   );
   return rows.map((r) => ({
     ...r,

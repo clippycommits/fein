@@ -144,7 +144,7 @@ async function main() {
     }
     case "ingest-granola": {
       const { loadGranola } = await import("./ingest/granola.js");
-      out(await ingestDocs(db, loadGranola(args[0])));
+      out(await ingestDocs(db, loadGranola(args[0]), { owner: viewer ?? "" }));
       break;
     }
     case "ingest-gog": {
@@ -156,12 +156,13 @@ async function main() {
       } else if (service === "calendar") docs = gog.fetchGogCalendar({ max: Number(args[1] ?? 500) });
       else if (service === "drive") docs = gog.fetchGogDrive({ max: Number(args[1] ?? 500) });
       else throw new Error("usage: fundgraph ingest-gog gmail|calendar|drive");
-      out(await ingestDocs(db, docs));
+      out(await ingestDocs(db, docs, { owner: viewer ?? "" }));
       break;
     }
     case "ingest-attio": {
       const { fetchAttio } = await import("./ingest/attio.js");
-      out(await ingestDocs(db, await fetchAttio({ includeNotes: args[0] !== "--no-notes" })));
+      out(await ingestDocs(db, await fetchAttio({ includeNotes: args[0] !== "--no-notes" }),
+        { owner: viewer ?? "" }));
       break;
     }
     case "ingest-google": {
@@ -172,7 +173,7 @@ async function main() {
       else if (service === "calendar") docs = await g.fetchCalendar({});
       else if (service === "drive") docs = await g.fetchDrive({});
       else throw new Error("usage: fundgraph ingest-google gmail|calendar|drive");
-      out(await ingestDocs(db, docs));
+      out(await ingestDocs(db, docs, { owner: viewer ?? "" }));
       break;
     }
     case "sync": {
@@ -226,7 +227,7 @@ async function main() {
     case "memory": {
       if (!args.length) throw new Error("usage: fundgraph memory <company>");
       const { companyMemory } = await import("./graph/memory.js");
-      out(await companyMemory(db, args.join(" ")));
+      out(await companyMemory(db, args.join(" "), { viewer }));
       break;
     }
     case "path":

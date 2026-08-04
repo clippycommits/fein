@@ -142,10 +142,29 @@ console.log("[5b/6] private-only entities are hidden by default");
   await putSettings(db, { privateEntityVisibility: "hide" });
 }
 
+console.log("[5c/6] the review queue quotes private documents, so it is scoped too");
+{
+  const { listReviews } = await import(join(root, "src/resolve/review.js"));
+  // A pending question whose mention came from Seb's private mail.
+  await ingestDocs(db, [{
+    source: "gmail", kind: "email", external_id: "sp-4", title: "PRIVATETITLE deal terms",
+    occurred_at: "2026-07-28T10:00:00Z",
+    people: [person("Seb Larkin", "seb@ridgeline.vc", "from"),
+             person("Priya Nair-Watson", "pnw@meridianwealth.co.uk", "to")],
+  }], { owner: seb.id });
+  await resolveMentions(db);
+  const tomQueue = JSON.stringify(await listReviews(db, { viewer: tom.id }));
+  check(!tomQueue.includes("PRIVATETITLE"), "another member's review cards never quote a private title");
+  const sebQueue = JSON.stringify(await listReviews(db, { viewer: seb.id }));
+  const sharedQueue = JSON.stringify(await listReviews(db, {}));
+  check(!sharedQueue.includes("PRIVATETITLE"), "nor does the shared queue");
+  check(sebQueue.length >= sharedQueue.length, "the owner's queue is a superset of the shared one");
+}
+
 console.log("[6/6] removing a member disposes of their layer");
 {
   const gone = await removeMember(db, seb.id);
-  check(gone.documents === 3, "their private documents are deleted with them", gone);
+  check(gone.documents === 4, "their private documents are deleted with them", gone);
   await rebuildEdges(db);
   const after = await findWarmPath(db, tomE, priyaE, { viewer: tom.id });
   check(!after?.path && !after?.privatePath, "the private route disappears too", after);

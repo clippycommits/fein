@@ -108,6 +108,51 @@ console.log("[3/4] bursts and thin history don't fake a cadence");
   check(bella.cadenceDays >= 1, "cadence never drops below a day", bella.cadenceDays);
 }
 
+console.log("[3b/4] one document is one contact event");
+{
+  // Same person as To AND Cc on every message: two mention rows per document.
+  // Comparing timestamps with === (Date objects) never deduped, so gaps of 0
+  // collapsed the cadence and marked a healthy weekly relationship "cold".
+  const dup = [7, 14, 21, 28].map((d, i) => ({
+    source: "gmail", kind: "email", external_id: `dup${i}`, title: "dup",
+    occurred_at: daysAgo(d),
+    people: [{ ...me, role: "from" },
+             { name: "Doubled Dana", email: "dana@x.com", role: "to" },
+             { name: "Doubled Dana", email: "dana@x.com", role: "cc" }],
+  }));
+  await ingestDocs(db, dup);
+  await resolveMentions(db);
+  const r = await relationshipRadar(db, tomId, { now: NOW });
+  let dana = null;
+  for (const x of r) {
+    const { rows } = await db.query(`select canonical_name from entities where id = $1`, [x.entity]);
+    if (rows[0].canonical_name === "Doubled Dana") dana = x;
+  }
+  check(dana?.contacts === 4, "four documents count as four contacts, not eight", dana?.contacts);
+  check(Math.round(dana?.cadenceDays) === 7, "cadence stays weekly despite duplicate mentions", dana?.cadenceDays);
+  // Exactly one interval elapsed is "due", not "cold" — the point is that the
+  // duplicate mentions no longer collapse the cadence and force a false cold.
+  check(dana?.status === "due", "the relationship reads due, not cold", dana?.status);
+}
+
+console.log("[3c/4] future-dated documents don't fake recency");
+{
+  await ingestDocs(db, [{
+    source: "calendar", kind: "event", external_id: "future-1", title: "next quarter offsite",
+    occurred_at: new Date(NOW + 40 * DAY).toISOString(),
+    people: [{ ...me, role: "attendee" }, { name: "Cold Cassie", email: "cassie@x.com", role: "attendee" }],
+  }]);
+  await resolveMentions(db);
+  const r = await relationshipRadar(db, tomId, { now: NOW });
+  let cassie = null;
+  for (const x of r) {
+    const { rows } = await db.query(`select canonical_name from entities where id = $1`, [x.entity]);
+    if (rows[0].canonical_name === "Cold Cassie") cassie = x;
+  }
+  check(cassie?.daysSinceContact > 0, "a future invite doesn't produce negative days-since", cassie?.daysSinceContact);
+  check(cassie?.status === "cold", "and doesn't mask a cold relationship as active", cassie?.status);
+}
+
 console.log("[4/4] summary + privacy scoping");
 const summary = await radarSummary(db, { now: NOW });
 check(summary.counts.cold >= 1 && summary.needsAttention.length >= 2,

@@ -134,7 +134,7 @@ export async function startMcpServer() {
     "company_memory",
     "Institutional memory for a company: every recorded deal signal (investments, passes with reasoning, live evaluations) mined from IC memos, board packs, and emails — with document provenance — plus the resolved org entity, affiliated people, and related documents. Passes matter: 'have we seen this company before, and why did we say no?'",
     { company: z.string() },
-    async ({ company }) => text(await companyMemory(db, company))
+    async ({ company }) => text(await companyMemory(db, company, { viewer }))
   );
 
   server.tool(
@@ -169,7 +169,7 @@ export async function startMcpServer() {
     "review_queue",
     "Pending entity-resolution matches that need human confirmation (score between 0.70 and 0.95).",
     {},
-    async () => text(await listReviews(db))
+    async () => text(await listReviews(db, { viewer }))
   );
 
   server.tool(
