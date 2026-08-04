@@ -86,7 +86,29 @@ check(named["Cold Cassie"].trend === null,
   "no contact in either window reports no trend rather than a false 'steady'", named["Cold Cassie"].trend);
 check(named["Fading Fred"].trend === "cooling", "a real slowdown reads as cooling", named["Fading Fred"]);
 
-console.log("[3/3] summary + privacy scoping");
+console.log("[3/4] bursts and thin history don't fake a cadence");
+{
+  // Five touches in one day, then silence: a 0-day cadence would make every
+  // later day "cold". A one-day burst is not a one-day rhythm.
+  const burst = [0, 0.1, 0.2, 0.3, 0.4].map((h, i) => ({
+    source: "gmail", kind: "email", external_id: `b${i}`, title: "burst",
+    occurred_at: new Date(NOW - 9 * DAY + h * 3600000).toISOString(),
+    people: [{ ...me, role: "from" }, { name: "Burst Bella", email: "bella@x.com", role: "to" }],
+  }));
+  await ingestDocs(db, burst);
+  await resolveMentions(db);
+  const r = await relationshipRadar(db, tomId, { now: NOW });
+  const bella = {};
+  for (const x of r) {
+    const { rows } = await db.query(`select canonical_name from entities where id = $1`, [x.entity]);
+    if (rows[0].canonical_name === "Burst Bella") Object.assign(bella, x);
+  }
+  check(bella.status === "new",
+    "a single-day burst has too little span to be judged late", bella);
+  check(bella.cadenceDays >= 1, "cadence never drops below a day", bella.cadenceDays);
+}
+
+console.log("[4/4] summary + privacy scoping");
 const summary = await radarSummary(db, { now: NOW });
 check(summary.counts.cold >= 1 && summary.needsAttention.length >= 2,
   "graph-wide summary surfaces what needs attention", summary.counts);

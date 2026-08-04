@@ -19,12 +19,17 @@ function median(sorted) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-function classify({ daysSince, cadenceDays, contacts }) {
-  if (contacts < 2 || cadenceDays === null) {
-    // One recorded touch: no cadence to be late against, but it can still go stale.
+// A burst of contact inside one day is not a one-day cadence, and a history
+// that spans a few days can't tell you what "normal" looks like for a pair.
+const MIN_CADENCE_DAYS = 1;
+const MIN_SPAN_DAYS = 7;
+
+function classify({ daysSince, cadenceDays, contacts, spanDays }) {
+  if (contacts < 2 || cadenceDays === null || spanDays < MIN_SPAN_DAYS) {
+    // Not enough history to be late against — but it can still go stale.
     return daysSince > 180 ? "dormant" : "new";
   }
-  const ratio = daysSince / cadenceDays;
+  const ratio = daysSince / Math.max(cadenceDays, MIN_CADENCE_DAYS);
   if (ratio >= 3) return "cold";
   if (ratio >= 1.5) return "overdue";
   if (ratio >= 1) return "due";
@@ -70,7 +75,9 @@ export async function relationshipRadar(db, entityId, { viewer = null, limit = 2
     const daysSince = Math.floor((now - last) / DAY);
     const gaps = [];
     for (let i = 0; i + 1 < times.length; i++) gaps.push((times[i] - times[i + 1]) / DAY);
-    const cadenceDays = gaps.length ? median(gaps.sort((a, b) => a - b)) : null;
+    const rawCadence = gaps.length ? median(gaps.sort((a, b) => a - b)) : null;
+    const spanDays = (times[0] - times.at(-1)) / DAY;
+    const cadenceDays = rawCadence === null ? null : Math.max(rawCadence, MIN_CADENCE_DAYS);
 
     // Trend: contact rate over the last 90 days vs the 90 before it. With no
     // contact in either window there is no trend to report — saying "steady"
@@ -80,7 +87,7 @@ export async function relationshipRadar(db, entityId, { viewer = null, limit = 2
     const trend = recent === 0 && prior === 0 ? null
       : recent > prior ? "warming" : recent < prior ? "cooling" : "steady";
 
-    const status = classify({ daysSince, cadenceDays, contacts: times.length });
+    const status = classify({ daysSince, cadenceDays, contacts: times.length, spanDays });
     out.push({
       entity: other,
       status,
@@ -134,8 +141,10 @@ export async function radarSummary(db, { viewer = null, limit = 20, now = Date.n
     const daysSince = Math.floor((now - times[0]) / DAY);
     const gaps = [];
     for (let i = 0; i + 1 < times.length; i++) gaps.push((times[i] - times[i + 1]) / DAY);
-    const cadenceDays = gaps.length ? median(gaps.sort((x, y) => x - y)) : null;
-    const status = classify({ daysSince, cadenceDays, contacts: times.length });
+    const rawCadence = gaps.length ? median(gaps.sort((x, y) => x - y)) : null;
+    const spanDays = (times[0] - times.at(-1)) / DAY;
+    const cadenceDays = rawCadence === null ? null : Math.max(rawCadence, MIN_CADENCE_DAYS);
+    const status = classify({ daysSince, cadenceDays, contacts: times.length, spanDays });
     counts[status]++;
     items.push({
       a: p.a, b: p.b, status, contacts: times.length,
