@@ -40,7 +40,7 @@ First run shows onboarding: load the bundled (fictional) sample dataset with one
 - **Explore** — search, click a node, get a brief: strongest relationships *with the signals behind each score* ("3 meetings, 2 emails, 1 co-authored doc"), recent shared documents, one-click Markdown export.
 - **Warm path** — the best route to an introduction, maximizing end-to-end relationship strength, with introducers ranked by their *weaker* leg.
 - **Reviews** — matches scoring 0.70–0.95 wait for a human; the system never merges identities on a guess. Decisions are audited and survive rebuilds.
-- **Data** — drag-and-drop ingestion, per-source breakdown, audit trail.
+- **Data** — drag-and-drop ingestion, live connectors, team members and their privacy layers, per-source breakdown, audit trail.
 - **Settings** — what "a strong relationship" means differs by firm: signal weights, recency half-life, and saturation are editable live; saving rebuilds the graph instantly.
 
 ## Ingesting your data
@@ -114,6 +114,45 @@ Then `fundgraph sync` (resolve + rebuild edges).
 **What gets read:** live connectors (Granola, gog, Google APIs, Attio people/companies) read metadata and participant identities only. File exports (`.mbox`, `.ics`, `.csv` notes, `.jsonl`) also capture a size-capped plain-text **body** per document — stored locally in your database and mined only when you explicitly run [unstructured extraction](#unstructured-extraction). Set `FUNDGRAPH_NO_BODIES=1` to skip body capture entirely and keep the old metadata-only behavior.
 
 Adapters emit a common JSONL shape (see `sample/seed.jsonl`); to add a source, emit that shape and `fundgraph ingest file.jsonl`. Ingestion is idempotent: re-ingesting updates in place, and review history is preserved.
+
+## Privacy layers
+
+![privacy layers](docs/img/privacy-tom.png)
+
+A relationship graph is only useful if people are willing to put their inbox in
+it — and nobody wants to hand their personal email to the whole team. So each
+member connects their own sensitive sources into a **private layer** that lives
+inside the shared graph:
+
+- **Evidence is private.** Connection strengths, signals, and documents from a
+  member's layer are visible only to them. Another member's brief on the same
+  person shows a `withheldDocuments` count and nothing else.
+- **Existence is shared.** If the only route to someone runs through a
+  colleague's private layer, you're told the route exists, which hop is locked,
+  and *who to ask* — with no strength attached. That's the whole point of a
+  relationship graph: "Seb can reach Priya, ask him."
+- **Layers combine, they don't replace.** Your own evidence is summed with the
+  shared layer before saturation, so private data reinforces public data.
+
+```bash
+fundgraph members add "Seb Larkin" seb@ridgeline.vc
+fundgraph ingest seb-inbox.mbox --as "Seb Larkin"   # → Seb's private layer
+fundgraph path "Tom Merrill" "Priya Nair" --as "Tom Merrill"
+```
+
+In the dashboard, the **Viewing as** switch in the header changes layer; the
+Data tab manages members. For agents, `FUNDGRAPH_VIEWER=<member>` binds an MCP
+server to one person's view.
+
+**Trust model, stated plainly:** entity existence is shared by design — the
+graph of *who exists* is common ground, and only the evidence is partitioned.
+Removing a member forces an explicit choice: delete their documents, or move
+them into the shared layer where everyone will see them. Enforcement is
+server-side on every query, but this is a **cooperative** model for a trusted
+team on one local database, not a hostile-tenant boundary: anyone with
+filesystem access to `./data` or the ability to pass an arbitrary `?as=` can
+read any layer. Real multi-tenant isolation needs authentication, which is on
+the roadmap below.
 
 ## Design principles
 
@@ -216,11 +255,10 @@ Both suites run on throwaway databases. The codebase has been through three adve
 
 Working today: everything above. Not yet built (PRs welcome):
 
-- **Privacy layers** — per-user private sources contributing to shared answers without exposing underlying data ("a warm path exists via X" without X's emails)
 - **Bodies from live connectors** — file exports capture bodies today; the Granola/gog/Google/Attio live pulls are still metadata-only
 - **Batch extraction** — large backfills through the Anthropic Batches API at 50% token cost
 - **Merge/split tooling** — merging two entities discovered to be the same person; undo for bad merges
-- **Access control** — role-based visibility for multi-user teams
+- **Authentication** — privacy layers are enforced on every query but assume a trusted team on one machine; real multi-tenant isolation needs login and per-user sessions
 - **Scheduled sync** — periodic re-pull from live sources
 
 ## License
