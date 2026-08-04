@@ -35,6 +35,13 @@ create table if not exists entities (
   created_at     timestamptz not null default now()
 );
 alter table entities add column if not exists aliases jsonb not null default '[]';
+-- Automated senders (no-reply robots, notification services, mailing lists) are
+-- flagged, never deleted: they are hidden from relationship views by default.
+-- `automated_override` records an explicit human decision that detection must
+-- not undo.
+alter table entities add column if not exists automated boolean not null default false;
+alter table entities add column if not exists automated_reason text;
+alter table entities add column if not exists automated_override boolean;
 
 create table if not exists review_queue (
   id                  text primary key,

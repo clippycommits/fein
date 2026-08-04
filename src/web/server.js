@@ -136,7 +136,11 @@ async function route(db, req, res, url, port) {
         for (const i of items) i.name = (await getEntity(db, i.entity))?.canonical_name ?? i.entity;
         return json(res, { radar: items });
       }
-      const summary = await radarSummary(db, { viewer, limit: boundedInt(url, "limit", 25, 1, 200) });
+      const summary = await radarSummary(db, {
+        viewer,
+        limit: boundedInt(url, "limit", 25, 1, 200),
+        includeAutomated: url.searchParams.get("automated") === "1",
+      });
       for (const i of summary.needsAttention) {
         i.aName = (await getEntity(db, i.a))?.canonical_name ?? i.a;
         i.bName = (await getEntity(db, i.b))?.canonical_name ?? i.b;

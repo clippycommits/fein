@@ -40,6 +40,8 @@ const USAGE = `fundgraph — open-source agentic data layer for investment teams
                                     (investments, passes + reasoning), with provenance
   fundgraph path <from> <to>        best warm-intro path between two people
   fundgraph intros <from> <to>      rank mutual connections as introducers
+  fundgraph automated [--list]      re-detect automated senders (robots, notification services);
+                                    --list shows what is currently flagged and why
   fundgraph radar [person]          relationships needing attention, by their own cadence
                                     (a person = their radar; no arg = the whole graph)
   fundgraph review                  list pending resolution reviews
@@ -177,8 +179,10 @@ async function main() {
         extract = await extractPending(db, { onProgress: extractTicker() });
       }
       const r = await resolveMentions(db);
+      const { detectAutomated } = await import("./resolve/automated.js");
+      const auto = await detectAutomated(db);
       const e = await rebuildEdges(db);
-      out({ ...(extract ? { extract } : {}), resolve: r, edges: e, stats: await counts(db) });
+      out({ ...(extract ? { extract } : {}), resolve: r, automated: auto, edges: e, stats: await counts(db) });
       break;
     }
     case "extract": {
@@ -241,6 +245,17 @@ async function main() {
         for (const i of list) i.name = (await getEntity(db, i.entity))?.canonical_name;
         out(res);
       }
+      break;
+    }
+    case "automated": {
+      const { detectAutomated } = await import("./resolve/automated.js");
+      if (args.includes("--list")) {
+        const { rows } = await db.query(
+          `select canonical_name, automated_reason, automated_override from entities
+           where automated order by canonical_name`
+        );
+        out(rows);
+      } else out(await detectAutomated(db));
       break;
     }
     case "radar": {

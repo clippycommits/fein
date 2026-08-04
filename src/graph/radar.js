@@ -42,9 +42,12 @@ const RANK = { cold: 0, overdue: 1, due: 2, dormant: 3, new: 4, active: 5 };
  * Contact history for one person's relationships, scoped to the viewer's
  * privacy layers. `now` is injectable so results are reproducible in tests.
  */
-export async function relationshipRadar(db, entityId, { viewer = null, limit = 25, now = Date.now() } = {}) {
+export async function relationshipRadar(db, entityId, { viewer = null, limit = 25, now = Date.now(), includeAutomated = false } = {}) {
   const layers = visibleLayers(viewer);
   const lph = layers.map((_, i) => `$${i + 2}`).join(", ");
+  // Robots don't have relationships to be overdue with.
+  const humanOnly = includeAutomated ? "" :
+    "and not exists (select 1 from entities ae where ae.id = other.entity_id and ae.automated)";
 
   // Every dated document the pair both appear in, newest first.
   const { rows } = await db.query(
@@ -55,6 +58,7 @@ export async function relationshipRadar(db, entityId, { viewer = null, limit = 2
      where me.entity_id = $1 and me.kind = 'person' and other.kind = 'person'
        and other.entity_id is not null
        and d.occurred_at is not null and d.owner in (${lph})
+       ${humanOnly}
      order by other.entity_id, d.occurred_at desc`,
     [entityId, ...layers]
   );
@@ -113,9 +117,11 @@ export async function relationshipRadar(db, entityId, { viewer = null, limit = 2
  * Radar across every person the viewer can see, for the dashboard: the same
  * per-pair cadence maths, aggregated to "which relationships need attention".
  */
-export async function radarSummary(db, { viewer = null, limit = 20, now = Date.now() } = {}) {
+export async function radarSummary(db, { viewer = null, limit = 20, now = Date.now(), includeAutomated = false } = {}) {
   const layers = visibleLayers(viewer);
   const lph = layers.map((_, i) => `$${i + 1}`).join(", ");
+  const humanOnly = includeAutomated ? "" :
+    `and not exists (select 1 from entities ae where ae.id in (a.entity_id, b.entity_id) and ae.automated)`;
   const { rows } = await db.query(
     `select a.entity_id as x, b.entity_id as y, d.occurred_at
      from mentions a
@@ -123,7 +129,8 @@ export async function radarSummary(db, { viewer = null, limit = 20, now = Date.n
      join mentions b on b.document_id = d.id and b.entity_id > a.entity_id
      where a.kind = 'person' and b.kind = 'person'
        and a.entity_id is not null and b.entity_id is not null
-       and d.occurred_at is not null and d.owner in (${lph})`,
+       and d.occurred_at is not null and d.owner in (${lph})
+       ${humanOnly}`,
     layers
   );
 
