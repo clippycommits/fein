@@ -27,6 +27,19 @@ export const ExtractionResult = z.object({
       quote: z.string(),
     })
   ),
+  // Deal signals: only when the document itself records an investment
+  // decision or round. status is a closed enum so injected text can't invent
+  // new states; everything else is grounded or discarded in code.
+  deals: z.array(
+    z.object({
+      company: z.string(),
+      stage: z.string().nullable(),
+      status: z.enum(["active", "invested", "passed", "exited", "unknown"]),
+      summary: z.string(),
+      confidence: z.number(),
+      quote: z.string(),
+    })
+  ),
 });
 
 export const extractionOutputFormat = () => zodOutputFormat(ExtractionResult, "extraction");

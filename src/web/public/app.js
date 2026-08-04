@@ -61,6 +61,37 @@ addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") highlightPath([]);
 });
 
+/* ---------- viewer (privacy layer) ---------- */
+let viewer = localStorage.getItem("fundgraph.viewer") || "";
+const asParam = (sep = "?") => (viewer ? `${sep}as=${encodeURIComponent(viewer)}` : "");
+
+async function renderViewers() {
+  const members = await api("/api/members");
+  const sel = $("#viewer");
+  // A stored viewer that no longer exists must not silently keep filtering.
+  if (viewer && !members.some((m) => m.id === viewer)) {
+    viewer = "";
+    localStorage.removeItem("fundgraph.viewer");
+  }
+  sel.innerHTML = `<option value="">Shared layer only</option>` +
+    members.map((m) =>
+      `<option value="${esc(m.id)}"${m.id === viewer ? " selected" : ""}>${esc(m.name)}${
+        m.documents ? ` (${m.documents})` : ""}</option>`).join("");
+  $("#viewer-wrap").hidden = members.length === 0;
+  return members;
+}
+
+$("#viewer").addEventListener("change", async (ev) => {
+  viewer = ev.target.value;
+  if (viewer) localStorage.setItem("fundgraph.viewer", viewer);
+  else localStorage.removeItem("fundgraph.viewer");
+  const label = ev.target.selectedOptions[0]?.textContent ?? "shared layer";
+  toast(`Viewing as ${label}`, "good");
+  await Promise.all([renderGraph(), renderStats()]);
+  $("#brief").innerHTML = `<div class="empty"><p>Viewing as ${esc(label)}. Search or click a node.</p></div>`;
+  $("#path-result").innerHTML = `<div class="empty"><p>Warm paths now reflect this viewer's layers.</p></div>`;
+});
+
 /* ---------- stat tiles ---------- */
 let onboardingDismissed = false;
 
@@ -92,7 +123,7 @@ const nameToId = new Map();
 async function renderGraph() {
   $("#graph-loading").hidden = false;
   try {
-    graphData = await api("/api/graph");
+    graphData = await api(`/api/graph${asParam()}`);
   } finally {
     $("#graph-loading").hidden = true;
   }
@@ -118,7 +149,7 @@ async function renderGraph() {
 
   const link = root.append("g").selectAll("line")
     .data(graphData.links).join("line")
-    .attr("class", "link")
+    .attr("class", (d) => (d.private ? "link private" : "link"))
     .attr("stroke-width", (d) => 1 + d.strength * 4);
 
   const node = root.append("g").selectAll("g")
@@ -161,10 +192,12 @@ async function renderGraph() {
       tooltip.hidden = false;
       tooltip.style.left = `${ev.offsetX + 14}px`;
       tooltip.style.top = `${ev.offsetY + 14}px`;
-      const sig = Object.entries(d.signals).map(([k, v]) => `${v} ${esc(k)}${v === 1 ? "" : "s"}`).join(", ");
+      const sig = Object.entries(d.signals ?? {}).map(([k, v]) => `${v} ${esc(k)}${v === 1 ? "" : "s"}`).join(", ");
       tooltip.innerHTML =
         `<div class="t-name">${esc(d.source.name)} ↔ ${esc(d.target.name)}</div>` +
-        `<div class="t-sub">strength ${pct(d.strength)} · ${sig}</div>`;
+        (d.private
+          ? `<div class="t-sub">🔒 in a colleague's private layer — existence only</div>`
+          : `<div class="t-sub">strength ${pct(d.strength)} · ${sig}</div>`);
     })
     .on("mouseleave", () => { tooltip.hidden = true; });
 
@@ -264,7 +297,7 @@ $("#search").addEventListener("input", (ev) => {
 let currentBrief = null;
 
 async function showBrief(id) {
-  const b = await api(`/api/entity/${id}`);
+  const b = await api(`/api/entity/${encodeURIComponent(id)}${asParam()}`);
   currentBrief = b;
   highlightPath([id]);
   zoomTo(id);
@@ -280,6 +313,15 @@ async function showBrief(id) {
          <span class="bar-wrap"><span class="bar" data-w="${pct(c.strength)}"></span></span>
          <span class="pct">${pct(c.strength)}</span>
        </div>`).join("") : `<div class="empty"><p>No scored relationships yet.</p></div>`) +
+    (b.deals?.length
+      ? `<h3 class="section-title">Fund memory · deal history</h3>` + b.deals.map((d) =>
+        `<div class="doc-row">
+           <strong class="${d.status === "invested" ? "ok" : d.status === "passed" ? "err" : ""}">${esc(d.status.toUpperCase())}</strong>
+           ${d.stage ? ` · ${esc(d.stage)}` : ""}
+           <span class="src">· ${esc(d.document_title ?? "")}${d.occurred_at ? " · " + esc(String(d.occurred_at).slice(0, 10)) : ""}</span>
+           ${d.summary ? `<br><span class="sub">${esc(d.summary)}</span>` : ""}
+         </div>`).join("")
+      : "") +
     `<h3 class="section-title">Recent documents</h3>` +
     (b.recentDocuments.length ? b.recentDocuments.map((d) =>
       `<div class="doc-row">${esc(d.title ?? "(untitled)")} <span class="src">· ${esc(d.source)}${d.occurred_at ? " · " + esc(d.occurred_at.slice(0, 10)) : ""}</span></div>`).join("") : `<div class="empty"><p>None.</p></div>`);
@@ -322,23 +364,45 @@ $("#find-path").addEventListener("click", async () => {
   const to = nameToId.get($("#path-to").value.trim().toLowerCase());
   const out = $("#path-result");
   if (!from || !to) { out.innerHTML = `<div class="empty"><p>Pick two people from the suggestions.</p></div>`; return; }
-  const { path, introducers } = await api(`/api/path?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+  const { path, introducers, viaPrivate } =
+    await api(`/api/path?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${asParam("&")}`);
+  const hops = (steps) => steps.map((s, i) =>
+    `<div class="hop">${i
+        ? `<span class="arrow">→</span>` +
+          (s.private
+            ? `<span class="pct locked" title="Held in ${esc(s.via)}'s private layer">🔒</span>`
+            : `<span class="pct">${pct(s.viaStrength)}</span>`)
+        : ""}<span>${esc(s.name)}</span></div>`).join("");
+
   let html = "";
-  if (!path) {
-    html += `<div class="empty"><p>No connecting path found within 4 hops.</p></div>`;
+  if (!path?.path) {
+    html += `<div class="empty"><p>No connecting path you can see within 4 hops.</p></div>`;
     highlightPath([]);
   } else {
     highlightPath(path.path.map((s) => s.entity));
     html += `<div class="path-strength">path strength <strong>${pct(path.pathStrength)}</strong></div>`;
-    html += path.path.map((s, i) =>
-      `<div class="hop">${i ? `<span class="arrow">→</span><span class="pct">${pct(s.viaStrength)}</span>` : ""}
-         <span>${esc(s.name)}</span></div>`).join("");
+    html += hops(path.path);
   }
+
+  // A route through someone else's private layer: existence and owner only.
+  if (path?.privatePath) {
+    html += `<h3 class="section-title">Private route</h3>`;
+    html += hops(path.privatePath.path);
+    html += `<p class="hint locked-note">🔒 ${esc(path.privatePath.note)}</p>`;
+    highlightPath(path.privatePath.path.map((s) => s.entity));
+  }
+
   if (introducers.length) {
     html += `<h3 class="section-title">Best introducers</h3>`;
     html += introducers.map((i) =>
       `<div class="conn"><span class="grow">${esc(i.name)}</span>
         <span class="pct">${pct(i.strengthToYou)} / ${pct(i.strengthToTarget)}</span></div>`).join("");
+  }
+  if (viaPrivate?.length) {
+    html += `<h3 class="section-title">Ask a colleague</h3>`;
+    html += viaPrivate.map((v) =>
+      `<div class="conn"><span class="grow">${esc(v.owner)}</span>
+        <span class="pct locked" title="Private connection">🔒</span></div>`).join("");
   }
   out.innerHTML = html;
 });
@@ -379,6 +443,7 @@ async function renderData() {
   const [docs, audit] = await Promise.all([api("/api/documents"), api("/api/audit?limit=15")]);
   renderExtractStatus(); // independent fetch; the tab must not block on it
   renderAttio();
+  renderMembers();
   $("#sources").innerHTML = docs.sources.length
     ? `<table class="mini"><tr><th>Source</th><th>Kinds</th><th class="num">Docs</th><th>Latest</th></tr>` +
       docs.sources.map((s) =>
@@ -391,6 +456,57 @@ async function renderData() {
     `<div class="audit-row"><span class="when">${esc(String(a.at).slice(0, 16).replace("T", " "))}</span>
        · ${esc(a.action)}${a.detail?.file ? ` · ${esc(a.detail.file)}` : ""}${a.detail?.mention?.name ? ` · ${esc(a.detail.mention.name)}` : ""}</div>`).join("")
     : `<div class="empty"><p>No activity recorded yet.</p></div>`;
+}
+
+/* ---------- members & privacy layers ---------- */
+async function renderMembers() {
+  const members = await renderViewers();
+  $("#members").innerHTML = members.length
+    ? `<table class="mini"><tr><th>Member</th><th class="num">Private docs</th><th></th></tr>` +
+      members.map((m) =>
+        `<tr><td>${esc(m.name)}${m.email ? `<br><span class="src">${esc(m.email)}</span>` : ""}</td>
+           <td class="num">${m.documents}</td>
+           <td class="num"><button class="small member-remove" data-id="${esc(m.id)}"
+             data-name="${esc(m.name)}" data-docs="${m.documents}">Remove</button></td></tr>`).join("") +
+      `</table>`
+    : `<div class="empty"><p>No members yet — the whole graph is one shared layer.</p></div>`;
+  for (const btn of document.querySelectorAll(".member-remove")) {
+    btn.addEventListener("click", () => removeMember(btn.dataset));
+  }
+}
+
+$("#member-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const name = $("#member-name").value.trim();
+  if (!name) { toast("A member needs a name", "err"); return; }
+  await api("/api/members", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, email: $("#member-email").value.trim() || null }),
+  });
+  $("#member-name").value = "";
+  $("#member-email").value = "";
+  toast(`Added ${name}`, "good");
+  await renderMembers();
+});
+
+async function removeMember({ id, name, docs }) {
+  const n = Number(docs);
+  // Deleting a member must not silently expose their private documents.
+  const question = n
+    ? `Remove ${name}? They own ${n} private document${n === 1 ? "" : "s"}.\n\n` +
+      `OK = delete those documents too.\nCancel = keep them, moved into the SHARED layer (everyone will see them).`
+    : `Remove ${name}?`;
+  if (n) {
+    const deleteThem = confirm(question);
+    const q = deleteThem ? "" : "?reassign=shared";
+    await api(`/api/members/${encodeURIComponent(id)}${q}`, { method: "DELETE" });
+  } else {
+    if (!confirm(question)) return;
+    await api(`/api/members/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+  toast(`Removed ${name}`, "good");
+  await Promise.all([renderMembers(), renderStats(), renderGraph()]);
 }
 
 /* ---------- Attio connector ---------- */
@@ -493,16 +609,16 @@ async function renderExtractStatus() {
       : `credentials: ${esc(s.credentials)}`;
     el.innerHTML =
       `<div class="hint">${s.docsWithBody} document${s.docsWithBody === 1 ? "" : "s"} with text bodies ·
-        ${s.extracted} extracted (${s.extractedMentions} mentions) ·
-        ${s.failed ? `<span class="err">${s.failed} failed</span> · ` : ""}
+        ${s.extracted} extracted (${s.extractedMentions} mentions${s.deals ? `, ${s.deals} deal signals` : ""}) ·
+        ${s.exhausted ? `<span class="err">${s.exhausted} given up after repeated failures</span> · ` : ""}
         <strong>${s.pending} pending</strong><br>
         model <code>${esc(s.model)}</code> · ${creds}</div>`;
     const btn = $("#run-extract");
     btn.hidden = false;
-    btn.disabled = s.running || (s.pending === 0 && s.failed === 0);
+    btn.disabled = s.running || s.pending === 0;
     btn.textContent = s.running ? "Extraction running…"
-      : s.pending === 0 && s.failed === 0 ? "Nothing pending"
-      : `Extract ${s.pending + s.failed} document${s.pending + s.failed === 1 ? "" : "s"}`;
+      : s.pending === 0 ? "Nothing pending"
+      : `Extract ${s.pending} document${s.pending === 1 ? "" : "s"}`;
   } catch {
     el.innerHTML = `<div class="empty"><p>Extraction status unavailable.</p></div>`;
   }
@@ -521,7 +637,7 @@ $("#run-extract").addEventListener("click", async () => {
       body: JSON.stringify({}),
     });
     const x = res.extract;
-    out.innerHTML = `<span class="ok">✓</span> ${x.extracted} docs mined · ${x.mentions} mentions extracted
+    out.innerHTML = `<span class="ok">✓</span> ${x.extracted} docs mined · ${x.mentions} mentions${x.deals ? ` + ${x.deals} deal signals` : ""} extracted
       (${x.dropped} dropped by grounding) ·
       ${x.failed ? `<span class="err">${x.failed} failed</span> · ` : ""}
       ${(x.tokens.input + x.tokens.output).toLocaleString()} tokens
@@ -657,6 +773,7 @@ $("#ob-upload").addEventListener("click", () => {
 
 /* ---------- boot ---------- */
 (async () => {
+  await renderViewers();
   const s = await renderStats();
   await renderGraph();
   if (s.documents > 0) setTimeout(fitView, 1700);

@@ -49,17 +49,26 @@ create table if not exists review_queue (
 create table if not exists edges (
   a          text not null,
   b          text not null,
+  owner      text not null default '',     -- '' = shared layer; else a member id
   signals    jsonb not null default '{}',  -- {meeting: n, email: n, doc: n, mention: n}
-  strength   real not null default 0,      -- 0..1, deterministic — never LLM-scored
+  weight     real not null default 0,      -- raw evidence, summable across visible layers
+  strength   real not null default 0,      -- 1-exp(-weight/saturation) for this layer alone
   last_seen  timestamptz,
-  updated_at timestamptz not null default now(),
-  primary key (a, b)
+  updated_at timestamptz not null default now()
 );
+-- edges is a derived read model, rebuilt wholesale; these keep old databases
+-- working when the layer columns are introduced.
+alter table edges add column if not exists owner text not null default '';
+alter table edges add column if not exists weight real not null default 0;
+alter table edges drop constraint if exists edges_pkey;
+create unique index if not exists edges_pk on edges (a, b, owner);
 
 -- Unstructured extraction: document bodies + per-document bookkeeping.
--- `body` is captured by adapters; mentions gain provenance so extracted
--- mentions are distinguishable from structured-metadata ones.
+-- `body` is captured by adapters; `body_sha256` lets the pipeline decide
+-- skip/re-extract without loading bodies; mentions gain provenance so
+-- extracted mentions are distinguishable from structured-metadata ones.
 alter table documents add column if not exists body text;
+alter table documents add column if not exists body_sha256 text;
 alter table mentions add column if not exists origin text not null default 'structured';
 alter table mentions add column if not exists confidence real;
 alter table mentions add column if not exists context text;
@@ -68,13 +77,48 @@ create table if not exists extractions (
   document_id   text primary key references documents(id) on delete cascade,
   status        text not null,              -- ok | failed
   model         text,
-  input_sha256  text not null,              -- hash of (prompt version | model | body); re-extract when it drifts
+  input_sha256  text not null,              -- hash of (prompt ver | model | effort | floor | body hash)
+  attempts      int not null default 0,     -- failures at this hash; exhausted docs stop retrying
   mentions_found int not null default 0,
   input_tokens  int,
   output_tokens int,
   error         text,
   updated_at    timestamptz not null default now()
 );
+alter table extractions add column if not exists attempts int not null default 0;
+
+-- Fund memory: deal signals mined from document bodies (IC memos, board packs,
+-- update emails). Deals hang off organizations (design principle 1) — linkage
+-- to a resolved org entity happens at query time via company_norm ↔ aliases,
+-- so entity rebuilds never orphan a deal. Provenance-first: every deal points
+-- at the document it came from and carries a code-derived context snippet.
+create table if not exists deals (
+  id          text primary key,
+  document_id text not null references documents(id) on delete cascade,
+  company     text not null,
+  company_norm text not null,
+  stage       text,                      -- as written: "Series A", "seed", …
+  status      text not null default 'unknown',  -- active | invested | passed | exited | unknown
+  summary     text,                      -- model-authored, advisory, labeled as such
+  confidence  real,
+  context     text,                      -- verbatim snippet cut from the body by code
+  origin      text not null default 'extracted',
+  updated_at  timestamptz not null default now()
+);
+create index if not exists deals_company_norm on deals (company_norm);
+create index if not exists deals_document on deals (document_id);
+
+-- Privacy layers: a team member connects their own sensitive sources; those
+-- documents form a private layer visible only to them inside the shared graph.
+-- Entities (who exists) stay shared — it is the evidence, strength, and
+-- documents that are private. `owner = ''` means the shared layer.
+create table if not exists members (
+  id         text primary key,
+  name       text not null,
+  email      text,
+  created_at timestamptz not null default now()
+);
+alter table documents add column if not exists owner text not null default '';
 
 create table if not exists settings (
   key        text primary key,

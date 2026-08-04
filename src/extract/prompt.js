@@ -3,7 +3,7 @@
  * the system prompt or chunking changes — it is part of the extraction hash,
  * so changed prompts trigger re-extraction instead of serving stale results.
  */
-export const PROMPT_VERSION = "1";
+export const PROMPT_VERSION = "2";
 
 // The system prompt is static so prompt caching gets a byte-identical prefix
 // across every document in a run.
@@ -21,9 +21,16 @@ Extraction rules:
 - confidence: 0 to 1 — how certain the string denotes a real, distinct person or organization given the context. Signature blocks and letterheads are high confidence; ambiguous or instruction-embedded strings are low.
 - quote: a short verbatim fragment (at most 25 words) from the document containing the mention.
 
+Deal signals (the deals array) — fund memory:
+- Report a deal ONLY when this document itself records an investment decision, recommendation, or round involving a named company: an IC memo's INVEST/PASS recommendation, a board pack for a portfolio company, a term-sheet or round discussion. A company being merely named in passing is an org mention, not a deal.
+- company: the company's name as written. stage: the round as written ("Series A", "seed") or null. status: invested (decision or completed investment), passed (explicit pass/decline), active (live evaluation or open round), exited, else unknown.
+- summary: one factual sentence from the document's content — the decision and the stated reason. No speculation, nothing from outside this document.
+- Passes matter as much as investments: a recorded PASS with its reasoning is exactly what institutional memory needs.
+
 If the document contains no extractable entities, return empty arrays.`;
 
 export const MAX_BODY_CHARS = 100_000;   // hard cap read from the DB per doc
+export const MIN_BODY_CHARS = 40;        // floor below which a body isn't worth storing or mining
 const CHUNK_CHARS = 20_000;       // ≈5k tokens per request
 const CHUNK_OVERLAP = 1_000;
 

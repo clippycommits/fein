@@ -6,6 +6,7 @@ import { searchEntities, entityBrief, resolveRef, counts } from "../graph/querie
 import { findWarmPath, findIntroducers, strongestConnections } from "../graph/paths.js";
 import { listReviews, resolveReview } from "../resolve/review.js";
 import { getEntity } from "../graph/queries.js";
+import { companyMemory } from "../graph/memory.js";
 
 const text = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj, null, 2) }] });
 
@@ -17,7 +18,16 @@ async function ref(db, r) {
 
 export async function startMcpServer() {
   const db = await getDb();
-  const server = new McpServer({ name: "fundgraph", version: "0.1.0" });
+  const server = new McpServer({ name: "fundgraph", version: "0.2.0" });
+
+  // Which privacy layer this agent speaks for. Set FUNDGRAPH_VIEWER to a
+  // member name, email, or id to give the agent that person's private layer;
+  // unset, it sees the shared layer only.
+  let viewer = null;
+  if (process.env.FUNDGRAPH_VIEWER) {
+    const { resolveMember } = await import("../members.js");
+    viewer = (await resolveMember(db, process.env.FUNDGRAPH_VIEWER)).id;
+  }
 
   server.tool(
     "search_entities",
@@ -32,22 +42,24 @@ export async function startMcpServer() {
     { entity: z.string() },
     async ({ entity }) => {
       const e = await ref(db, entity);
-      return text(await entityBrief(db, e.id));
+      return text(await entityBrief(db, e.id, { viewer }));
     }
   );
 
   server.tool(
     "find_warm_path",
-    "Best warm-intro path between two people, maximizing the product of relationship strengths along the way.",
+    "Best warm-intro path between two people, maximizing the product of relationship strengths along the way. If the only route runs through a colleague's private layer, `privatePath` reports that it exists and who owns it — hop strengths are null and the underlying documents are never returned.",
     { from: z.string(), to: z.string() },
     async ({ from, to }) => {
       const a = await ref(db, from);
       const b = await ref(db, to);
-      const result = await findWarmPath(db, a.id, b.id);
+      const result = await findWarmPath(db, a.id, b.id, { viewer });
       if (!result) return text({ path: null, note: "no connecting path found" });
-      for (const step of result.path) {
-        const e = await getEntity(db, step.entity);
-        step.name = e?.canonical_name ?? step.entity;
+      for (const step of result.path ?? []) {
+        step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
+      }
+      for (const step of result.privatePath?.path ?? []) {
+        step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
       }
       return text(result);
     }
@@ -60,12 +72,12 @@ export async function startMcpServer() {
     async ({ from, to }) => {
       const a = await ref(db, from);
       const b = await ref(db, to);
-      const intros = await findIntroducers(db, a.id, b.id);
+      const res = await findIntroducers(db, a.id, b.id, { viewer });
+      const intros = Array.isArray(res) ? res : res.introducers;
       for (const i of intros) {
-        const e = await getEntity(db, i.entity);
-        i.name = e?.canonical_name ?? i.entity;
+        i.name = (await getEntity(db, i.entity))?.canonical_name ?? i.entity;
       }
-      return text(intros);
+      return text(res);
     }
   );
 
@@ -75,7 +87,7 @@ export async function startMcpServer() {
     { entity: z.string(), limit: z.number().optional() },
     async ({ entity, limit }) => {
       const e = await ref(db, entity);
-      const conns = await strongestConnections(db, e.id, limit ?? 10);
+      const conns = await strongestConnections(db, e.id, { viewer, limit: limit ?? 10 });
       for (const c of conns) {
         const other = await getEntity(db, c.entity);
         c.name = other?.canonical_name ?? c.entity;
@@ -90,7 +102,7 @@ export async function startMcpServer() {
     { entity: z.string(), me: z.string().optional() },
     async ({ entity, me }) => {
       const target = await ref(db, entity);
-      const brief = await entityBrief(db, target.id);
+      const brief = await entityBrief(db, target.id, { viewer });
       const prep = {
         profile: brief.entity,
         connections: brief.connections,
@@ -98,21 +110,31 @@ export async function startMcpServer() {
       };
       if (me) {
         const self = await ref(db, me);
-        const path = await findWarmPath(db, self.id, target.id);
-        if (path) {
-          for (const step of path.path) {
-            step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
-          }
+        const path = await findWarmPath(db, self.id, target.id, { viewer });
+        for (const step of path?.path ?? []) {
+          step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
         }
-        const intros = await findIntroducers(db, self.id, target.id);
+        for (const step of path?.privatePath?.path ?? []) {
+          step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
+        }
+        const introRes = await findIntroducers(db, self.id, target.id, { viewer });
+        const intros = Array.isArray(introRes) ? introRes : introRes.introducers;
         for (const i of intros) {
           i.name = (await getEntity(db, i.entity))?.canonical_name ?? i.entity;
         }
         prep.warmPath = path;
         prep.introducers = intros;
+        if (!Array.isArray(introRes)) prep.viaPrivate = introRes.viaPrivate;
       }
       return text(prep);
     }
+  );
+
+  server.tool(
+    "company_memory",
+    "Institutional memory for a company: every recorded deal signal (investments, passes with reasoning, live evaluations) mined from IC memos, board packs, and emails — with document provenance — plus the resolved org entity, affiliated people, and related documents. Passes matter: 'have we seen this company before, and why did we say no?'",
+    { company: z.string() },
+    async ({ company }) => text(await companyMemory(db, company))
   );
 
   server.tool(

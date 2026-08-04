@@ -25,11 +25,18 @@ function decay(cfg, occurredAt, now) {
   return Math.pow(0.5, days / cfg.halfLifeDays);
 }
 
-/** Full deterministic rebuild — edges are a read model over resolved mentions. */
+/**
+ * Full deterministic rebuild — edges are a read model over resolved mentions.
+ * Evidence is accumulated per privacy layer: documents in the shared layer
+ * (owner '') produce shared edges, and each member's private documents produce
+ * edges only they can see. A viewer's strength is the saturation of the summed
+ * weight across the layers visible to them, so private evidence adds to shared
+ * evidence rather than replacing it.
+ */
 export async function rebuildEdges(db, now = Date.now()) {
   const cfg = await getSettings(db);
   const { rows } = await db.query(
-    `select m.entity_id, m.role, d.id as doc_id, d.kind, d.occurred_at
+    `select m.entity_id, m.role, d.id as doc_id, d.kind, d.occurred_at, d.owner
      from mentions m join documents d on d.id = m.document_id
      where m.entity_id is not null and m.kind = 'person'
      order by d.id, m.entity_id`
@@ -37,12 +44,14 @@ export async function rebuildEdges(db, now = Date.now()) {
 
   const byDoc = new Map();
   for (const r of rows) {
-    if (!byDoc.has(r.doc_id)) byDoc.set(r.doc_id, { kind: r.kind, occurred_at: r.occurred_at, people: [] });
+    if (!byDoc.has(r.doc_id)) {
+      byDoc.set(r.doc_id, { kind: r.kind, occurred_at: r.occurred_at, owner: r.owner ?? "", people: [] });
+    }
     byDoc.get(r.doc_id).people.push({ entity: r.entity_id, role: r.role });
   }
 
   const ROLE_RANK = { from: 5, to: 4, attendee: 4, author: 3, cc: 2, mentioned: 1 };
-  const acc = new Map(); // "a|b" -> {signals, weight, lastSeen}
+  const acc = new Map(); // "owner|a|b" -> {owner, a, b, signals, weight, lastSeen}
   for (const doc of byDoc.values()) {
     const seen = new Map(); // entity -> strongest role within this doc
     for (const p of doc.people) {
@@ -56,8 +65,10 @@ export async function rebuildEdges(db, now = Date.now()) {
         const [ea, ra] = people[i];
         const [eb, rb] = people[j];
         const [a, b] = ea < eb ? [ea, eb] : [eb, ea];
-        const key = `${a}|${b}`;
-        if (!acc.has(key)) acc.set(key, { a, b, signals: Object.create(null), weight: 0, lastSeen: null });
+        const key = `${doc.owner}|${a}|${b}`;
+        if (!acc.has(key)) {
+          acc.set(key, { owner: doc.owner, a, b, signals: Object.create(null), weight: 0, lastSeen: null });
+        }
         const rec = acc.get(key);
         rec.signals[doc.kind] = (rec.signals[doc.kind] ?? 0) + 1;
         rec.weight += pairWeight(cfg, doc.kind, ra, rb) * d;
@@ -74,10 +85,17 @@ export async function rebuildEdges(db, now = Date.now()) {
       const strength = 1 - Math.exp(-rec.weight / cfg.saturation);
       if (!Number.isFinite(strength)) throw new Error(`non-finite strength for ${rec.a}|${rec.b}`);
       await tx.query(
-        `insert into edges (a, b, signals, strength, last_seen) values ($1, $2, $3, $4, $5)`,
-        [rec.a, rec.b, JSON.stringify(rec.signals), strength, rec.lastSeen]
+        `insert into edges (a, b, owner, signals, weight, strength, last_seen)
+         values ($1, $2, $3, $4, $5, $6, $7)`,
+        [rec.a, rec.b, rec.owner, JSON.stringify(rec.signals), rec.weight, strength, rec.lastSeen]
       );
     }
   });
-  return { edges: acc.size };
+  const layers = new Set([...acc.values()].map((r) => r.owner));
+  return { edges: acc.size, layers: layers.size };
+}
+
+/** Saturation is applied to summed weight, so callers can combine layers. */
+export function strengthOf(weight, cfg) {
+  return 1 - Math.exp(-weight / cfg.saturation);
 }

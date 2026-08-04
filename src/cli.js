@@ -14,7 +14,8 @@ const [, , cmd, ...args] = process.argv;
 
 const USAGE = `fundgraph — open-source agentic data layer for investment teams
 
-  fundgraph ingest <file>           ingest a file: .jsonl | .mbox (Gmail export) | .ics | .csv (CRM export)
+  fundgraph ingest <file> [--as M]  ingest a file: .jsonl | .mbox (Gmail export) | .ics | .csv (CRM export)
+                                    --as <member> puts it in that member's PRIVATE layer
   fundgraph ingest-granola [path]   ingest meetings from the local Granola cache (macOS)
   fundgraph ingest-gog <service>    live pull via the gog CLI: gmail | calendar | drive
                                     (set FUNDGRAPH_GOG_SSH=user@host to run gog on a remote machine;
@@ -35,12 +36,20 @@ const USAGE = `fundgraph — open-source agentic data layer for investment teams
   fundgraph stats                   counts of docs / mentions / entities / edges
   fundgraph entities <query>        search people and orgs
   fundgraph brief <ref>             pre-meeting brief for a person (name, email, or id)
+  fundgraph memory <company>        fund memory: every recorded deal signal for a company
+                                    (investments, passes + reasoning), with provenance
   fundgraph path <from> <to>        best warm-intro path between two people
   fundgraph intros <from> <to>      rank mutual connections as introducers
   fundgraph review                  list pending resolution reviews
   fundgraph review accept|reject <review_id>
   fundgraph demo                    ingest sample data + resolve + edges
-  fundgraph mcp                     start the MCP server (stdio)`;
+  fundgraph members                 list team members and their private layers
+  fundgraph members add <name> [email]
+  fundgraph members remove <member> [--reassign-shared]
+  fundgraph mcp                     start the MCP server (stdio)
+
+  Most read commands accept --as <member> to view as that person: the shared
+  layer plus their own private layer. Without it you see the shared layer only.`;
 
 async function loadFile(path) {
   const ext = path.toLowerCase().split(".").pop();
@@ -60,6 +69,17 @@ function extractTicker() {
       process.stderr.write(`  …${done} docs (${s.mentions} mentions, ${s.tokens.input + s.tokens.output} tokens)\n`);
     }
   };
+}
+
+/** `--as <member>` selects the viewing/owning layer for a command. */
+async function takeAs(db, args) {
+  const i = args.indexOf("--as");
+  if (i === -1) return { member: null, rest: [...args] }; // copy: caller rewrites in place
+  const ref = args[i + 1];
+  if (!ref) throw new Error("--as needs a member name, email, or id");
+  const { resolveMember } = await import("./members.js");
+  const member = await resolveMember(db, ref);
+  return { member, rest: [...args.slice(0, i), ...args.slice(i + 2)] };
 }
 
 async function refOrDie(db, r) {
@@ -90,6 +110,10 @@ async function main() {
 
   const db = await getDb();
   const out = (o) => console.log(JSON.stringify(o, null, 2));
+  const { member: as, rest: rawArgs } = await takeAs(db, args);
+  args.length = 0;
+  args.push(...rawArgs);
+  const viewer = as?.id ?? null;
 
   switch (cmd) {
     case "ingest": {
@@ -101,12 +125,13 @@ async function main() {
         const { ingestStream } = await import("./ingest/index.js");
         let ticks = 0;
         out(await ingestStream(db, streamMbox(args[0]), {
+          owner: viewer ?? "",
           onProgress: (t) => {
             if (++ticks % 5 === 0) process.stderr.write(`  …${t.docCount.toLocaleString()} messages\n`);
           },
         }));
       } else {
-        out(await ingestDocs(db, await loadFile(args[0])));
+        out(await ingestDocs(db, await loadFile(args[0]), { owner: viewer ?? "" }));
       }
       break;
     }
@@ -186,7 +211,13 @@ async function main() {
       break;
     case "brief": {
       const e = await refOrDie(db, args.join(" "));
-      out(await entityBrief(db, e.id));
+      out(await entityBrief(db, e.id, { viewer }));
+      break;
+    }
+    case "memory": {
+      if (!args.length) throw new Error("usage: fundgraph memory <company>");
+      const { companyMemory } = await import("./graph/memory.js");
+      out(await companyMemory(db, args.join(" ")));
       break;
     }
     case "path":
@@ -194,15 +225,36 @@ async function main() {
       if (args.length < 2) throw new Error(`usage: fundgraph ${cmd} <from> <to>`);
       const a = await refOrDie(db, args[0]);
       const b = await refOrDie(db, args[1]);
+      const name = async (steps) => {
+        for (const s of steps ?? []) s.name = (await getEntity(db, s.entity))?.canonical_name;
+      };
       if (cmd === "path") {
-        const p = await findWarmPath(db, a.id, b.id);
-        if (p) for (const s of p.path) s.name = (await getEntity(db, s.entity))?.canonical_name;
+        const p = await findWarmPath(db, a.id, b.id, { viewer });
+        await name(p?.path);
+        await name(p?.privatePath?.path);
         out(p ?? { path: null });
       } else {
-        const intros = await findIntroducers(db, a.id, b.id);
-        for (const i of intros) i.name = (await getEntity(db, i.entity))?.canonical_name;
-        out(intros);
+        const res = await findIntroducers(db, a.id, b.id, { viewer });
+        const list = Array.isArray(res) ? res : res.introducers;
+        for (const i of list) i.name = (await getEntity(db, i.entity))?.canonical_name;
+        out(res);
       }
+      break;
+    }
+    case "members": {
+      const m = await import("./members.js");
+      const sub = args[0];
+      if (!sub) { out(await m.listMembers(db)); break; }
+      if (sub === "add") {
+        if (!args[1]) throw new Error("usage: fundgraph members add <name> [email]");
+        out(await m.addMember(db, { name: args[1], email: args[2] }));
+      } else if (sub === "remove") {
+        if (!args[1]) throw new Error("usage: fundgraph members remove <member> [--reassign-shared]");
+        const target = await m.resolveMember(db, args[1]);
+        out(await m.removeMember(db, target.id, {
+          reassign: args.includes("--reassign-shared") ? "shared" : null,
+        }));
+      } else throw new Error("usage: fundgraph members [add|remove] …");
       break;
     }
     case "review": {

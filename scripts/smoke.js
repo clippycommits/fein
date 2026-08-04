@@ -231,8 +231,15 @@ const syn = [
   ["syn_D", "syn_E", 0.99], ["syn_A", "syn_G", 0.5], ["syn_E", "syn_G", 0.5],
   ["syn_E", "syn_T", 0.9],
 ];
+// Edge strength is derived from `weight` per privacy layer, so seed the weight
+// that yields the intended strength: w = -saturation * ln(1 - s).
+const { getSettings } = await import(join(root, "src/settings.js"));
+const synCfg = await getSettings(db);
 for (const [a, b, s] of syn) {
-  await db.query(`insert into edges (a, b, signals, strength) values ($1, $2, '{}', $3)`, [a, b, s]);
+  await db.query(
+    `insert into edges (a, b, owner, signals, weight, strength) values ($1, $2, '', '{}', $3, $4)`,
+    [a, b, -synCfg.saturation * Math.log(1 - s), s]
+  );
 }
 const synPath = await findWarmPath(db, "syn_A", "syn_T", 4);
 check(synPath !== null, "hop-bounded path is found despite cheaper long chain", synPath);

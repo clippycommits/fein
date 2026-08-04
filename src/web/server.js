@@ -8,13 +8,14 @@ import { ingestDocs } from "../ingest/index.js";
 import { loadJsonl } from "../ingest/local.js";
 import { resolveMentions } from "../resolve/pipeline.js";
 import { listReviews, resolveReview } from "../resolve/review.js";
-import { rebuildEdges } from "../graph/edges.js";
+import { rebuildEdges, strengthOf } from "../graph/edges.js";
 import { findWarmPath, findIntroducers } from "../graph/paths.js";
 import { searchEntities, entityBrief, counts, getEntity } from "../graph/queries.js";
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
 import { putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
+import { listMembers, addMember, removeMember, getMember, visibleLayers } from "../members.js";
 import { extractPending, extractionStats } from "../extract/pipeline.js";
-import { extractConfig } from "../extract/client.js";
+import { extractConfig, isAuthError } from "../extract/client.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const PUBLIC = join(ROOT, "src/web/public");
@@ -125,29 +126,38 @@ async function route(db, req, res, url, port) {
           : process.env.ANTHROPIC_AUTH_TOKEN ? "auth-token" : "ambient",
       });
     }
+    if (path === "/api/members") return json(res, await listMembers(db));
     if (path === "/api/connectors/attio") return json(res, await attioStatus(db));
-    if (path === "/api/graph") return json(res, await graphPayload(db));
+    if (path === "/api/graph") return json(res, await graphPayload(db, await viewerOf(db, url)));
     if (path === "/api/documents") return json(res, await documentsPayload(db));
     if (path === "/api/search") {
       return json(res, await searchEntities(db, String(url.searchParams.get("q") ?? "").slice(0, 200), 12));
     }
     if (path.startsWith("/api/entity/")) {
-      const brief = await entityBrief(db, path.slice("/api/entity/".length));
+      const brief = await entityBrief(db, path.slice("/api/entity/".length), { viewer: await viewerOf(db, url) });
       if (!brief) return json(res, { error: "not found" }, 404);
       return json(res, brief);
     }
     if (path === "/api/path") {
       const from = required(url, "from");
       const to = required(url, "to");
-      const result = await findWarmPath(db, from, to);
-      if (result) {
-        for (const step of result.path) {
+      const viewer = await viewerOf(db, url);
+      const nameSteps = async (steps) => {
+        for (const step of steps ?? []) {
           step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
         }
-      }
-      const intros = await findIntroducers(db, from, to);
+      };
+      const result = await findWarmPath(db, from, to, { viewer });
+      await nameSteps(result?.path);
+      await nameSteps(result?.privatePath?.path);
+      const introRes = await findIntroducers(db, from, to, { viewer });
+      const intros = Array.isArray(introRes) ? introRes : introRes.introducers;
       for (const i of intros) i.name = (await getEntity(db, i.entity))?.canonical_name ?? i.entity;
-      return json(res, { path: result, introducers: intros });
+      return json(res, {
+        path: result,
+        introducers: intros,
+        ...(Array.isArray(introRes) ? {} : { viaPrivate: introRes.viaPrivate }),
+      });
     }
     return json(res, { error: "not found" }, 404);
   }
@@ -212,10 +222,10 @@ async function route(db, req, res, url, port) {
 
   if (req.method === "POST" && path === "/api/extract") {
     if (extracting) return json(res, { error: "an extraction run is already in progress" }, 409);
-    const body = parseJson(await readBody(req));
-    const limit = Number.isFinite(Number(body.limit)) && Number(body.limit) > 0 ? Number(body.limit) : Infinity;
-    extracting = true;
+    extracting = true; // claim BEFORE the first await — the check-and-set must be atomic
     try {
+      const body = parseJson(await readBody(req));
+      const limit = Number.isFinite(Number(body.limit)) && Number(body.limit) > 0 ? Number(body.limit) : Infinity;
       const extract = await extractPending(db, { limit });
       // Extracted mentions reach the graph through the same pipeline as
       // structured ones: resolve, then rebuild the read model.
@@ -227,11 +237,32 @@ async function route(db, req, res, url, port) {
       });
       return json(res, { extract, resolved, edges, stats: await counts(db) });
     } catch (err) {
-      // Credential/config problems are the caller's to fix — surface the message.
-      throw withStatus(new Error(err.message), 400);
+      // Even an aborted run may have spent tokens — always leave an audit row.
+      const spent = err.stats?.tokens ?? null;
+      await audit(db, "extract_failed", { error: String(err.message).slice(0, 300), tokens: spent }).catch(() => {});
+      // Only credential/config problems are the caller's to fix; everything
+      // else stays a 500 so the sanitizer hides internals.
+      if (isAuthError(err) || err.statusCode) throw withStatus(err, err.statusCode ?? 400);
+      throw err;
     } finally {
       extracting = false;
     }
+  }
+
+  if (req.method === "POST" && path === "/api/members") {
+    const body = parseJson(await readBody(req));
+    const member = await addMember(db, { name: body.name, email: body.email });
+    await audit(db, "member_add", { member: member.name });
+    return json(res, member);
+  }
+
+  if (req.method === "DELETE" && path.startsWith("/api/members/")) {
+    const memberId = path.slice("/api/members/".length);
+    const reassign = url.searchParams.get("reassign") === "shared" ? "shared" : null;
+    const result = await removeMember(db, memberId, { reassign });
+    await rebuildEdges(db); // their layer is gone; the read model must follow
+    await audit(db, "member_remove", result);
+    return json(res, result);
   }
 
   // ---- Attio connector: the key is write-only, never returned ----
@@ -258,10 +289,10 @@ async function route(db, req, res, url, port) {
 
   if (req.method === "POST" && path === "/api/connectors/attio/sync") {
     if (attioSyncing) return json(res, { error: "an Attio sync is already running" }, 409);
-    const { key, config } = await resolveConnectorKey(db, "attio", "ATTIO_API_KEY");
-    if (!key) throw withStatus(new Error("connect an Attio API key first"), 400);
-    attioSyncing = true;
+    attioSyncing = true; // claim BEFORE the first await — the check-and-set must be atomic
     try {
+      const { key, config } = await resolveConnectorKey(db, "attio", "ATTIO_API_KEY");
+      if (!key) throw withStatus(new Error("connect an Attio API key first"), 400);
       const { fetchAttio } = await import("../ingest/attio.js");
       const docs = await fetchAttio({ key, includeNotes: config.includeNotes !== false });
       const ingested = await ingestDocs(db, docs);
@@ -286,6 +317,14 @@ async function route(db, req, res, url, port) {
   json(res, { error: "not found" }, 404);
 }
 
+/** `?as=<member id>` selects the viewing layer; unknown ids fall back to shared. */
+async function viewerOf(db, url) {
+  const as = url.searchParams.get("as");
+  if (!as) return null;
+  const member = await getMember(db, as);
+  return member?.id ?? null;
+}
+
 /** Presence and a masked hint only — the stored key never leaves the server. */
 async function attioStatus(db) {
   const { key, origin, config } = await resolveConnectorKey(db, "attio", "ATTIO_API_KEY");
@@ -303,18 +342,47 @@ async function attioStatus(db) {
 
 /* ---------- payload builders ---------- */
 
-async function graphPayload(db) {
+async function graphPayload(db, viewer = null) {
   const { rows: people } = await db.query(
     `select id, canonical_name, orgs from entities where kind = 'person' and merged_into is null`
   );
+  const cfg = await getSettings(db);
+  const layers = visibleLayers(viewer);
+  const lph = layers.map((_, i) => `$${i + 1}`).join(", ");
+
+  // Visible evidence is summed across the viewer's layers, then saturated once.
   const { rows: edges } = await db.query(
-    `select a, b, strength, signals, last_seen from edges where strength > 0.01`
+    `select a, b, sum(weight) as weight, max(last_seen) as last_seen,
+            jsonb_agg(signals) as signal_sets
+     from edges where owner in (${lph}) group by a, b`,
+    layers
   );
+  // Edges that exist only in other members' layers: drawn, but without
+  // strength or signals — existence is shared, evidence is not.
+  const { rows: foreign } = await db.query(
+    `select distinct e.a, e.b from edges e
+     where e.owner <> '' and e.owner not in (${lph})
+       and not exists (select 1 from edges v where v.a = e.a and v.b = e.b and v.owner in (${lph}))`,
+    layers
+  );
+
+  const links = [];
   const degree = new Map();
+  const bump = (x) => degree.set(x, (degree.get(x) ?? 0) + 1);
   for (const e of edges) {
-    degree.set(e.a, (degree.get(e.a) ?? 0) + 1);
-    degree.set(e.b, (degree.get(e.b) ?? 0) + 1);
+    const strength = strengthOf(Number(e.weight), cfg);
+    if (strength <= 0.01) continue;
+    const sets = typeof e.signal_sets === "string" ? JSON.parse(e.signal_sets) : e.signal_sets;
+    const signals = Object.create(null);
+    for (const s of sets ?? []) for (const [k, v] of Object.entries(s ?? {})) signals[k] = (signals[k] ?? 0) + v;
+    links.push({ source: e.a, target: e.b, strength, signals, last_seen: e.last_seen });
+    bump(e.a); bump(e.b);
   }
+  for (const e of foreign) {
+    links.push({ source: e.a, target: e.b, strength: 0.25, private: true, signals: {} });
+    bump(e.a); bump(e.b);
+  }
+
   return {
     nodes: people.map((p) => ({
       id: p.id,
@@ -322,11 +390,7 @@ async function graphPayload(db) {
       orgs: typeof p.orgs === "string" ? JSON.parse(p.orgs) : p.orgs,
       degree: degree.get(p.id) ?? 0,
     })),
-    links: edges.map((e) => ({
-      source: e.a, target: e.b, strength: e.strength,
-      signals: typeof e.signals === "string" ? JSON.parse(e.signals) : e.signals,
-      last_seen: e.last_seen,
-    })),
+    links,
   };
 }
 

@@ -129,7 +129,7 @@ Adapters emit a common JSONL shape (see `sample/seed.jsonl`); to add a source, e
 claude mcp add fundgraph -- node /path/to/fundgraph/src/cli.js mcp
 ```
 
-Tools: `meeting_prep` (one call: profile + relationship history + receipts + your warm paths to them), `find_warm_path`, `find_introducers`, `entity_brief`, `search_entities`, `strongest_connections`, `graph_stats`, `review_queue`, `review_resolve`.
+Tools: `meeting_prep` (one call: profile + relationship history + receipts + your warm paths to them), `company_memory` (every recorded deal signal for a company — investments *and passes with their reasoning* — with document provenance), `find_warm_path`, `find_introducers`, `entity_brief`, `search_entities`, `strongest_connections`, `graph_stats`, `review_queue`, `review_resolve`.
 
 ## CLI
 
@@ -180,6 +180,16 @@ Extraction never gets to bend the graph's rules:
 - **Idempotent + resumable** — each document records a hash of
   (prompt version, model, body); re-runs skip clean documents, re-extract
   changed ones, and retry failures. Three consecutive failures abort the run.
+
+Extraction also mines **fund memory**: when a document records an investment
+decision (an IC memo's INVEST or PASS, a board pack, a round discussion), a
+`deal` record is kept — company, stage, status, the stated reasoning, and the
+document it came from. `fundgraph memory <company>` or the `company_memory`
+MCP tool answers the question every fund eventually asks: *"have we seen this
+company before, and why did we say no?"* Deals hang off organizations
+(principle 1) and link to entities at query time, so rebuilds never orphan
+them; passes are first-class, because a recorded no is the memory that saves
+the next diligence cycle.
 
 Configuration: `FUNDGRAPH_EXTRACT_MODEL` (default `claude-opus-5`;
 `claude-haiku-4-5` is the budget option), `FUNDGRAPH_EXTRACT_EFFORT`

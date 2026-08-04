@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { extractionOutputFormat } from "./schema.js";
+import { ExtractionResult, extractionOutputFormat } from "./schema.js";
 import { SYSTEM_PROMPT, userPrompt } from "./prompt.js";
 
 /**
@@ -8,6 +8,11 @@ import { SYSTEM_PROMPT, userPrompt } from "./prompt.js";
  * Anthropic SDK: credentials resolve from ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
  * or an `ant auth login` profile; ANTHROPIC_BASE_URL is honored for gateways.
  */
+
+// Models whose API rejects the `effort` parameter (Haiku tier). Everything
+// current in the Opus/Sonnet/Fable lines accepts it.
+const NO_EFFORT = /haiku/i;
+
 export function extractConfig() {
   return {
     model: process.env.FUNDGRAPH_EXTRACT_MODEL ?? "claude-opus-5",
@@ -42,31 +47,54 @@ export function isAuthError(err) {
     /could not resolve authentication method/i.test(err?.message ?? "");
 }
 
-/** One extraction request for one chunk. Returns {people, orgs, usage}. */
+function usageOf(response) {
+  return {
+    input: (response?.usage?.input_tokens ?? 0) +
+      (response?.usage?.cache_creation_input_tokens ?? 0) +
+      (response?.usage?.cache_read_input_tokens ?? 0),
+    output: response?.usage?.output_tokens ?? 0,
+  };
+}
+
+/**
+ * One extraction request for one chunk. Returns {people, orgs, usage}.
+ * Deliberately messages.create + explicit validation rather than the parse()
+ * helper: stop_reason (refusal, truncation) must be inspected — with token
+ * usage preserved for accounting — before any schema validation can throw.
+ */
 export async function generateExtraction(doc, chunk, chunkIndex, chunkCount) {
   const cfg = extractConfig();
-  const response = await client().messages.parse({
+  const response = await client().messages.create({
     model: cfg.model,
     max_tokens: cfg.maxTokens,
-    // Static system prompt first with a cache breakpoint: every doc in a run
-    // shares the prefix, so runs bill the instructions once, not per doc.
+    // Static prompt first, with a cache marker. Note: prompts only cache above
+    // the model's minimum prefix (512 tokens on claude-opus-5) — this prompt
+    // sits under that today, so the marker is a no-op until the prompt grows;
+    // it is kept because it is harmless and future-proof.
     system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
-    output_config: { format: extractionOutputFormat(), effort: cfg.effort },
+    output_config: {
+      format: extractionOutputFormat(),
+      ...(NO_EFFORT.test(cfg.model) ? {} : { effort: cfg.effort }),
+    },
     messages: [{ role: "user", content: userPrompt(doc, chunk, chunkIndex, chunkCount) }],
   });
 
-  const usage = {
-    input: (response.usage?.input_tokens ?? 0) +
-      (response.usage?.cache_creation_input_tokens ?? 0) +
-      (response.usage?.cache_read_input_tokens ?? 0),
-    output: response.usage?.output_tokens ?? 0,
-  };
+  const usage = usageOf(response);
+  const fail = (msg) => { throw Object.assign(new Error(msg), { usage }); };
+
   if (response.stop_reason === "refusal") {
-    const category = response.stop_details?.category ?? "unspecified";
-    throw Object.assign(new Error(`model declined this document (refusal: ${category})`), { usage });
+    fail(`model declined this document (refusal: ${response.stop_details?.category ?? "unspecified"})`);
   }
-  if (!response.parsed_output) {
-    throw Object.assign(new Error("model returned no parseable extraction"), { usage });
+  if (response.stop_reason === "max_tokens") {
+    fail(`output truncated at ${cfg.maxTokens} tokens — raise FUNDGRAPH_EXTRACT_MAX_TOKENS`);
   }
-  return { ...response.parsed_output, usage };
+  const text = response.content?.find((b) => b.type === "text")?.text;
+  if (!text) fail("model returned no text content");
+  let parsed;
+  try {
+    parsed = ExtractionResult.parse(JSON.parse(text));
+  } catch (err) {
+    fail(`model output failed schema validation: ${err.message?.slice(0, 200)}`);
+  }
+  return { ...parsed, usage };
 }

@@ -14,6 +14,10 @@
     <span class="tagline">the map of reality your agents navigate</span>
   </div>
   <div class="tiles" id="tiles"></div>
+  <label id="viewer-wrap" title="Whose private layer you can see">
+    <span>Viewing as</span>
+    <select id="viewer"><option value="">Shared layer only</option></select>
+  </label>
   <button id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
 </header>
 
@@ -64,6 +68,19 @@
       <div id="extract-status"><div class="empty"><p>Loading…</p></div></div>
       <button id="run-extract" class="primary" hidden>Extract pending documents</button>
       <div id="extract-result"></div>
+      <h3 class="section-title">Team &amp; privacy layers</h3>
+      <p class="hint">Each member can connect their own sensitive sources. Those documents form a
+        <strong>private layer</strong> only they can see inside the shared graph — others learn that a
+        connection exists and who to ask, never the evidence behind it.</p>
+      <div id="members"></div>
+      <form id="member-form" class="row-form">
+        <input id="member-name" placeholder="Name" autocomplete="off">
+        <input id="member-email" placeholder="Email (optional)" autocomplete="off">
+        <button id="member-add" class="small" type="submit">Add</button>
+      </form>
+      <p class="hint">Ingest into a member's private layer from the CLI:
+        <code>fundgraph ingest inbox.mbox --as "Name"</code></p>
+
       <h3 class="section-title">Attio workspace</h3>
       <div id="attio-panel"><div class="empty"><p>Loading…</p></div></div>
       <h3 class="section-title">Connected data</h3>
