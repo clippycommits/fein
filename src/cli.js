@@ -40,6 +40,9 @@ const USAGE = `fundgraph — open-source agentic data layer for investment teams
                                     (investments, passes + reasoning), with provenance
   fundgraph path <from> <to>        best warm-intro path between two people
   fundgraph intros <from> <to>      rank mutual connections as introducers
+  fundgraph merge <keep> <lose>     merge two entities that resolution left separate
+  fundgraph unmerge <entity>        reverse a merge
+  fundgraph merges                  list merges (they survive reresolve)
   fundgraph automated [--list]      re-detect automated senders (robots, notification services);
                                     --list shows what is currently flagged and why
   fundgraph radar [person]          relationships needing attention, by their own cadence
@@ -245,6 +248,34 @@ async function main() {
         for (const i of list) i.name = (await getEntity(db, i.entity))?.canonical_name;
         out(res);
       }
+      break;
+    }
+    case "merge": {
+      if (args.length < 2) throw new Error("usage: fundgraph merge <keep> <lose>");
+      const { mergeEntities } = await import("./resolve/merge.js");
+      const keep = await refOrDie(db, args[0]);
+      const lose = await refOrDie(db, args[1]);
+      const r = await mergeEntities(db, keep.id, lose.id);
+      await rebuildEdges(db);
+      out(r);
+      break;
+    }
+    case "unmerge": {
+      if (!args[0]) throw new Error("usage: fundgraph unmerge <entity>");
+      const { unmergeEntity } = await import("./resolve/merge.js");
+      const { rows } = await db.query(
+        `select id from entities where (id = $1 or lower(canonical_name) = lower($1))
+           and merged_into is not null limit 1`, [args.join(" ")]
+      );
+      if (!rows.length) throw new Error(`no merged entity matching "${args.join(" ")}"`);
+      const r = await unmergeEntity(db, rows[0].id);
+      await rebuildEdges(db);
+      out(r);
+      break;
+    }
+    case "merges": {
+      const { listMerges } = await import("./resolve/merge.js");
+      out(await listMerges(db));
       break;
     }
     case "automated": {

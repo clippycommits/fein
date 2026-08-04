@@ -2,6 +2,7 @@ import { mentionIdentity, resolveMentions } from "./pipeline.js";
 import { resolveReview } from "./review.js";
 import { rebuildEdges } from "../graph/edges.js";
 import { audit } from "../settings.js";
+import { snapshotMerges, replayMerges } from "./merge.js";
 
 /**
  * Wipe derived state and re-run resolution from raw mentions. Human review
@@ -20,6 +21,8 @@ import { audit } from "../settings.js";
  * the database wiped with every human decision lost.
  */
 export async function reresolveAll(db) {
+  // Manual merges are human input too: snapshot by identity before the wipe.
+  const mergeSnapshot = await snapshotMerges(db);
   const outcome = await db.tx(async (tx) => {
     const { rows: decided } = await tx.query(
       `select r.status, m.norm_name, m.norm_email, e.canonical_name as cand_name,
@@ -99,11 +102,20 @@ export async function reresolveAll(db) {
       JSON.stringify(outcome.dropped)
     );
   }
+  const merges = await replayMerges(db, mergeSnapshot);
+  if (merges.dropped.length) {
+    console.warn(`reresolve: ${merges.dropped.length} manual merge(s) could not be replayed:`,
+      JSON.stringify(merges.dropped));
+  }
   const edges = await rebuildEdges(db);
   await audit(db, "reresolve", {
     decisions: outcome.decisions,
     replayed: outcome.replayed,
     dropped: outcome.dropped,
+    merges,
   });
-  return { resolved: outcome.resolved, replayed: outcome.replayed, dropped: outcome.dropped, edges };
+  return {
+    resolved: outcome.resolved, replayed: outcome.replayed, dropped: outcome.dropped,
+    merges, edges,
+  };
 }

@@ -127,6 +127,10 @@ async function route(db, req, res, url, port) {
       });
     }
     if (path === "/api/members") return json(res, await listMembers(db));
+    if (path === "/api/merges") {
+      const { listMerges } = await import("../resolve/merge.js");
+      return json(res, await listMerges(db));
+    }
     if (path === "/api/radar") {
       const { relationshipRadar, radarSummary } = await import("../graph/radar.js");
       const viewer = await viewerOf(db, url);
@@ -267,6 +271,24 @@ async function route(db, req, res, url, port) {
     } finally {
       extracting = false;
     }
+  }
+
+  if (req.method === "POST" && path === "/api/merge") {
+    const body = parseJson(await readBody(req));
+    const { mergeEntities } = await import("../resolve/merge.js");
+    if (!body.keep || !body.lose) throw withStatus(new Error("keep and lose entity ids are required"), 400);
+    const result = await mergeEntities(db, body.keep, body.lose);
+    await rebuildEdges(db);
+    return json(res, { ...result, stats: await counts(db) });
+  }
+
+  if (req.method === "POST" && path === "/api/unmerge") {
+    const body = parseJson(await readBody(req));
+    const { unmergeEntity } = await import("../resolve/merge.js");
+    if (!body.entity) throw withStatus(new Error("entity id is required"), 400);
+    const result = await unmergeEntity(db, body.entity);
+    await rebuildEdges(db);
+    return json(res, { ...result, stats: await counts(db) });
   }
 
   if (req.method === "POST" && path === "/api/members") {

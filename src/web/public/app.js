@@ -306,7 +306,10 @@ async function showBrief(id) {
   $("#brief").innerHTML =
     `<h2>${esc(e.canonical_name)}</h2>
      <div class="sub">${esc([...e.orgs, ...e.emails].join(" · "))}</div>
-     <div class="brief-actions"><button class="small" id="copy-brief">Copy brief as Markdown</button></div>
+     <div class="brief-actions">
+       <button class="small" id="copy-brief">Copy brief as Markdown</button>
+       <button class="small" id="merge-into">Merge a duplicate…</button>
+     </div>
      <h3 class="section-title">Strongest connections</h3>` +
     (b.connections.length ? b.connections.map((c) =>
       `<div class="conn" data-id="${esc(c.entity)}">
@@ -332,7 +335,36 @@ async function showBrief(id) {
     row.addEventListener("click", () => showBrief(row.dataset.id));
   }
   $("#copy-brief").addEventListener("click", copyBrief);
+  $("#merge-into").addEventListener("click", () => startMerge(e));
   document.querySelector('[data-tab="explore"]').click();
+}
+
+/**
+ * Merge a duplicate into the entity currently on screen. Resolution is
+ * conservative by design, so real data always leaves a few — this is the fix.
+ */
+async function startMerge(keeper) {
+  const q = prompt(`Merge a duplicate INTO "${keeper.canonical_name}".\n\n` +
+    `Type the duplicate's name or email. Its documents, relationships and addresses ` +
+    `move to ${keeper.canonical_name}; the merge is reversible and survives rebuilds.`);
+  if (!q?.trim()) return;
+  const matches = (await api(`/api/search?q=${encodeURIComponent(q.trim())}`))
+    .filter((m) => m.id !== keeper.id && m.kind === keeper.kind);
+  if (!matches.length) { toast(`No other ${keeper.kind} matching "${q.trim()}"`, "err"); return; }
+  const pick = matches.length === 1 ? matches[0] : matches[
+    Math.max(0, Number(prompt(`Which one?\n\n${matches.map((m, i) =>
+      `${i}: ${m.canonical_name} (${[...m.orgs, ...m.emails].slice(0, 2).join(", ")})`).join("\n")}`) || 0))
+  ];
+  if (!pick) return;
+  if (!confirm(`Merge "${pick.canonical_name}" into "${keeper.canonical_name}"?`)) return;
+  await api("/api/merge", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ keep: keeper.id, lose: pick.id }),
+  });
+  toast(`Merged ${pick.canonical_name} into ${keeper.canonical_name}`, "good");
+  await Promise.all([renderStats(), renderGraph()]);
+  await showBrief(keeper.id);
 }
 
 async function copyBrief() {

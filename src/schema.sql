@@ -42,6 +42,9 @@ alter table entities add column if not exists aliases jsonb not null default '[]
 alter table entities add column if not exists automated boolean not null default false;
 alter table entities add column if not exists automated_reason text;
 alter table entities add column if not exists automated_override boolean;
+-- What a manual merge ADDED to the survivor, recorded on the tombstone so an
+-- unmerge can subtract exactly that and no more.
+alter table entities add column if not exists merge_delta jsonb;
 
 create table if not exists review_queue (
   id                  text primary key,

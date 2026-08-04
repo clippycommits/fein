@@ -116,6 +116,33 @@ Then `fundgraph sync` (resolve + rebuild edges).
 
 Adapters emit a common JSONL shape (see `sample/seed.jsonl`); to add a source, emit that shape and `fundgraph ingest file.jsonl`. Ingestion is idempotent: re-ingesting updates in place, and review history is preserved.
 
+## Fixing what resolution missed
+
+Resolution is deliberately conservative — conflicting evidence queues for review
+rather than merging — so real data always leaves a few duplicates (a work
+address and a personal one for the same person, resolved apart). Merge them:
+
+```bash
+fundgraph merge "Alex Rivera" "alex@northgate.io"   # keep the first, absorb the second
+fundgraph unmerge "alex@northgate.io"               # reversible
+fundgraph merges                                # what's been merged
+```
+
+Or in the dashboard: open a profile → **Merge a duplicate…**. Documents,
+relationships, and addresses move to the survivor; the loser is kept as a
+tombstone rather than deleted, so the merge stays reversible and unmerging gives
+back *exactly* what the merge took (leaving an address behind would misroute
+future mentions). Like review decisions, merges are human input — they're
+recorded and **replayed after a full `reresolve`** instead of being lost.
+
+fundgraph also flags **automated senders** (no-reply robots, notification
+services) and hides them from relationship views — on a real inbox they're
+otherwise half the graph. Role addresses like `team@` or a client's `hello@` are
+treated as hints only and need broadcast behaviour (never replies, never in a
+meeting) to be flagged, because a shared mailbox usually has a human behind it.
+Nothing is deleted, every flag carries its reason, and `fundgraph automated
+--list` shows the lot.
+
 ## Relationship radar — the timing layer
 
 ![radar](docs/img/radar.png)
@@ -280,7 +307,6 @@ Working today: everything above. Not yet built (PRs welcome):
 
 - **Bodies from live connectors** — file exports capture bodies today; the Granola/gog/Google/Attio live pulls are still metadata-only
 - **Batch extraction** — large backfills through the Anthropic Batches API at 50% token cost
-- **Merge/split tooling** — merging two entities discovered to be the same person; undo for bad merges
 - **Authentication** — privacy layers are enforced on every query but assume a trusted team on one machine; real multi-tenant isolation needs login and per-user sessions
 - **Scheduled sync** — periodic re-pull from live sources
 
