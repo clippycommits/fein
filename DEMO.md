@@ -51,6 +51,34 @@ contact and that same person's Gmail address collapse into **one** entity, so
 the CRM's structure and the inbox's behavioural signal end up on the same node.
 Attio can't do that on its own — it has no view of who actually emails whom.
 
+## 5c. Privacy layers — the objection-killer (1.5 min)
+
+This answers the question every partner asks: *"I'm not putting my inbox where
+the whole team can read it."*
+
+Data tab shows the team. Seb has connected his own email — those documents are
+his **private layer**. Switch **Viewing as** to Tom, then ask for a warm path to
+Priya Nair:
+
+- Tom gets his own weak public route, **plus** "Ask a colleague: Seb Larkin 🔒"
+- The locked hop shows no strength, no documents, no titles — Tom's brief on
+  Priya says only *"2 documents withheld"*
+- Switch to Seb and the same query is a direct 55% path with both emails listed
+
+Say the point out loud: **evidence is private, existence is shared.** You learn
+that a route exists and who to ask — which is the entire value of a relationship
+graph — without anyone handing over their inbox. (Then be honest about the
+boundary: it's enforced server-side on every query, but it's a cooperative model
+for one trusted team on one machine, not a hostile-tenant wall.)
+
+## 5d. Radar — right person, right time (1 min)
+
+Radar tab. "Strength tells you who you know. Radar tells you who to contact
+*now*." Every pair's cadence is learned from real history, so *overdue* is
+relative: "Priya ↔ Maya — last contact 16d ago, usually every 10d, **6d
+overdue**." A quarterly contact silent for 40 days isn't flagged; a weekly one
+is. This is the level Vicunea's own notes describe as future work.
+
 ## 6. Make it yours (45s)
 
 Settings tab. "What counts as a strong relationship differs by firm — maybe
