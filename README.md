@@ -58,8 +58,10 @@ connecting agents, backups, Postgres mode, upgrades.
 | Gmail export (Takeout) | `fein ingest export.mbox` | none — streamed, so multi-GB archives are fine |
 | Calendar export | `fein ingest calendar.ics` | none |
 | Contacts (Google Contacts, Attio, Affinity, any CSV) | `fein ingest contacts.csv` | none |
+| LinkedIn connections export | `fein ingest Connections.csv` | none — auto-detected; "Connected On" becomes timing signal |
 | Granola (macOS) | `fein ingest-granola` | none — reads the local cache |
 | **Attio workspace (live)** | `fein ingest-attio` | `ATTIO_API_KEY` — see below |
+| **Affinity workspace (live)** | `fein ingest-affinity` | `AFFINITY_API_KEY` — key from Affinity **Settings → API** |
 | Live Gmail/Calendar/Drive via [gog](https://github.com/steipete/gogcli) | `fein ingest-gog gmail` | gog already authenticated (local, or remote via `FEIN_GOG_SSH=user@host`) |
 | Live Gmail/Calendar/Drive via Google APIs | `fein ingest-google gmail` | a Desktop OAuth client JSON in `GOOGLE_OAUTH_CREDENTIALS` |
 
@@ -118,6 +120,12 @@ contact and their emails in Gmail resolve to the same person. Pass
 with a warning rather than failing the pull).
 
 Then `fein sync` (resolve + rebuild edges).
+
+**Affinity works the same way**: its card sits next to Attio's on the Data
+tab (paste a key from Affinity **Settings → API**), or
+`export AFFINITY_API_KEY=... && fein ingest-affinity && fein sync`. Same
+write-only key handling, same privacy stance — people, organizations, and
+note *participants*; note bodies are never read.
 
 **What gets read:** live connectors (Granola, gog, Google APIs, Attio people/companies) read metadata and participant identities only. File exports (`.mbox`, `.ics`, `.csv` notes, `.jsonl`) also capture a size-capped plain-text **body** per document — stored locally in your database and mined only when you explicitly run [unstructured extraction](#unstructured-extraction). Set `FEIN_NO_BODIES=1` to skip body capture entirely and keep the old metadata-only behavior.
 
@@ -334,12 +342,11 @@ Both suites run on throwaway databases. The codebase has been through three adve
 
 ## Status & roadmap
 
-Working today: everything above. Not yet built (PRs welcome):
-
-- **Bodies from live connectors** — file exports capture bodies today; the Granola/gog/Google/Attio live pulls are still metadata-only
-- **Batch extraction** — large backfills through the Anthropic Batches API at 50% token cost
-- **Authentication** — privacy layers are enforced on every query but assume a trusted team on one machine; real multi-tenant isolation needs login and per-user sessions
-- **Scheduled sync** — periodic re-pull from live sources
+Working today: everything above, including token-gated client deployments
+(see [DEPLOY.md](DEPLOY.md)). Per-member privacy is *view* scoping behind one
+shared deployment token — real multi-tenant isolation (per-user login) is on
+the roadmap. What's next, in priority order: [ROADMAP.md](ROADMAP.md).
+PRs welcome.
 
 ## License
 

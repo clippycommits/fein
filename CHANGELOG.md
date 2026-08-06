@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.0 — 2026-08-07
+
+**The Fein release**: the product is now Fein (the fund graph for venture
+capital); the engine remains open source in the same repo, and nothing breaks
+for existing installs — `FUNDGRAPH_*` env vars, the `fundgraph` bin alias,
+`~/.fundgraph`, and `./data/fundgraph` all keep working as legacy fallbacks.
+
+### Added
+- **Client deployments**: `docker compose up -d` is a production deploy —
+  Dockerfile + compose (embedded volume, optional Postgres profile),
+  `FEIN_AUTH_TOKEN` gating every surface (Bearer for agents, a one-time
+  login page + HttpOnly cookie for browsers), `FEIN_HOST` binding that
+  refuses to leave loopback without a token, and DEPLOY.md — the
+  client-onboarding runbook (TLS, agents, backups, upgrades).
+- **Affinity connector**: people, organizations, and note participants via
+  the dashboard's Data tab or `fein ingest-affinity` (note bodies are never
+  read). The connector layer is table-driven now — a third CRM is one module
+  and one registry entry.
+- **LinkedIn Connections.csv**: sniffed inside the generic CSV path, so
+  dragging the export in just works — and "Connected On" becomes real timing
+  signal for edge strength and the relationship radar.
+- **ROADMAP.md**: prioritized next steps, seeded by the review below.
+
+### Fixed
+21 findings from a three-lens adversarial review (privacy, correctness,
+tech debt) — the most serious:
+- `company_memory` ignored its viewer: private deal snippets, document
+  titles, and people leaked to any MCP agent (all three reviewers found it).
+- A leaked/guessed entity id bypassed the hide policy via `/api/entity`, and
+  `/api/graph` emitted links to hidden entities — which also crashed the
+  dashboard graph for exactly the viewer being protected.
+- Embedded-mode transactions had no mutual exclusion (hand-rolled
+  begin/commit on a shared PGlite session): concurrent writes could
+  interleave or discard each other. Now on PGlite's real transaction mutex.
+- Re-ingesting a document silently moved it between privacy layers: the
+  layer is now part of the document's identity.
+- Warm-path private hops named private-only contacts; review decisions wrote
+  private mention text into the shared audit trail; the owner's own agent
+  couldn't find their private-only contacts (over-filtering). All fixed, and
+  the leak probe now covers every one of these paths and fails loudly if
+  auth would make it vacuous.
+- Every write endpoint returned 403 behind a reverse proxy (the cross-origin
+  guard assumed localhost); same-origin writes now work under any hostname.
+
 ## 0.3.0 — 2026-08-04
 
 **The demo-in-one-process release**: everything the demo script needs happens
