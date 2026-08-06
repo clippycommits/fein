@@ -64,9 +64,11 @@ export async function resolveReview(db, reviewId, decision) {
   }
   await db.query(`update review_queue set status = $2 where id = $1`,
     [reviewId, decision === "accept" ? "accepted" : "rejected"]);
+  // The audit trail is readable by every viewer, and the mention text can
+  // quote a private document — record ids only: existence, not evidence.
   await audit(db, `review_${decision}`, {
     review: reviewId,
-    mention: { name: mention.name, email: mention.email },
+    mention: mention.id,
     candidate: row.candidate_entity_id,
     score: row.score,
   });

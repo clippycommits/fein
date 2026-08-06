@@ -8,10 +8,14 @@ function bodySha256(body) {
   return createHash("sha256").update(body).digest("hex");
 }
 
-function docId(doc) {
-  const key = doc.external_id
+function docId(doc, owner = "") {
+  // The owner is part of the identity: the same source document ingested into
+  // two layers is two documents. Without this, a re-ingest by another member
+  // (or without --as) would silently move a private document out of its layer.
+  const key = (doc.external_id
     ? `${doc.source}:${doc.external_id}`
-    : `${doc.source}:${doc.kind}:${doc.title ?? ""}:${doc.occurred_at ?? ""}`;
+    : `${doc.source}:${doc.kind}:${doc.title ?? ""}:${doc.occurred_at ?? ""}`)
+    + (owner ? `@${owner}` : "");
   return "doc_" + createHash("sha1").update(key).digest("hex").slice(0, 12);
 }
 
@@ -58,7 +62,8 @@ async function ingestInTx(db, docs, owner = "") {
   let docCount = 0;
   let mentionCount = 0;
   for (const doc of docs) {
-    const did = docId(doc);
+    const docOwner = doc.owner ?? owner;
+    const did = docId(doc, docOwner);
     // Body policy: FEIN_NO_BODIES=1 (legacy FUNDGRAPH_NO_BODIES) disables capture for every adapter
     // AND scrubs previously stored bodies on re-ingest (the flag means "no
     // bodies, period"). Otherwise: keep a new body when the adapter provides
@@ -77,7 +82,7 @@ async function ingestInTx(db, docs, owner = "") {
          owner = $11`,
       [did, doc.source, doc.kind, doc.external_id ?? null, doc.title ?? null,
        doc.occurred_at ?? null, JSON.stringify(doc.raw ?? {}), body,
-       body ? bodySha256(body) : null, capture, doc.owner ?? owner]
+       body ? bodySha256(body) : null, capture, docOwner]
     );
     docCount++;
 

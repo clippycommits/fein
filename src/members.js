@@ -24,7 +24,15 @@ export async function getMember(db, memberId) {
 export async function addMember(db, { name, email }) {
   const clean = String(name ?? "").trim();
   if (!clean) throw new Error("a member needs a name");
-  const member = { id: id("mem"), name: clean, email: email?.trim() || null };
+  const cleanEmail = email?.trim() || null;
+  // A duplicate poisons every later --as ("Tom" matches 2 members): refuse now.
+  const { rows: dupes } = await db.query(
+    `select 1 from members where lower(name) = lower($1)
+        or ($2::text is not null and lower(email) = lower($2))`,
+    [clean, cleanEmail]
+  );
+  if (dupes.length) throw new Error(`a member named "${clean}" (or with that email) already exists`);
+  const member = { id: id("mem"), name: clean, email: cleanEmail };
   await db.query(`insert into members (id, name, email) values ($1, $2, $3)`,
     [member.id, member.name, member.email]);
   return member;

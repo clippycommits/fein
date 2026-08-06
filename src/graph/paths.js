@@ -188,7 +188,7 @@ export async function strongestConnections(db, entityId, options = {}) {
      where (a = $1 or b = $1) and owner in (${placeholders})
      group by other
      order by weight desc
-     limit ${Number(limit) || 10}`,
+     limit ${Math.min(200, Math.max(1, Number(limit) || 10))}`,
     [entityId, ...layers]
   );
   return rows.map((r) => {

@@ -12,7 +12,7 @@ import { resolveMentions } from "../resolve/pipeline.js";
 import { listReviews, resolveReview } from "../resolve/review.js";
 import { rebuildEdges, strengthOf } from "../graph/edges.js";
 import { findWarmPath, findIntroducers } from "../graph/paths.js";
-import { searchEntities, entityBrief, counts, getEntity } from "../graph/queries.js";
+import { searchEntities, entityBrief, counts, getEntity, nameSteps } from "../graph/queries.js";
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
 import { putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
 import { listMembers, addMember, removeMember, getMember, resolveMember, visibleLayers } from "../members.js";
@@ -251,7 +251,6 @@ async function route(db, req, res, url, port) {
     if (path === "/api/health") {
       return json(res, { ok: true, version: VERSION, uptimeSeconds: Math.round((Date.now() - STARTED) / 1000) });
     }
-    if (path === "/api/version") return json(res, { version: VERSION });
     if (path === "/api/stats") return json(res, await counts(db));
     if (path === "/api/settings") return json(res, await getSettings(db));
     if (path === "/api/audit") return json(res, await listAudit(db, boundedInt(url, "limit", 50, 1, 500)));
@@ -269,10 +268,6 @@ async function route(db, req, res, url, port) {
       });
     }
     if (path === "/api/members") return json(res, await listMembers(db));
-    if (path === "/api/merges") {
-      const { listMerges } = await import("../resolve/merge.js");
-      return json(res, await listMerges(db));
-    }
     if (path === "/api/radar") {
       const { relationshipRadar, radarSummary } = await import("../graph/radar.js");
       const viewer = await viewerOf(db, url);
@@ -310,14 +305,9 @@ async function route(db, req, res, url, port) {
       const from = required(url, "from");
       const to = required(url, "to");
       const viewer = await viewerOf(db, url);
-      const nameSteps = async (steps) => {
-        for (const step of steps ?? []) {
-          step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
-        }
-      };
       const result = await findWarmPath(db, from, to, { viewer });
-      await nameSteps(result?.path);
-      await nameSteps(result?.privatePath?.path);
+      await nameSteps(db, result?.path ?? [], { viewer });
+      await nameSteps(db, result?.privatePath?.path ?? [], { viewer });
       const introRes = await findIntroducers(db, from, to, { viewer });
       const intros = Array.isArray(introRes) ? introRes : introRes.introducers;
       for (const i of intros) i.name = (await getEntity(db, i.entity))?.canonical_name ?? i.entity;
@@ -576,7 +566,12 @@ async function graphPayload(db, viewer = null) {
     links.push({ source: e.a, target: e.b, strength, signals, last_seen: e.last_seen });
     bump(e.a); bump(e.b);
   }
+  // Only hint at private routes between people this viewer can already see:
+  // a dangling endpoint id is both a leak (ids are lookup keys) and a d3
+  // crash (forceLink throws on ids absent from nodes).
+  const visibleIds = new Set(people.map((p) => p.id));
   for (const e of foreign) {
+    if (!visibleIds.has(e.a) || !visibleIds.has(e.b)) continue;
     links.push({ source: e.a, target: e.b, strength: 0.25, private: true, signals: {} });
     bump(e.a); bump(e.b);
   }
@@ -632,24 +627,33 @@ async function documentsPayload(db, viewer = null) {
 
 function json(res, obj, status = 200) {
   if (res.writableEnded) return;
+  if (res.headersSent) { res.end(); return; } // mid-stream failure: close, headers can't change
   res.writeHead(status, { "content-type": "application/json", ...SECURITY_HEADERS });
   res.end(JSON.stringify(obj));
 }
 
-/** Browsers can POST to localhost from any web page — refuse cross-origin writes. */
+/** Browsers can POST to localhost from any web page — refuse cross-origin
+ * writes. A same-origin request (Origin host equals the Host the browser
+ * targeted) is allowed under any hostname, so deployments behind a domain or
+ * reverse proxy work unchanged. Requests without an Origin (curl, SDKs) pass:
+ * they are not browsers, and the auth gate covers them. The strict loopback
+ * Host check (DNS-rebinding protection) still applies to unauthenticated
+ * loopback installs — the only place rebinding is a live threat. */
 function guardCrossOrigin(req, port) {
-  const ok = (v) => {
-    try {
-      const u = new URL(v);
-      return ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname) && String(u.port || 80) === String(port);
-    } catch {
-      return false;
-    }
-  };
+  const loopback = (hostname) => ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+  const target = req.headers["x-forwarded-host"] ?? req.headers.host ?? "";
   const origin = req.headers.origin;
-  if (origin && !ok(origin)) throw withStatus(new Error("cross-origin writes are not allowed"), 403);
-  const host = req.headers.host;
-  if (host && !ok(`http://${host}`)) throw withStatus(new Error("bad host header"), 403);
+  if (origin) {
+    let o;
+    try { o = new URL(origin); } catch { throw withStatus(new Error("cross-origin writes are not allowed"), 403); }
+    const sameOrigin = o.host === target;
+    const loopbackOrigin = loopback(o.hostname) && String(o.port || 80) === String(port);
+    if (!sameOrigin && !loopbackOrigin) throw withStatus(new Error("cross-origin writes are not allowed"), 403);
+  } else if (!AUTH_TOKEN) {
+    let h;
+    try { h = new URL(`http://${target}`); } catch { throw withStatus(new Error("bad host header"), 403); }
+    if (!loopback(h.hostname)) throw withStatus(new Error("bad host header"), 403);
+  }
 }
 
 function withStatus(err, code) {
@@ -660,8 +664,8 @@ function withStatus(err, code) {
 /** Map known user-error shapes to 4xx; everything else is a 500. */
 function classify(err) {
   const m = err.message ?? "";
-  if (/(not found|no entity|no pending review)/i.test(m)) return 404;
-  if (/(unknown weight|must be a number|must be accept or reject|unsupported|invalid|decision )/i.test(m)) return 400;
+  if (/(not found|no entity|no pending review|no member|no live entity)/i.test(m)) return 404;
+  if (/(unknown weight|must be a number|must be accept or reject|unsupported|invalid|decision |cannot merge|needs a name|matches \d+ members|no name or email column|already exists)/i.test(m)) return 400;
   return 500;
 }
 
@@ -710,10 +714,17 @@ async function parseUpload(name, body) {
   const file = join(tmp, `upload${ext}`);
   try {
     writeFileSync(file, body);
-    if (ext === ".jsonl" || ext === ".json") return loadJsonl(file);
-    if (ext === ".mbox") return (await import("../ingest/mbox.js")).loadMbox(file);
-    if (ext === ".ics") return (await import("../ingest/ics.js")).loadIcs(file);
-    if (ext === ".csv") return (await import("../ingest/csv.js")).loadCsv(file);
+    try {
+      if (ext === ".jsonl" || ext === ".json") return loadJsonl(file);
+      if (ext === ".mbox") return (await import("../ingest/mbox.js")).loadMbox(file);
+      if (ext === ".ics") return (await import("../ingest/ics.js")).loadIcs(file);
+      if (ext === ".csv") return (await import("../ingest/csv.js")).loadCsv(file);
+    } catch (err) {
+      if (err.statusCode) throw err;
+      // A bad file is the user's error to fix: 400, their filename, no temp paths.
+      throw withStatus(
+        new Error(`could not parse ${name}: ${String(err.message).replaceAll(file, name)}`), 400);
+    }
     throw withStatus(new Error(`unsupported upload type ${ext} — use .jsonl, .mbox, .ics, or .csv`), 400);
   } finally {
     rmSync(tmp, { recursive: true, force: true });

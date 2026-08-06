@@ -3,6 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 const dataDir = mkdtempSync(join(tmpdir(), "fg-leak-"));
 process.env.FEIN_DATA = dataDir;
+// An ambient auth token would 401 every probe and pass this suite vacuously.
+delete process.env.FEIN_AUTH_TOKEN;
+delete process.env.FUNDGRAPH_AUTH_TOKEN;
 import { dirname, join as pjoin } from "node:path";
 import { fileURLToPath } from "node:url";
 const ROOT = pjoin(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,7 +43,7 @@ await ingestDocs(db, [{
 await resolveMentions(db);
 await rebuildEdges(db);
 
-const MARKERS = ["SECRETTITLE", "SECRETBODY", "SECRETCOMPANY"];
+const MARKERS = ["SECRETTITLE", "SECRETBODY", "SECRETCOMPANY", "SECRETPERSON"];
 const endpoints = [
   "/api/stats", "/api/graph", "/api/documents", "/api/reviews", "/api/audit",
   "/api/radar", "/api/members", "/api/settings", "/api/search?q=secret",
@@ -51,7 +54,9 @@ let leaks = 0;
 const probe = async (label, asParam) => {
   for (const ep of endpoints) {
     const url = BASE + ep + (asParam ? (ep.includes("?") ? "&" : "?") + asParam : "");
-    const text = await fetch(url).then((r) => r.text()).catch((e) => `ERR ${e.message}`);
+    const res = await fetch(url).catch(() => null);
+    if (!res || res.status === 401) { leaks++; console.log(`  FAIL [${label}] ${ep} unreachable/401 — probe is vacuous`); continue; }
+    const text = await res.text();
     for (const m of MARKERS) {
       if (text.includes(m)) { leaks++; console.log(`  LEAK [${label}] ${ep} contains ${m}`); }
     }
@@ -72,6 +77,32 @@ await probe("tom", `as=${tom.id}`);
 console.log("Probing with NO viewer (shared layer only):");
 await probe("shared", "");
 console.log(leaks ? `\n${leaks} LEAK(S) FOUND` : "  no marker reached a viewer who shouldn't see it");
+
+// A private-only person must not be reachable by direct id, and the graph
+// payload must not carry links to ids that are not in its own node list.
+{
+  const sebSearch = await fetch(`${BASE}/api/search?q=secretperson&as=${seb.id}`).then((r) => r.json());
+  const secretId = sebSearch[0]?.id;
+  if (!secretId) { leaks++; console.log("  FAIL: owner cannot find their own private contact"); }
+  else {
+    for (const [label, asParam] of [["tom", `?as=${tom.id}`], ["shared", ""]]) {
+      const res = await fetch(`${BASE}/api/entity/${secretId}${asParam}`);
+      const text = await res.text();
+      if (res.status !== 404 || MARKERS.some((m) => text.includes(m))) {
+        leaks++; console.log(`  LEAK [${label}] /api/entity/<private-only id> answered (${res.status})`);
+      }
+    }
+    const ownerRes = await fetch(`${BASE}/api/entity/${secretId}?as=${seb.id}`);
+    if (ownerRes.status !== 200) { leaks++; console.log("  FAIL: owner blocked from their own private contact"); }
+  }
+  for (const [label, asParam] of [["tom", `?as=${tom.id}`], ["shared", ""]]) {
+    const g = await fetch(`${BASE}/api/graph${asParam}`).then((r) => r.json());
+    const ids = new Set(g.nodes.map((n) => n.id));
+    const dangling = g.links.filter((l) => !ids.has(l.source) || !ids.has(l.target));
+    if (dangling.length) { leaks++; console.log(`  LEAK [${label}] /api/graph has ${dangling.length} link(s) to hidden ids`); }
+  }
+  console.log("  ok  direct-id and graph-link probes done");
+}
 
 console.log("\nControl — as SEB (owner) markers SHOULD appear:");
 let sebSees = 0;
@@ -97,6 +128,9 @@ const mcpProbe = async (label, asParam) => {
   const client = await mcpClient(asParam);
   const calls = [
     ["search_entities", { query: "secret" }],
+    ["search_entities", { query: "secretperson" }],
+    ["company_memory", { company: "secretcompany ventures" }],
+    ["entity_brief", { entity: "secretperson@secretcompany.com" }],
     ["search_entities", { query: "nair" }],
     ["entity_brief", { entity: "Seb Larkin" }],
     ["strongest_connections", { entity: "Seb Larkin" }],

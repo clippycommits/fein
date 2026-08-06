@@ -29,17 +29,56 @@ export async function getEntity(db, entityId) {
   return rows.length ? parseEntity(rows[0]) : null;
 }
 
-/** Resolve a name/email/id string to a single entity, or explain the ambiguity. */
-export async function resolveRef(db, ref) {
+/**
+ * Whether this viewer may see the entity at all under the current
+ * privateEntityVisibility policy — the same gate searchEntities applies,
+ * usable for a single known id. Guessed or leaked ids must not become a
+ * side door around the "hide" policy.
+ */
+export async function entityVisible(db, entityId, viewer = null) {
+  const { privateEntityVisibility } = await getSettings(db);
+  if (privateEntityVisibility === "reveal") return true;
+  const layers = visibleLayers(viewer);
+  const ph = layers.map((_, i) => `$${i + 2}`).join(", ");
+  const { rows } = await db.query(
+    `select 1 from mentions m join documents d on d.id = m.document_id
+     where m.entity_id = $1 and d.owner in (${ph}) limit 1`,
+    [entityId, ...layers]
+  );
+  return rows.length > 0;
+}
+
+/** Resolve a name/email/id string to a single entity, or explain the ambiguity.
+ * Viewer-scoped: an entity this viewer can't see doesn't resolve, even by id. */
+export async function resolveRef(db, ref, { viewer = null } = {}) {
   const direct = await getEntity(db, ref);
-  if (direct) return { entity: direct };
-  const matches = await searchEntities(db, ref, 5);
+  if (direct && (await entityVisible(db, direct.id, viewer))) return { entity: direct };
+  const matches = await searchEntities(db, ref, 5, { viewer });
   if (matches.length === 1) return { entity: matches[0] };
   if (matches.length === 0) return { error: `no entity matching "${ref}"` };
   return {
     error: `ambiguous ref "${ref}"`,
     candidates: matches.map((m) => ({ id: m.id, name: m.canonical_name, orgs: m.orgs })),
   };
+}
+
+/**
+ * Attach display names to warm-path steps. A private hop's job is to say
+ * *who to ask* (via), not who the contact is: an intermediate entity the
+ * viewer couldn't otherwise see stays anonymous, and its id is withheld —
+ * the id is a lookup key.
+ */
+export async function nameSteps(db, steps, { viewer = null } = {}) {
+  for (const step of steps ?? []) {
+    if (step.private && !(await entityVisible(db, step.entity, viewer))) {
+      step.name = "(private contact)";
+      step.redacted = true;
+      delete step.entity;
+    } else {
+      step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
+    }
+  }
+  return steps;
 }
 
 /**
@@ -50,6 +89,8 @@ export async function resolveRef(db, ref) {
 export async function entityBrief(db, entityId, { viewer = null } = {}) {
   const entity = await getEntity(db, entityId);
   if (!entity) return null;
+  // A raw id must not bypass the visibility policy the search gate enforces.
+  if (!(await entityVisible(db, entity.id, viewer))) return null;
 
   const connections = await strongestConnections(db, entityId, { viewer, limit: 10 });
   for (const c of connections) {
@@ -104,14 +145,23 @@ export async function entityBrief(db, entityId, { viewer = null } = {}) {
 }
 
 export async function counts(db) {
-  const one = async (sql) => Number((await db.query(sql)).rows[0].n);
+  const one = (sql) => db.query(sql).then((r) => Number(r.rows[0].n));
+  const [documents, mentions, unresolvedMentions, entities, pendingReviews, edges] =
+    await Promise.all([
+      one(`select count(*) as n from documents`),
+      one(`select count(*) as n from mentions`),
+      one(`select count(*) as n from mentions where entity_id is null`),
+      one(`select count(*) as n from entities where merged_into is null`),
+      one(`select count(*) as n from review_queue where status = 'pending'`),
+      one(`select count(*) as n from edges`),
+    ]);
   return {
-    documents: await one(`select count(*) as n from documents`),
-    mentions: await one(`select count(*) as n from mentions`),
-    unresolvedMentions: await one(`select count(*) as n from mentions where entity_id is null`),
-    entities: await one(`select count(*) as n from entities where merged_into is null`),
-    pendingReviews: await one(`select count(*) as n from review_queue where status = 'pending'`),
-    edges: await one(`select count(*) as n from edges`),
+    documents,
+    mentions,
+    unresolvedMentions,
+    entities,
+    pendingReviews,
+    edges,
     // Bodies nobody has mined yet — agents see this via graph_stats and can
     // suggest running extraction. Same definition as extractionStats().pending:
     // hash column only (no body detoast), exhausted failures excluded.

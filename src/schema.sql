@@ -148,3 +148,10 @@ create index if not exists mentions_unresolved on mentions (entity_id) where ent
 create index if not exists mentions_norm_email on mentions (norm_email);
 create index if not exists edges_a on edges (a);
 create index if not exists edges_b on edges (b);
+-- Hot-path indexes: every layer filter hits documents(owner), every radar and
+-- brief query joins mentions(document_id)/(entity_id), recency sorts hit
+-- occurred_at. Postgres does not index FKs automatically.
+create index if not exists mentions_document on mentions (document_id);
+create index if not exists mentions_entity on mentions (entity_id) where entity_id is not null;
+create index if not exists documents_owner on documents (owner);
+create index if not exists documents_occurred on documents (occurred_at desc);

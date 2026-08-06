@@ -6,7 +6,7 @@ import { SLUG, env } from "../brand.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { getDb } from "../db.js";
-import { searchEntities, entityBrief, resolveRef, counts } from "../graph/queries.js";
+import { searchEntities, entityBrief, resolveRef, counts, nameSteps } from "../graph/queries.js";
 import { findWarmPath, findIntroducers, strongestConnections } from "../graph/paths.js";
 import { listReviews, resolveReview } from "../resolve/review.js";
 import { getEntity } from "../graph/queries.js";
@@ -18,8 +18,8 @@ const VERSION = JSON.parse(
 
 const text = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj, null, 2) }] });
 
-async function ref(db, r) {
-  const res = await resolveRef(db, r);
+async function ref(db, r, viewer) {
+  const res = await resolveRef(db, r, { viewer });
   if (res.error) throw new Error(JSON.stringify(res));
   return res.entity;
 }
@@ -50,7 +50,7 @@ export function buildMcpServer(db, { viewer = null } = {}) {
     "search_entities",
     "Search people and organizations in the fund graph by name, email, or org.",
     { query: z.string() },
-    async ({ query }) => text(await searchEntities(db, query))
+    async ({ query }) => text(await searchEntities(db, query, 10, { viewer }))
   );
 
   server.tool(
@@ -58,7 +58,7 @@ export function buildMcpServer(db, { viewer = null } = {}) {
     "Pre-meeting brief: profile, strongest connections, recent documents. Accepts an entity id, name, or email.",
     { entity: z.string() },
     async ({ entity }) => {
-      const e = await ref(db, entity);
+      const e = await ref(db, entity, viewer);
       return text(await entityBrief(db, e.id, { viewer }));
     }
   );
@@ -68,16 +68,12 @@ export function buildMcpServer(db, { viewer = null } = {}) {
     "Best warm-intro path between two people, maximizing the product of relationship strengths along the way. If the only route runs through a colleague's private layer, `privatePath` reports that it exists and who owns it — hop strengths are null and the underlying documents are never returned.",
     { from: z.string(), to: z.string() },
     async ({ from, to }) => {
-      const a = await ref(db, from);
-      const b = await ref(db, to);
+      const a = await ref(db, from, viewer);
+      const b = await ref(db, to, viewer);
       const result = await findWarmPath(db, a.id, b.id, { viewer });
       if (!result) return text({ path: null, note: "no connecting path found" });
-      for (const step of result.path ?? []) {
-        step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
-      }
-      for (const step of result.privatePath?.path ?? []) {
-        step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
-      }
+      await nameSteps(db, result.path ?? [], { viewer });
+      await nameSteps(db, result.privatePath?.path ?? [], { viewer });
       return text(result);
     }
   );
@@ -87,8 +83,8 @@ export function buildMcpServer(db, { viewer = null } = {}) {
     "Rank mutual connections who could introduce `from` to `to`, scored by the weaker leg of the two relationships.",
     { from: z.string(), to: z.string() },
     async ({ from, to }) => {
-      const a = await ref(db, from);
-      const b = await ref(db, to);
+      const a = await ref(db, from, viewer);
+      const b = await ref(db, to, viewer);
       const res = await findIntroducers(db, a.id, b.id, { viewer });
       const intros = Array.isArray(res) ? res : res.introducers;
       for (const i of intros) {
@@ -103,7 +99,7 @@ export function buildMcpServer(db, { viewer = null } = {}) {
     "An entity's strongest relationships with the signals behind each score.",
     { entity: z.string(), limit: z.number().optional() },
     async ({ entity, limit }) => {
-      const e = await ref(db, entity);
+      const e = await ref(db, entity, viewer);
       const conns = await strongestConnections(db, e.id, { viewer, limit: limit ?? 10 });
       for (const c of conns) {
         const other = await getEntity(db, c.entity);
@@ -118,7 +114,7 @@ export function buildMcpServer(db, { viewer = null } = {}) {
     "Everything needed to prep a meeting with a person: profile, relationship history with receipts, recent shared documents, and (when `me` is given) your warm paths and best introducers to them. Returns structured data for you to write up.",
     { entity: z.string(), me: z.string().optional() },
     async ({ entity, me }) => {
-      const target = await ref(db, entity);
+      const target = await ref(db, entity, viewer);
       const brief = await entityBrief(db, target.id, { viewer });
       const prep = {
         profile: brief.entity,
@@ -126,14 +122,10 @@ export function buildMcpServer(db, { viewer = null } = {}) {
         recentDocuments: brief.recentDocuments,
       };
       if (me) {
-        const self = await ref(db, me);
+        const self = await ref(db, me, viewer);
         const path = await findWarmPath(db, self.id, target.id, { viewer });
-        for (const step of path?.path ?? []) {
-          step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
-        }
-        for (const step of path?.privatePath?.path ?? []) {
-          step.name = (await getEntity(db, step.entity))?.canonical_name ?? step.entity;
-        }
+        await nameSteps(db, path?.path ?? [], { viewer });
+        await nameSteps(db, path?.privatePath?.path ?? [], { viewer });
         const introRes = await findIntroducers(db, self.id, target.id, { viewer });
         const intros = Array.isArray(introRes) ? introRes : introRes.introducers;
         for (const i of intros) {
@@ -168,7 +160,7 @@ export function buildMcpServer(db, { viewer = null } = {}) {
         }
         return text(summary);
       }
-      const e = await ref(db, entity);
+      const e = await ref(db, entity, viewer);
       const items = await relationshipRadar(db, e.id, { viewer, limit: limit ?? 25 });
       for (const i of items) i.name = (await getEntity(db, i.entity))?.canonical_name ?? i.entity;
       return text({ entity: e.canonical_name, radar: items });

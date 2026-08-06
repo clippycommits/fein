@@ -68,6 +68,20 @@ try {
     "cookie unlocks the API",
   );
 
+  console.log("Proxied deployment (writes behind a hostname):");
+  {
+    const put = (headers) => fetch(`http://localhost:${PORT}/api/settings`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", ...headers },
+      body: "{}",
+    });
+    ok((await put({ origin: "https://fein.client.example", "x-forwarded-host": "fein.client.example" })).status === 200,
+      "same-origin write behind a proxy hostname works");
+    ok((await put({ origin: "https://evil.example", "x-forwarded-host": "fein.client.example" })).status === 403,
+      "cross-origin write is still refused");
+    ok((await put({})).status === 200, "no-Origin write (curl/SDK) works with auth");
+  }
+
   console.log("Bearer flow:");
   ok(
     (await fetch(`http://localhost:${PORT}/api/stats`, {

@@ -144,7 +144,7 @@ export async function radarSummary(db, { viewer = null, limit = 20, now = Date.n
   const humanOnly = includeAutomated ? "" :
     `and not exists (select 1 from entities ae where ae.id in (a.entity_id, b.entity_id) and ae.automated)`;
   const { rows } = await db.query(
-    `select a.entity_id as x, b.entity_id as y, d.occurred_at
+    `select a.entity_id as x, b.entity_id as y, d.id as doc_id, d.occurred_at
      from mentions a
      join documents d on d.id = a.document_id
      join mentions b on b.document_id = d.id and b.entity_id > a.entity_id
@@ -158,15 +158,17 @@ export async function radarSummary(db, { viewer = null, limit = 20, now = Date.n
   const pairs = new Map();
   for (const r of rows) {
     const key = `${r.x}|${r.y}`;
-    if (!pairs.has(key)) pairs.set(key, { a: r.x, b: r.y, times: new Set() });
-    pairs.get(key).times.add(new Date(r.occurred_at).getTime());
+    if (!pairs.has(key)) pairs.set(key, { a: r.x, b: r.y, docs: new Map() });
+    // Dedupe by document id, not timestamp — two all-day events legitimately
+    // share an instant (both written T00:00:00Z) but are two real contacts.
+    pairs.get(key).docs.set(r.doc_id, new Date(r.occurred_at).getTime());
   }
 
   const items = [];
   const counts = { active: 0, due: 0, overdue: 0, cold: 0, dormant: 0, new: 0 };
   for (const p of pairs.values()) {
     // Scheduled-but-not-yet-happened contact is not history to be late against.
-    const times = [...p.times].filter((t) => t <= now).sort((x, y) => y - x);
+    const times = [...p.docs.values()].filter((t) => t <= now).sort((x, y) => y - x);
     if (!times.length) {
       counts.new++;
       items.push({ a: p.a, b: p.b, status: "new", contacts: 0,

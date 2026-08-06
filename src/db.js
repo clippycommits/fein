@@ -52,17 +52,10 @@ export async function getDb() {
     const lite = new PGlite(dataDir);
     _db = {
       query: (sql, params) => lite.query(sql, params),
-      tx: async (fn) => {
-        await lite.query("begin");
-        try {
-          const result = await fn({ query: (s, p) => lite.query(s, p) });
-          await lite.query("commit");
-          return result;
-        } catch (err) {
-          await lite.query("rollback");
-          throw err;
-        }
-      },
+      // PGlite's transaction() holds the session-wide tx mutex; hand-rolled
+      // begin/commit does not, so two concurrent tx() calls would interleave
+      // inside one transaction (and one rollback could discard both).
+      tx: (fn) => lite.transaction((t) => fn({ query: (s, p) => t.query(s, p) })),
       close: async () => {
         await lite.close();
         release();
