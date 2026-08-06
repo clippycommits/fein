@@ -1,5 +1,7 @@
 import { createServer } from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { env } from "../brand.js";
 import { tmpdir } from "node:os";
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,8 +41,102 @@ const SECURITY_HEADERS = {
 
 const MAX_UPLOAD = 50 * 1024 * 1024;
 const STARTED = Date.now();
-let extracting = false;   // single-flight: extraction holds the API budget, never run two
-let attioSyncing = false; // same for connector pulls — two concurrent syncs would duplicate work
+
+// ---- access control -------------------------------------------------------
+// FEIN_AUTH_TOKEN gates everything except /api/health (for container
+// healthchecks) and /login. Agents send `Authorization: Bearer <token>`;
+// browsers land on /login once and get a cookie. Unset = open, which is only
+// acceptable on loopback — startWebServer refuses to bind further without it.
+const AUTH_TOKEN = env("AUTH_TOKEN") || null;
+const AUTH_COOKIE = "fein_auth";
+
+const sha = (s) => createHash("sha256").update(String(s)).digest();
+const tokenMatches = (candidate) =>
+  candidate != null && timingSafeEqual(sha(candidate), sha(AUTH_TOKEN));
+
+function presentedToken(req) {
+  const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "");
+  if (bearer) return bearer[1];
+  const cookie = new RegExp(`(?:^|;\\s*)${AUTH_COOKIE}=([^;]+)`).exec(req.headers.cookie ?? "");
+  return cookie ? decodeURIComponent(cookie[1]) : null;
+}
+
+const LOGIN_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fein — sign in</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0a0a0a;color:#ededed;
+       font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  form{width:min(320px,90vw);padding:2rem;border:1px solid #262626;border-radius:8px}
+  h1{font-size:1rem;font-weight:600;margin:0 0 .25rem;letter-spacing:.01em}
+  p{margin:0 0 1.25rem;color:#8a8a8a;font-size:.85rem}
+  input{width:100%;box-sizing:border-box;padding:.55rem .7rem;border:1px solid #333;border-radius:6px;
+        background:#111;color:#ededed;font:inherit}
+  input:focus{outline:none;border-color:#0070f3}
+  button{margin-top:.75rem;width:100%;padding:.55rem;border:0;border-radius:6px;background:#ededed;
+         color:#0a0a0a;font:inherit;font-weight:600;cursor:pointer}
+</style>
+<form method="GET" action="/login">
+  <h1>fein</h1>
+  <p>Enter the access token you were given.</p>
+  <input name="token" type="password" autofocus autocomplete="current-password" placeholder="Access token">
+  <button>Sign in</button>
+</form>`;
+
+/** Handle auth before routing. Returns true when the request was fully
+ * handled here (login flow or rejection) and routing must not run. */
+function handleAuth(req, res, url) {
+  if (!AUTH_TOKEN) return false;
+  const path = url.pathname;
+  if (path === "/api/health") return false;
+
+  if (path === "/login") {
+    const attempt = url.searchParams.get("token");
+    if (attempt !== null && tokenMatches(attempt)) {
+      const secure = (req.headers["x-forwarded-proto"] ?? "").includes("https") ? "; Secure" : "";
+      res.writeHead(302, {
+        location: "/",
+        "set-cookie":
+          `${AUTH_COOKIE}=${encodeURIComponent(attempt)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure}`,
+        ...SECURITY_HEADERS,
+      });
+      res.end();
+    } else {
+      // Same page for "no token yet" and "wrong token": no oracle.
+      res.writeHead(attempt === null ? 200 : 401, { "content-type": "text/html; charset=utf-8", ...SECURITY_HEADERS });
+      res.end(LOGIN_PAGE);
+    }
+    return true;
+  }
+
+  if (tokenMatches(presentedToken(req))) return false;
+
+  if (path.startsWith("/api/") || path === "/mcp") {
+    json(res, { error: "unauthorized — send Authorization: Bearer <FEIN_AUTH_TOKEN>" }, 401);
+  } else {
+    res.writeHead(302, { location: "/login", ...SECURITY_HEADERS });
+    res.end();
+  }
+  return true;
+}
+let extracting = false;        // single-flight: extraction holds the API budget, never run two
+let syncingConnector = null;   // provider name — one sync at a time, they share resolve + edge rebuilds
+
+// Adding a CRM connector = one entry here (+ a card in app.js). Each module
+// exposes verify(key) -> {workspace} and fetch({key, includeNotes}) -> docs.
+const CONNECTOR_PROVIDERS = {
+  attio: {
+    label: "Attio",
+    envVar: "ATTIO_API_KEY",
+    verify: async (key) => (await import("../ingest/attio.js")).verifyAttioKey(key),
+    fetch: async ({ key, includeNotes }) => (await import("../ingest/attio.js")).fetchAttio({ key, includeNotes }),
+  },
+  affinity: {
+    label: "Affinity",
+    envVar: "AFFINITY_API_KEY",
+    verify: async (key) => (await import("../ingest/affinity.js")).verifyAffinityKey(key),
+    fetch: async ({ key, includeNotes }) => (await import("../ingest/affinity.js")).fetchAffinity({ key, includeNotes }),
+  },
+};
 
 export async function startWebServer(port = 4321) {
   const db = await getDb();
@@ -61,6 +157,7 @@ export async function startWebServer(port = 4321) {
       console.log(`${req.method} ${url.pathname} ${res.statusCode} ${Date.now() - t0}ms`);
     });
     try {
+      if (handleAuth(req, res, url)) return;
       await route(db, req, res, url, port);
     } catch (err) {
       const status = err.statusCode ?? classify(err);
@@ -71,8 +168,17 @@ export async function startWebServer(port = 4321) {
     }
   });
 
-  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
-  console.log(`fein ${VERSION} — http://localhost:${port}`);
+  const host = env("HOST") ?? "127.0.0.1";
+  const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+  if (!loopback && !AUTH_TOKEN && env("INSECURE") !== "1") {
+    console.error(
+      `refusing to bind ${host} without auth: the whole graph would be public.\n` +
+      `Set FEIN_AUTH_TOKEN (recommended) or FEIN_INSECURE=1 if a firewall/VPN already gates access.`,
+    );
+    process.exit(1);
+  }
+  await new Promise((resolve) => server.listen(port, host, resolve));
+  console.log(`fein ${VERSION} — http://${loopback ? "localhost" : host}:${port}${AUTH_TOKEN ? " (token auth on)" : ""}`);
 
   // A single bad request must never take the server down.
   process.on("unhandledRejection", (err) => console.error("unhandled rejection:", err));
@@ -187,7 +293,8 @@ async function route(db, req, res, url, port) {
       }
       return json(res, summary);
     }
-    if (path === "/api/connectors/attio") return json(res, await attioStatus(db));
+    const conn = /^\/api\/connectors\/([a-z]+)$/.exec(path);
+    if (conn && CONNECTOR_PROVIDERS[conn[1]]) return json(res, await connectorStatus(db, conn[1]));
     if (path === "/api/graph") return json(res, await graphPayload(db, await viewerOf(db, url)));
     if (path === "/api/documents") return json(res, await documentsPayload(db, await viewerOf(db, url)));
     if (path === "/api/search") {
@@ -343,53 +450,55 @@ async function route(db, req, res, url, port) {
     return json(res, result);
   }
 
-  // ---- Attio connector: the key is write-only, never returned ----
-  if (req.method === "POST" && path === "/api/connectors/attio") {
+  // ---- CRM connectors: the key is write-only, never returned ----
+  const connWrite = /^\/api\/connectors\/([a-z]+)(\/sync)?$/.exec(path);
+  const provider = connWrite && CONNECTOR_PROVIDERS[connWrite[1]] ? connWrite[1] : null;
+  const { label, envVar } = provider ? CONNECTOR_PROVIDERS[provider] : {};
+
+  if (req.method === "POST" && provider && !connWrite[2]) {
     const body = parseJson(await readBody(req));
     const apiKey = String(body.apiKey ?? "").trim();
-    if (!apiKey) throw withStatus(new Error("paste an Attio API key"), 400);
-    const { verifyAttioKey } = await import("../ingest/attio.js");
+    if (!apiKey) throw withStatus(new Error(`paste an ${label} API key`), 400);
     let info;
     try {
-      info = await verifyAttioKey(apiKey);
+      info = await CONNECTOR_PROVIDERS[provider].verify(apiKey);
     } catch (err) {
       throw withStatus(new Error(err.message), 400);
     }
-    await putConnector(db, "attio", {
+    await putConnector(db, provider, {
       apiKey,
       includeNotes: body.includeNotes !== false,
       workspace: info.workspace,
       connectedAt: new Date().toISOString(),
     });
-    await audit(db, "connector_connect", { connector: "attio", workspace: info.workspace });
-    return json(res, { connected: true, ...(await attioStatus(db)) });
+    await audit(db, "connector_connect", { connector: provider, workspace: info.workspace });
+    return json(res, { connected: true, ...(await connectorStatus(db, provider)) });
   }
 
-  if (req.method === "POST" && path === "/api/connectors/attio/sync") {
-    if (attioSyncing) return json(res, { error: "an Attio sync is already running" }, 409);
-    attioSyncing = true; // claim BEFORE the first await — the check-and-set must be atomic
+  if (req.method === "POST" && provider && connWrite[2]) {
+    if (syncingConnector) return json(res, { error: `a ${CONNECTOR_PROVIDERS[syncingConnector].label} sync is already running` }, 409);
+    syncingConnector = provider; // claim BEFORE the first await — the check-and-set must be atomic
     try {
-      const { key, config } = await resolveConnectorKey(db, "attio", "ATTIO_API_KEY");
-      if (!key) throw withStatus(new Error("connect an Attio API key first"), 400);
-      const { fetchAttio } = await import("../ingest/attio.js");
-      const docs = await fetchAttio({ key, includeNotes: config.includeNotes !== false });
+      const { key, config } = await resolveConnectorKey(db, provider, envVar);
+      if (!key) throw withStatus(new Error(`connect an ${label} API key first`), 400);
+      const docs = await CONNECTOR_PROVIDERS[provider].fetch({ key, includeNotes: config.includeNotes !== false });
       const ingested = await ingestDocs(db, docs);
       const resolved = await resolveMentions(db);
       const edges = await rebuildEdges(db);
-      await putConnector(db, "attio", { lastSyncAt: new Date().toISOString(), lastDocCount: ingested.docCount });
-      await audit(db, "ingest", { file: "attio workspace", ...ingested });
-      return json(res, { ingested, resolved, edges, stats: await counts(db), ...(await attioStatus(db)) });
+      await putConnector(db, provider, { lastSyncAt: new Date().toISOString(), lastDocCount: ingested.docCount });
+      await audit(db, "ingest", { file: `${provider} workspace`, ...ingested });
+      return json(res, { ingested, resolved, edges, stats: await counts(db), ...(await connectorStatus(db, provider)) });
     } catch (err) {
       throw withStatus(new Error(err.message), 400);
     } finally {
-      attioSyncing = false;
+      syncingConnector = null;
     }
   }
 
-  if (req.method === "DELETE" && path === "/api/connectors/attio") {
-    await deleteConnector(db, "attio");
-    await audit(db, "connector_disconnect", { connector: "attio" });
-    return json(res, { connected: false, ...(await attioStatus(db)) });
+  if (req.method === "DELETE" && provider) {
+    await deleteConnector(db, provider);
+    await audit(db, "connector_disconnect", { connector: provider });
+    return json(res, { connected: false, ...(await connectorStatus(db, provider)) });
   }
 
   json(res, { error: "not found" }, 404);
@@ -404,17 +513,21 @@ async function viewerOf(db, url) {
 }
 
 /** Presence and a masked hint only — the stored key never leaves the server. */
-async function attioStatus(db) {
-  const { key, origin, config } = await resolveConnectorKey(db, "attio", "ATTIO_API_KEY");
+async function connectorStatus(db, provider) {
+  const { label, envVar } = CONNECTOR_PROVIDERS[provider];
+  const { key, origin, config } = await resolveConnectorKey(db, provider, envVar);
   return {
+    provider,
+    label,
+    envVar,
     connected: Boolean(key),
-    origin,                       // "stored" (pasted here) | "env" (ATTIO_API_KEY) | null
+    origin,                       // "stored" (pasted here) | "env" (the provider's env var) | null
     keyHint: key ? maskKey(key) : null,
     workspace: config.workspace ?? null,
     includeNotes: config.includeNotes !== false,
     lastSyncAt: config.lastSyncAt ?? null,
     lastDocCount: config.lastDocCount ?? null,
-    syncing: attioSyncing,
+    syncing: syncingConnector === provider,
   };
 }
 

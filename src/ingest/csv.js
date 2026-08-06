@@ -6,10 +6,16 @@ import { readFileSync } from "node:fs";
  * wildly between tools ("Email", "E-mail 1 - Value", "Primary Email"), so
  * headers are normalized before matching.
  */
+import { linkedInHeaderRow, docsFromLinkedIn } from "./linkedin.js";
+
 const norm = (h) => h.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 
 export function loadCsv(path) {
   const rows = parseCsv(readFileSync(path, "utf8"));
+  // A LinkedIn Connections.csv is a CSV too — the dedicated adapter keeps
+  // its "Connected On" timing signal, which the generic mapping would drop.
+  const liHeader = linkedInHeaderRow(rows);
+  if (liHeader !== -1) return docsFromLinkedIn(rows, liHeader);
   if (rows.length < 2) return [];
   const header = rows[0].map(norm);
 

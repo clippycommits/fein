@@ -24,6 +24,8 @@ const USAGE = `fein — open-source agentic data layer for investment teams
                                     (needs GOOGLE_OAUTH_CREDENTIALS; prefer ingest-gog if you have gog)
   fein ingest-attio            pull people, companies + notes from an Attio workspace
                                     (needs ATTIO_API_KEY; pass --no-notes to skip notes)
+  fein ingest-affinity         pull people, organizations + notes from an Affinity CRM
+                                    (needs AFFINITY_API_KEY; pass --no-notes to skip notes)
   fein sync [--extract]        resolve + rebuild edges (add --extract to mine bodies first)
   fein extract [--limit N]     LLM mention extraction over unprocessed document bodies
                                     (Anthropic API: set ANTHROPIC_API_KEY or use \`ant auth login\`;
@@ -162,6 +164,12 @@ async function main() {
     case "ingest-attio": {
       const { fetchAttio } = await import("./ingest/attio.js");
       out(await ingestDocs(db, await fetchAttio({ includeNotes: args[0] !== "--no-notes" }),
+        { owner: viewer ?? "" }));
+      break;
+    }
+    case "ingest-affinity": {
+      const { fetchAffinity } = await import("./ingest/affinity.js");
+      out(await ingestDocs(db, await fetchAffinity({ includeNotes: args[0] !== "--no-notes" }),
         { owner: viewer ?? "" }));
       break;
     }

@@ -1,0 +1,39 @@
+# Fein client deployment.
+#
+#   cp .env.example .env      # then set FEIN_AUTH_TOKEN (openssl rand -hex 24)
+#   docker compose up -d      # dashboard + MCP on :4321, data in a volume
+#
+# Default is the embedded database (zero setup). For installs beyond ~100k
+# documents, run real Postgres alongside:
+#
+#   docker compose --profile postgres up -d
+#
+# and uncomment DATABASE_URL below.
+services:
+  fein:
+    build: .
+    ports:
+      - "${FEIN_PUBLISH:-127.0.0.1:4321}:4321"
+    environment:
+      FEIN_AUTH_TOKEN: ${FEIN_AUTH_TOKEN:?set FEIN_AUTH_TOKEN in .env — openssl rand -hex 24}
+      # DATABASE_URL: postgres://fein:${POSTGRES_PASSWORD:-fein}@db:5432/fein
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}   # enables LLM mention extraction
+      # FEIN_NO_BODIES: "1"                         # metadata-only ingestion
+    volumes:
+      - fein-data:/data
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: fein
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fein}
+      POSTGRES_DB: fein
+    volumes:
+      - fein-pg:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  fein-data:
+  fein-pg:

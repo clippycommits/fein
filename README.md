@@ -31,6 +31,13 @@ npm start          # → http://localhost:4321
 
 First run shows onboarding: load the bundled (fictional) sample dataset with one click — it seeds the whole demo world, including a two-member team with a private layer — or drop in your own export. The dashboard also serves the [MCP endpoint](#mcp--agents-on-the-graph) at `/mcp`, so agents and the UI share one process. Embedded mode is **single-process** (a lockfile enforces this): stop the web server before running CLI ingests, or use `DATABASE_URL` to run several processes.
 
+## Deploying for a team
+
+`docker compose up -d` with one env var is a production deploy: token-gated
+dashboard + MCP endpoint, data in a volume, fail-closed if the token is
+missing. [DEPLOY.md](DEPLOY.md) is the client-onboarding runbook — TLS,
+connecting agents, backups, Postgres mode, upgrades.
+
 ## The dashboard
 
 | | |

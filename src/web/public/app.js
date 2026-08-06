@@ -21,6 +21,11 @@ async function api(path, opts) {
     throw new Error("network");
   }
   const body = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    // Session cookie expired or missing — the login page is the only fix.
+    location.href = "/login";
+    throw new Error("unauthorized");
+  }
   if (!res.ok) {
     // Surface every failure — a silent dead button is worse than an error.
     const msg = body.error ?? res.statusText;
@@ -503,7 +508,8 @@ async function renderReviews() {
 async function renderData() {
   const [docs, audit] = await Promise.all([api(`/api/documents${asParam()}`), api("/api/audit?limit=15")]);
   renderExtractStatus(); // independent fetch; the tab must not block on it
-  renderAttio();
+  renderConnector("attio");
+  renderConnector("affinity");
   renderMembers();
   renderMcp();
   $("#sources").innerHTML = docs.sources.length
@@ -606,34 +612,41 @@ function renderMcp() {
   });
 }
 
-/* ---------- Attio connector ---------- */
-async function renderAttio() {
-  const panel = $("#attio-panel");
+/* ---------- CRM connectors (Attio, Affinity — one card each) ---------- */
+const CONNECTOR_HELP = {
+  attio: `Paste an Attio access token to pull people, companies, and notes.
+     Create one in Attio under <em>Workspace settings → Developers</em> with read
+     access to records (add the notes scope to include notes).`,
+  affinity: `Paste an Affinity API key to pull people, organizations, and note
+     participants. Generate one in Affinity under <em>Settings → API</em>.`,
+};
+
+async function renderConnector(provider) {
+  const panel = $(`#${provider}-panel`);
   let s;
   try {
-    s = await api("/api/connectors/attio");
+    s = await api(`/api/connectors/${provider}`);
   } catch {
     panel.innerHTML = `<div class="empty"><p>Could not read connector status.</p></div>`;
     return;
   }
+  const label = s.label;
 
   if (!s.connected) {
     panel.innerHTML =
       `<div class="connector">
          <div class="status"><span class="dot"></span><strong>Not connected</strong></div>
-         <p class="hint">Paste an Attio access token to pull people, companies, and notes.
-           Create one in Attio under <em>Workspace settings → Developers</em> with read
-           access to records (add the notes scope to include notes).</p>
-         <input id="attio-key" type="password" placeholder="Attio API key" autocomplete="off" spellcheck="false">
-         <label class="check"><input id="attio-notes" type="checkbox" checked> Include notes</label>
-         <button id="attio-connect" class="primary">Connect &amp; sync</button>
+         <p class="hint">${CONNECTOR_HELP[provider]}</p>
+         <input id="${provider}-key" type="password" placeholder="${label} API key" autocomplete="off" spellcheck="false">
+         <label class="check"><input id="${provider}-notes" type="checkbox" checked> Include notes</label>
+         <button id="${provider}-connect" class="primary">Connect &amp; sync</button>
        </div>`;
-    $("#attio-key").addEventListener("keydown", (ev) => { if (ev.key === "Enter") connectAttio(); });
-    $("#attio-connect").addEventListener("click", connectAttio);
+    $(`#${provider}-key`).addEventListener("keydown", (ev) => { if (ev.key === "Enter") connectConnector(provider); });
+    $(`#${provider}-connect`).addEventListener("click", () => connectConnector(provider));
     return;
   }
 
-  const where = s.origin === "env" ? "from ATTIO_API_KEY" : `key ${s.keyHint}`;
+  const where = s.origin === "env" ? `from ${s.envVar}` : `key ${s.keyHint}`;
   panel.innerHTML =
     `<div class="connector">
        <div class="status"><span class="dot on"></span>
@@ -644,44 +657,44 @@ async function renderAttio() {
                 s.lastDocCount != null ? ` · ${s.lastDocCount} records` : ""}`
             : "not synced yet"}</div>
        <div class="row">
-         <button id="attio-sync" class="primary">${s.lastSyncAt ? "Sync now" : "Sync workspace"}</button>
-         ${s.origin === "stored" ? `<button id="attio-disconnect" class="small">Disconnect</button>` : ""}
+         <button id="${provider}-sync" class="primary">${s.lastSyncAt ? "Sync now" : "Sync workspace"}</button>
+         ${s.origin === "stored" ? `<button id="${provider}-disconnect" class="small">Disconnect</button>` : ""}
        </div>
-       <div id="attio-result"></div>
+       <div id="${provider}-result"></div>
      </div>`;
-  $("#attio-sync").addEventListener("click", syncAttio);
-  $("#attio-disconnect")?.addEventListener("click", disconnectAttio);
+  $(`#${provider}-sync`).addEventListener("click", () => syncConnector(provider));
+  $(`#${provider}-disconnect`)?.addEventListener("click", () => disconnectConnector(provider));
 }
 
-async function connectAttio() {
-  const key = $("#attio-key").value.trim();
-  if (!key) { toast("Paste an Attio API key first", "err"); return; }
-  const btn = $("#attio-connect");
+async function connectConnector(provider) {
+  const key = $(`#${provider}-key`).value.trim();
+  if (!key) { toast("Paste an API key first", "err"); return; }
+  const btn = $(`#${provider}-connect`);
   btn.disabled = true;
   btn.textContent = "Verifying…";
   try {
-    await api("/api/connectors/attio", {
+    const s = await api(`/api/connectors/${provider}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ apiKey: key, includeNotes: $("#attio-notes").checked }),
+      body: JSON.stringify({ apiKey: key, includeNotes: $(`#${provider}-notes`).checked }),
     });
-    toast("Attio connected", "good");
-    await renderAttio();
-    await syncAttio(); // "paste it and it works" — connecting implies the first pull
+    toast(`${s.label} connected`, "good");
+    await renderConnector(provider);
+    await syncConnector(provider); // "paste it and it works" — connecting implies the first pull
   } catch {
     btn.disabled = false;
     btn.textContent = "Connect & sync";
   }
 }
 
-async function syncAttio() {
-  const btn = $("#attio-sync");
+async function syncConnector(provider) {
+  const btn = $(`#${provider}-sync`);
   if (btn) { btn.disabled = true; btn.textContent = "Syncing…"; }
-  const out = $("#attio-result");
+  const out = $(`#${provider}-result`);
   if (out) out.innerHTML = `<p class="hint">Pulling people, companies and notes…</p>`;
   try {
-    const res = await api("/api/connectors/attio/sync", { method: "POST" });
-    toast(`Attio synced: ${res.ingested.docCount} records`, "good");
+    const res = await api(`/api/connectors/${provider}/sync`, { method: "POST" });
+    toast(`${res.label} synced: ${res.ingested.docCount} records`, "good");
     await Promise.all([renderStats(), renderGraph(), renderData()]);
   } catch (err) {
     if (out) out.innerHTML = `<p class="hint err">${esc(err.message)}</p>`;
@@ -689,11 +702,11 @@ async function syncAttio() {
   }
 }
 
-async function disconnectAttio() {
-  if (!confirm("Disconnect Attio? The stored key is deleted; data already ingested stays.")) return;
-  await api("/api/connectors/attio", { method: "DELETE" });
-  toast("Attio disconnected", "good");
-  await renderAttio();
+async function disconnectConnector(provider) {
+  if (!confirm("Disconnect? The stored key is deleted; data already ingested stays.")) return;
+  const s = await api(`/api/connectors/${provider}`, { method: "DELETE" });
+  toast(`${s.label} disconnected`, "good");
+  await renderConnector(provider);
 }
 
 /* ---------- extraction ---------- */
