@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { env } from "../brand.js";
 import { mentionId } from "../ingest/index.js";
 import { normEmail, normPersonName, normOrgName } from "../resolve/normalize.js";
 import { PROMPT_VERSION, chunkBody, MIN_BODY_CHARS } from "./prompt.js";
@@ -11,7 +12,7 @@ const MAX_ATTEMPTS = 3; // per (prompt, model, body) hash; a changed hash resets
 export { MIN_BODY_CHARS };
 
 export function minConfidence() {
-  const v = Number(process.env.FUNDGRAPH_EXTRACT_MIN_CONFIDENCE ?? 0.6);
+  const v = Number(env("EXTRACT_MIN_CONFIDENCE") ?? 0.6);
   return Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 0.6;
 }
 

@@ -1,6 +1,6 @@
 # Unstructured extraction
 
-`fundgraph extract` pulls people and organizations out of document *bodies* —
+`fein extract` pulls people and organizations out of document *bodies* —
 email text, meeting notes, memos, board packs, CRM notes — and feeds them into
 the same entity-resolution and graph pipeline as structured metadata. This page
 is the full reference: architecture, configuration, cost, and the threat model.
@@ -26,7 +26,7 @@ documents.body ──▶ chunk ──▶ Claude (structured output) ──▶ gr
 
 - **Bodies** are captured by the file adapters (`.mbox` MIME text parts, `.ics`
   DESCRIPTION, `.csv` notes columns, `.jsonl` `body` field), size-capped, and
-  stored locally. `FUNDGRAPH_NO_BODIES=1` disables capture.
+  stored locally. `FEIN_NO_BODIES=1` disables capture.
 - **Chunking**: bodies over ~20k chars split on paragraph boundaries with 1k
   overlap; results are merged keeping the highest-confidence copy of each
   identity. Bodies are hard-capped at 100k chars.
@@ -57,8 +57,8 @@ documents.body ──▶ chunk ──▶ Claude (structured output) ──▶ gr
 
 | Surface | How |
 |---|---|
-| CLI | `fundgraph extract [--limit N]` — extract, then resolve + rebuild edges |
-| CLI | `fundgraph sync --extract` — extraction as part of a sync |
+| CLI | `fein extract [--limit N]` — extract, then resolve + rebuild edges |
+| CLI | `fein sync --extract` — extraction as part of a sync |
 | Dashboard | Data tab → **Extract pending documents** |
 | API | `POST /api/extract` (single-flight; 409 if already running), `GET /api/extract/status` |
 | MCP | `graph_stats` reports `pendingExtraction` so agents can see unmined bodies |
@@ -72,11 +72,11 @@ instructions rather than marking documents failed.
 
 | Env var | Default | Notes |
 |---|---|---|
-| `FUNDGRAPH_EXTRACT_MODEL` | `claude-opus-5` | The quality default. `claude-haiku-4-5` cuts cost ~5× for high-volume backfills (`effort` is automatically omitted there — the Haiku tier rejects it). Changing the model re-extracts: model, effort, confidence floor, and prompt version are all part of each document's hash. |
-| `FUNDGRAPH_EXTRACT_EFFORT` | `low` | Anthropic `effort` level for the call. Extraction is a focused task; `low` is usually right. |
-| `FUNDGRAPH_EXTRACT_MIN_CONFIDENCE` | `0.6` | Grounded candidates below this are dropped (logged in run stats as `dropped`). |
-| `FUNDGRAPH_EXTRACT_MAX_TOKENS` | `8192` | Response cap per chunk. |
-| `FUNDGRAPH_NO_BODIES` | unset | `1` = adapters capture no bodies at all. |
+| `FEIN_EXTRACT_MODEL` | `claude-opus-5` | The quality default. `claude-haiku-4-5` cuts cost ~5× for high-volume backfills (`effort` is automatically omitted there — the Haiku tier rejects it). Changing the model re-extracts: model, effort, confidence floor, and prompt version are all part of each document's hash. |
+| `FEIN_EXTRACT_EFFORT` | `low` | Anthropic `effort` level for the call. Extraction is a focused task; `low` is usually right. |
+| `FEIN_EXTRACT_MIN_CONFIDENCE` | `0.6` | Grounded candidates below this are dropped (logged in run stats as `dropped`). |
+| `FEIN_EXTRACT_MAX_TOKENS` | `8192` | Response cap per chunk. |
+| `FEIN_NO_BODIES` | unset | `1` = adapters capture no bodies at all. |
 
 ## Fund memory: deals
 
@@ -90,7 +90,7 @@ the status enum is validated in code, and a grounded deal ensures the company
 becomes an org entity. Deals are stored per document (`deals` table) with the
 same replace-on-change and sweep lifecycle as mentions, and link to resolved
 entities at query time via normalized aliases — entity rebuilds can never
-orphan them. Query with `fundgraph memory <company>`, the `company_memory`
+orphan them. Query with `fein memory <company>`, the `company_memory`
 MCP tool, or the org's brief in the dashboard. The `summary` field is
 model-authored and labeled advisory; the snippet beside it is always verbatim
 document text.

@@ -12,7 +12,7 @@ for step 5. Everything in this script happens in the browser.
 
 "Fund data is scattered — email, calendar, meeting notes, CRM, docs. Agents can't
 operate over it by guessing with vector search: they fetch the wrong things and
-don't know what exists. fundgraph builds the **map of reality** they navigate:
+don't know what exists. fein builds the **map of reality** they navigate:
 every person and organization, resolved across sources, with relationship
 strength computed from actual behavior."
 
@@ -104,7 +104,7 @@ at." Show the Data tab's **Agents (MCP)** section, hit Copy, and (done once,
 before the call) connect it:
 
 ```bash
-claude mcp add --transport http fundgraph http://localhost:4321/mcp
+claude mcp add --transport http fein http://localhost:4321/mcp
 ```
 
 Then in Claude:
@@ -123,7 +123,7 @@ the Viewing-as switch did in the browser.
 ## Live-data variant
 
 A second database ingested from a real inbox via the gog adapter
-(`FUNDGRAPH_DATA=./data/real node src/cli.js web 4322`) shows the same pipeline
+(`FEIN_DATA=./data/real node src/cli.js web 4322`) shows the same pipeline
 on live Gmail — including the review queue catching a real display-name/address
 ambiguity.
 
@@ -131,7 +131,7 @@ ambiguity.
 
 - The dashboard serves MCP itself (`/mcp`), so the demo needs exactly one
   process. The single-process caveat only applies to the stdio flavor
-  (`fundgraph mcp`) or CLI ingests while the web server runs — use
+  (`fein mcp`) or CLI ingests while the web server runs — use
   `DATABASE_URL` Postgres if you need several processes on one database.
 - The **Extract pending documents** button calls the Anthropic API — export
   `ANTHROPIC_API_KEY` before `npm start` if you want to run it live on the

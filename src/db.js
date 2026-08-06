@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { env } from "./brand.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,7 +44,9 @@ export async function getDb() {
     };
   } else {
     const { PGlite } = await import("@electric-sql/pglite");
-    const dataDir = process.env.FUNDGRAPH_DATA ?? "./data/fundgraph";
+    // Prefer an existing legacy data dir so pre-rename installs keep their graph.
+    const dataDir =
+      env("DATA") ?? (existsSync("./data/fundgraph") ? "./data/fundgraph" : "./data/fein");
     mkdirSync(dataDir, { recursive: true });
     const release = acquireLock(dataDir);
     const lite = new PGlite(dataDir);

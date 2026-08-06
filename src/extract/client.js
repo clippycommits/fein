@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { env } from "../brand.js";
 import { ExtractionResult, extractionOutputFormat } from "./schema.js";
 import { SYSTEM_PROMPT, userPrompt } from "./prompt.js";
 
@@ -15,9 +16,9 @@ const NO_EFFORT = /haiku/i;
 
 export function extractConfig() {
   return {
-    model: process.env.FUNDGRAPH_EXTRACT_MODEL ?? "claude-opus-5",
-    effort: process.env.FUNDGRAPH_EXTRACT_EFFORT ?? "low",
-    maxTokens: Number(process.env.FUNDGRAPH_EXTRACT_MAX_TOKENS ?? 8192),
+    model: env("EXTRACT_MODEL") ?? "claude-opus-5",
+    effort: env("EXTRACT_EFFORT") ?? "low",
+    maxTokens: Number(env("EXTRACT_MAX_TOKENS") ?? 8192),
   };
 }
 
@@ -86,7 +87,7 @@ export async function generateExtraction(doc, chunk, chunkIndex, chunkCount) {
     fail(`model declined this document (refusal: ${response.stop_details?.category ?? "unspecified"})`);
   }
   if (response.stop_reason === "max_tokens") {
-    fail(`output truncated at ${cfg.maxTokens} tokens — raise FUNDGRAPH_EXTRACT_MAX_TOKENS`);
+    fail(`output truncated at ${cfg.maxTokens} tokens — raise FEIN_EXTRACT_MAX_TOKENS`);
   }
   const text = response.content?.find((b) => b.type === "text")?.text;
   if (!text) fail("model returned no text content");

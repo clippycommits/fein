@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const dataDir = mkdtempSync(join(tmpdir(), "fg-leak-"));
-process.env.FUNDGRAPH_DATA = dataDir;
+process.env.FEIN_DATA = dataDir;
 import { dirname, join as pjoin } from "node:path";
 import { fileURLToPath } from "node:url";
 const ROOT = pjoin(dirname(fileURLToPath(import.meta.url)), "..");

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { env } from "../brand.js";
 import { id } from "../db.js";
 import { normEmail, normPersonName, normOrgName } from "../resolve/normalize.js";
 import { MIN_BODY_CHARS } from "../extract/prompt.js";
@@ -58,13 +59,13 @@ async function ingestInTx(db, docs, owner = "") {
   let mentionCount = 0;
   for (const doc of docs) {
     const did = docId(doc);
-    // Body policy: FUNDGRAPH_NO_BODIES=1 disables capture for every adapter
+    // Body policy: FEIN_NO_BODIES=1 (legacy FUNDGRAPH_NO_BODIES) disables capture for every adapter
     // AND scrubs previously stored bodies on re-ingest (the flag means "no
     // bodies, period"). Otherwise: keep a new body when the adapter provides
     // one (sub-floor bodies aren't worth mining and are dropped), fall back
     // to the previously stored body when it doesn't — a headers-only re-pass
     // over the same mbox must not erase what an earlier pass captured.
-    const capture = process.env.FUNDGRAPH_NO_BODIES !== "1";
+    const capture = env("NO_BODIES") !== "1";
     const body = capture && typeof doc.body === "string" && doc.body.length >= MIN_BODY_CHARS
       ? doc.body : null;
     await db.query(

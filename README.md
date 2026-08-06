@@ -1,13 +1,13 @@
-# fundgraph
+# fein
 
-**Open-source agentic data layer for investment teams.** An entity-resolved knowledge graph over your fund's scattered data — email, calendar, meeting notes, docs, CRM — with a relationship-intelligence dashboard and a single MCP endpoint for Claude, ChatGPT, or Cursor.
+**The fund graph for venture capital — an open-source agentic data layer for investment teams.** *(formerly `fundgraph`; the old CLI name, `FUNDGRAPH_*` environment variables, and data directories keep working)* An entity-resolved knowledge graph over your fund's scattered data — email, calendar, meeting notes, docs, CRM — with a relationship-intelligence dashboard and a single MCP endpoint for Claude, ChatGPT, or Cursor.
 
-![fundgraph dashboard](docs/img/dashboard.png)
+![fein dashboard](docs/img/dashboard.png)
 
-Agents can't operate over millions of documents by guessing with vector search: they fetch the wrong things and don't know what exists. fundgraph gives them a deterministic **map of reality** instead — who exists, who knows whom, and how strongly — so retrieval is structured graph traversal, not similarity roulette.
+Agents can't operate over millions of documents by guessing with vector search: they fetch the wrong things and don't know what exists. fein gives them a deterministic **map of reality** instead — who exists, who knows whom, and how strongly — so retrieval is structured graph traversal, not similarity roulette.
 
 ```
-systems of record          fundgraph                        consumers
+systems of record            fein                            consumers
 ─────────────────    ──────────────────────────    ──────────────────────
 gmail    ─┐          ┌─ metadata layer             web dashboard
 calendar ─┤  ingest  │  (what was ingested,        Claude / ChatGPT / Cursor
@@ -48,13 +48,13 @@ First run shows onboarding: load the bundled (fictional) sample dataset with one
 
 | Source | Command | Setup needed |
 |---|---|---|
-| Gmail export (Takeout) | `fundgraph ingest export.mbox` | none — streamed, so multi-GB archives are fine |
-| Calendar export | `fundgraph ingest calendar.ics` | none |
-| Contacts (Google Contacts, Attio, Affinity, any CSV) | `fundgraph ingest contacts.csv` | none |
-| Granola (macOS) | `fundgraph ingest-granola` | none — reads the local cache |
-| **Attio workspace (live)** | `fundgraph ingest-attio` | `ATTIO_API_KEY` — see below |
-| Live Gmail/Calendar/Drive via [gog](https://github.com/steipete/gogcli) | `fundgraph ingest-gog gmail` | gog already authenticated (local, or remote via `FUNDGRAPH_GOG_SSH=user@host`) |
-| Live Gmail/Calendar/Drive via Google APIs | `fundgraph ingest-google gmail` | a Desktop OAuth client JSON in `GOOGLE_OAUTH_CREDENTIALS` |
+| Gmail export (Takeout) | `fein ingest export.mbox` | none — streamed, so multi-GB archives are fine |
+| Calendar export | `fein ingest calendar.ics` | none |
+| Contacts (Google Contacts, Attio, Affinity, any CSV) | `fein ingest contacts.csv` | none |
+| Granola (macOS) | `fein ingest-granola` | none — reads the local cache |
+| **Attio workspace (live)** | `fein ingest-attio` | `ATTIO_API_KEY` — see below |
+| Live Gmail/Calendar/Drive via [gog](https://github.com/steipete/gogcli) | `fein ingest-gog gmail` | gog already authenticated (local, or remote via `FEIN_GOG_SSH=user@host`) |
+| Live Gmail/Calendar/Drive via Google APIs | `fein ingest-google gmail` | a Desktop OAuth client JSON in `GOOGLE_OAUTH_CREDENTIALS` |
 
 ### From a Google Workspace / Takeout export
 
@@ -69,10 +69,10 @@ to be able to sign in once.
 3. Ingest — order doesn't matter, entity resolution links them:
 
 ```bash
-fundgraph ingest "Takeout/Mail/All mail Including Spam and Trash.mbox"
-for f in Takeout/Calendar/*.ics; do fundgraph ingest "$f"; done
-fundgraph ingest Takeout/Contacts/contacts.csv
-fundgraph sync
+fein ingest "Takeout/Mail/All mail Including Spam and Trash.mbox"
+for f in Takeout/Calendar/*.ics; do fein ingest "$f"; done
+fein ingest Takeout/Contacts/contacts.csv
+fein sync
 ```
 
 The mbox is streamed and ingested in batches, so archive size is not bounded by
@@ -90,7 +90,7 @@ paste your access token → **Connect & sync**. The key is verified against Atti
 before anything is stored, the first pull runs immediately, and the panel then
 shows the workspace, last sync, and a **Sync now** button for later refreshes.
 
-Or from the CLI: `export ATTIO_API_KEY=... && fundgraph ingest-attio && fundgraph sync`.
+Or from the CLI: `export ATTIO_API_KEY=... && fein ingest-attio && fein sync`.
 
 To create the token: in Attio go to **Workspace settings → Developers → Create
 an integration**, and grant read scopes for `record` and `object_configuration`
@@ -110,11 +110,11 @@ contact and their emails in Gmail resolve to the same person. Pass
 `--no-notes` to skip notes (or if your token lacks the scope, notes are skipped
 with a warning rather than failing the pull).
 
-Then `fundgraph sync` (resolve + rebuild edges).
+Then `fein sync` (resolve + rebuild edges).
 
-**What gets read:** live connectors (Granola, gog, Google APIs, Attio people/companies) read metadata and participant identities only. File exports (`.mbox`, `.ics`, `.csv` notes, `.jsonl`) also capture a size-capped plain-text **body** per document — stored locally in your database and mined only when you explicitly run [unstructured extraction](#unstructured-extraction). Set `FUNDGRAPH_NO_BODIES=1` to skip body capture entirely and keep the old metadata-only behavior.
+**What gets read:** live connectors (Granola, gog, Google APIs, Attio people/companies) read metadata and participant identities only. File exports (`.mbox`, `.ics`, `.csv` notes, `.jsonl`) also capture a size-capped plain-text **body** per document — stored locally in your database and mined only when you explicitly run [unstructured extraction](#unstructured-extraction). Set `FEIN_NO_BODIES=1` to skip body capture entirely and keep the old metadata-only behavior.
 
-Adapters emit a common JSONL shape (see `sample/seed.jsonl`); to add a source, emit that shape and `fundgraph ingest file.jsonl`. Ingestion is idempotent: re-ingesting updates in place, and review history is preserved.
+Adapters emit a common JSONL shape (see `sample/seed.jsonl`); to add a source, emit that shape and `fein ingest file.jsonl`. Ingestion is idempotent: re-ingesting updates in place, and review history is preserved.
 
 ## Fixing what resolution missed
 
@@ -123,9 +123,9 @@ rather than merging — so real data always leaves a few duplicates (a work
 address and a personal one for the same person, resolved apart). Merge them:
 
 ```bash
-fundgraph merge "Alex Rivera" "alex@northgate.io"   # keep the first, absorb the second
-fundgraph unmerge "alex@northgate.io"               # reversible
-fundgraph merges                                # what's been merged
+fein merge "Alex Rivera" "alex@northgate.io"   # keep the first, absorb the second
+fein unmerge "alex@northgate.io"               # reversible
+fein merges                                # what's been merged
 ```
 
 Or in the dashboard: open a profile → **Merge a duplicate…**. Documents,
@@ -135,12 +135,12 @@ back *exactly* what the merge took (leaving an address behind would misroute
 future mentions). Like review decisions, merges are human input — they're
 recorded and **replayed after a full `reresolve`** instead of being lost.
 
-fundgraph also flags **automated senders** (no-reply robots, notification
+fein also flags **automated senders** (no-reply robots, notification
 services) and hides them from relationship views — on a real inbox they're
 otherwise half the graph. Role addresses like `team@` or a client's `hello@` are
 treated as hints only and need broadcast behaviour (never replies, never in a
 meeting) to be flagged, because a shared mailbox usually has a human behind it.
-Nothing is deleted, every flag carries its reason, and `fundgraph automated
+Nothing is deleted, every flag carries its reason, and `fein automated
 --list` shows the lot.
 
 ## Relationship radar — the timing layer
@@ -153,8 +153,8 @@ means overdue for them**: three weeks of silence is unremarkable with a
 quarterly contact and alarming with a weekly one.
 
 ```bash
-fundgraph radar                      # whole graph, most actionable first
-fundgraph radar "Maya Chen"          # one person's relationships
+fein radar                      # whole graph, most actionable first
+fein radar "Maya Chen"          # one person's relationships
 ```
 
 Every row carries its receipts — "last contact 16d ago · usually every 10d ·
@@ -185,15 +185,15 @@ inside the shared graph:
   shared layer before saturation, so private data reinforces public data.
 
 ```bash
-fundgraph members add "Seb Larkin" seb@ridgeline.vc
-fundgraph ingest seb-inbox.mbox --as "Seb Larkin"   # → Seb's private layer
-fundgraph path "Tom Merrill" "Priya Nair" --as "Tom Merrill"
+fein members add "Seb Larkin" seb@ridgeline.vc
+fein ingest seb-inbox.mbox --as "Seb Larkin"   # → Seb's private layer
+fein path "Tom Merrill" "Priya Nair" --as "Tom Merrill"
 ```
 
 All of this works without the terminal too: the Data tab manages members, the
 **Uploads land in** selector above the dropzone targets a member's private
 layer, and the **Viewing as** switch in the header changes whose view you see.
-For agents, `?as=<member>` on the MCP URL (or `FUNDGRAPH_VIEWER=<member>` for
+For agents, `?as=<member>` on the MCP URL (or `FEIN_VIEWER=<member>` for
 stdio) binds an MCP server to one person's view.
 
 **What "existence is shared" actually means.** A person the firm already knows
@@ -228,7 +228,7 @@ The dashboard serves the graph as a Streamable-HTTP MCP endpoint at
 with the embedded single-process rule. With `npm start` running:
 
 ```bash
-claude mcp add --transport http fundgraph http://localhost:4321/mcp
+claude mcp add --transport http fein http://localhost:4321/mcp
 ```
 
 (Claude Desktop: Settings → Connectors → add the same URL. The Data tab shows
@@ -239,7 +239,7 @@ given the shared view.
 Without the dashboard running, the stdio flavor works anywhere:
 
 ```bash
-claude mcp add fundgraph -- node /path/to/fundgraph/src/cli.js mcp
+claude mcp add fein -- node /path/to/fein/src/cli.js mcp
 ```
 
 Tools: `meeting_prep` (one call: profile + relationship history + receipts + your warm paths to them), `company_memory` (every recorded deal signal for a company — investments *and passes with their reasoning* — with document provenance), `relationship_radar`, `find_warm_path`, `find_introducers`, `entity_brief`, `search_entities`, `strongest_connections`, `graph_stats`, `review_queue`, `review_resolve`.
@@ -247,16 +247,16 @@ Tools: `meeting_prep` (one call: profile + relationship history + receipts + you
 ## CLI
 
 ```
-fundgraph web [port]              dashboard (default 4321)
-fundgraph ingest <file>           .jsonl | .mbox | .ics | .csv
-fundgraph ingest-granola [path]   Granola local cache (macOS)
-fundgraph ingest-gog <service>    live pull via gog: gmail | calendar | drive
-fundgraph ingest-google <service> live pull via Google APIs
-fundgraph sync [--extract]        resolve + rebuild edges (--extract mines bodies first)
-fundgraph extract [--limit N]     LLM mention extraction over unprocessed bodies
-fundgraph reresolve               rebuild entities from scratch (decisions replayed)
-fundgraph entities | brief | path | intros | review | stats
-fundgraph mcp                     MCP server (stdio)
+fein web [port]              dashboard (default 4321)
+fein ingest <file>           .jsonl | .mbox | .ics | .csv
+fein ingest-granola [path]   Granola local cache (macOS)
+fein ingest-gog <service>    live pull via gog: gmail | calendar | drive
+fein ingest-google <service> live pull via Google APIs
+fein sync [--extract]        resolve + rebuild edges (--extract mines bodies first)
+fein extract [--limit N]     LLM mention extraction over unprocessed bodies
+fein reresolve               rebuild entities from scratch (decisions replayed)
+fein entities | brief | path | intros | review | stats
+fein mcp                     MCP server (stdio)
 ```
 
 ## Unstructured extraction
@@ -264,13 +264,13 @@ fundgraph mcp                     MCP server (stdio)
 Headers and attendee lists are a fraction of what a fund knows. The bodies — "our
 IC chair Alistair Penhale has asked…", "Sam Okafor at Halcyon co-invested with us
 on three deals" — name people and organizations no structured field ever sees.
-`fundgraph extract` mines them with an LLM and feeds the results through the
+`fein extract` mines them with an LLM and feeds the results through the
 *same* resolution, review, and edge pipeline as everything else:
 
 ```bash
 export ANTHROPIC_API_KEY=...      # or `ant auth login`
-fundgraph extract                 # mine all unprocessed bodies
-fundgraph sync --extract          # or as part of a sync
+fein extract                 # mine all unprocessed bodies
+fein sync --extract          # or as part of a sync
 ```
 
 (Or press **Extract pending documents** on the dashboard's Data tab.)
@@ -297,16 +297,16 @@ Extraction never gets to bend the graph's rules:
 Extraction also mines **fund memory**: when a document records an investment
 decision (an IC memo's INVEST or PASS, a board pack, a round discussion), a
 `deal` record is kept — company, stage, status, the stated reasoning, and the
-document it came from. `fundgraph memory <company>` or the `company_memory`
+document it came from. `fein memory <company>` or the `company_memory`
 MCP tool answers the question every fund eventually asks: *"have we seen this
 company before, and why did we say no?"* Deals hang off organizations
 (principle 1) and link to entities at query time, so rebuilds never orphan
 them; passes are first-class, because a recorded no is the memory that saves
 the next diligence cycle.
 
-Configuration: `FUNDGRAPH_EXTRACT_MODEL` (default `claude-opus-5`;
-`claude-haiku-4-5` is the budget option), `FUNDGRAPH_EXTRACT_EFFORT`
-(default `low`), `FUNDGRAPH_EXTRACT_MIN_CONFIDENCE` (default `0.6`).
+Configuration: `FEIN_EXTRACT_MODEL` (default `claude-opus-5`;
+`claude-haiku-4-5` is the budget option), `FEIN_EXTRACT_EFFORT`
+(default `low`), `FEIN_EXTRACT_MIN_CONFIDENCE` (default `0.6`).
 Details, cost notes, and the threat model: [docs/extraction.md](docs/extraction.md).
 
 ## How connection strength works

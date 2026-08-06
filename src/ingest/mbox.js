@@ -1,11 +1,12 @@
 import { createReadStream } from "node:fs";
+import { env } from "../brand.js";
 import { createInterface } from "node:readline";
 
 /**
  * Gmail/Takeout mbox adapter — zero OAuth. Parses headers
  * (From/To/Cc/Subject/Date/Message-ID) and captures a size-capped plain-text
  * body per message so the extraction pipeline can mine it for mentions.
- * Set FUNDGRAPH_NO_BODIES=1 (or pass {bodies: false}) for the old
+ * Set FEIN_NO_BODIES=1 (or pass {bodies: false}) for the old
  * headers-only behavior.
  *
  * Streamed line by line: a Takeout export of a long-lived account is commonly
@@ -22,7 +23,7 @@ const POSTMARK = /^From \S+ +(?:\w{3} )?\w{3} [ \d]\d [\d:]{5,8}(?: [+-]\d{4})? 
 const BODY_CAP = 131_072; // raw chars gathered per message before decoding
 
 /** Yields parsed messages one at a time; nothing accumulates past one message. */
-export async function* streamMbox(path, { bodies = process.env.FUNDGRAPH_NO_BODIES !== "1" } = {}) {
+export async function* streamMbox(path, { bodies = env("NO_BODIES") !== "1" } = {}) {
   let headerLines = null; // non-null from a postmark until the message is emitted
   let inHeaders = false;
   let bodyLines = null;   // collected between the header block and the next postmark

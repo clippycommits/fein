@@ -2,7 +2,7 @@
  * Extraction pipeline tests — deterministic, no API key required. A scripted
  * fake generator stands in for the model so grounding, idempotency, failure
  * handling, and resolution integration are all testable offline. The LLM
- * boundary itself (src/extract/client.js) is exercised by `fundgraph extract`
+ * boundary itself (src/extract/client.js) is exercised by `fein extract`
  * against real credentials.
  *
  * Sections [8]-[9] are regression tests for the adversarial-review findings:
@@ -14,13 +14,13 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const dataDir = mkdtempSync(join(tmpdir(), "fundgraph-extract-test-"));
-process.env.FUNDGRAPH_DATA = dataDir;
+const dataDir = mkdtempSync(join(tmpdir(), "fein-extract-test-"));
+process.env.FEIN_DATA = dataDir;
 delete process.env.DATABASE_URL;
-delete process.env.FUNDGRAPH_EXTRACT_MIN_CONFIDENCE;
-delete process.env.FUNDGRAPH_EXTRACT_MODEL;
-delete process.env.FUNDGRAPH_EXTRACT_EFFORT;
-delete process.env.FUNDGRAPH_NO_BODIES;
+delete process.env.FEIN_EXTRACT_MIN_CONFIDENCE;
+delete process.env.FEIN_EXTRACT_MODEL;
+delete process.env.FEIN_EXTRACT_EFFORT;
+delete process.env.FEIN_NO_BODIES;
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { getDb } = await import(join(root, "src/db.js"));
@@ -156,14 +156,14 @@ const callsBefore = calls;
 const run2 = await extractPending(db, { generate: scripted });
 check(run2.extracted === 0 && run2.skipped === run2.scanned, "second run skips everything (hash match)", run2);
 check(calls === callsBefore, "no model calls on a clean re-run");
-process.env.FUNDGRAPH_EXTRACT_MODEL = "claude-test-different";
+process.env.FEIN_EXTRACT_MODEL = "claude-test-different";
 const run3 = await extractPending(db, { generate: scripted });
 check(run3.extracted > 0, "model change re-extracts (hash includes model)", run3);
-delete process.env.FUNDGRAPH_EXTRACT_MODEL;
-process.env.FUNDGRAPH_EXTRACT_EFFORT = "high";
+delete process.env.FEIN_EXTRACT_MODEL;
+process.env.FEIN_EXTRACT_EFFORT = "high";
 const run3b = await extractPending(db, { generate: scripted });
 check(run3b.extracted > 0, "effort change re-extracts (hash includes effort)", run3b);
-delete process.env.FUNDGRAPH_EXTRACT_EFFORT;
+delete process.env.FEIN_EXTRACT_EFFORT;
 await extractPending(db, { generate: scripted }); // restore hashes for the default config
 
 console.log("[5/10] resolution + graph integration");
@@ -284,13 +284,13 @@ console.log("[9/10] body lifecycle: NO_BODIES, scrubbing, shrink sweep");
   check(Number(m1[0].n) > 0, "probe doc yields extracted mentions", m1[0]);
 
   // Re-ingest with the flag set: body AND hash are scrubbed…
-  process.env.FUNDGRAPH_NO_BODIES = "1";
+  process.env.FEIN_NO_BODIES = "1";
   await ingestDocs(db, probe);
   ({ rows } = await db.query(
     `select body, body_sha256 from documents where external_id = 'lifecycle-1'`));
   check(rows[0].body === null && rows[0].body_sha256 === null,
-    "FUNDGRAPH_NO_BODIES=1 re-ingest scrubs stored bodies (all adapters, central)", rows[0]);
-  delete process.env.FUNDGRAPH_NO_BODIES;
+    "FEIN_NO_BODIES=1 re-ingest scrubs stored bodies (all adapters, central)", rows[0]);
+  delete process.env.FEIN_NO_BODIES;
 
   // …and the next run sweeps the now-bodyless doc's extraction artifacts.
   await extractPending(db, { generate: scripted });
@@ -368,9 +368,9 @@ console.log("[10/10] fund memory: deals from IC memos");
 
   // Lifecycle: scrubbing the memo's body sweeps its deal.
   const probeDocs = loadJsonl(join(root, "sample/fixtures/ic-memo.jsonl"));
-  process.env.FUNDGRAPH_NO_BODIES = "1";
+  process.env.FEIN_NO_BODIES = "1";
   await ingestDocs(db, probeDocs);
-  delete process.env.FUNDGRAPH_NO_BODIES;
+  delete process.env.FEIN_NO_BODIES;
   await extractPending(db, { generate: dealer });
   const { rows: sweptDeals } = await db.query(`select count(*) as n from deals`);
   check(Number(sweptDeals[0].n) === 0, "bodyless memos keep no stale deals", sweptDeals[0]);

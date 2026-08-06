@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { env } from "../brand.js";
 import { parseAddressList } from "./mbox.js";
 
 /**
@@ -6,12 +7,12 @@ import { parseAddressList } from "./mbox.js";
  * (https://github.com/steipete/gogcli), reusing its already-consented OAuth
  * instead of asking you to set up a Google Cloud project.
  *
- * Runs `gog` locally, or on a remote host over SSH when FUNDGRAPH_GOG_SSH is
+ * Runs `gog` locally, or on a remote host over SSH when FEIN_GOG_SSH (legacy FUNDGRAPH_GOG_SSH) is
  * set (e.g. "root@my-server" that has an authenticated gog). Only metadata is
  * fetched — message bodies are never requested.
  */
 
-const SSH_HOST = () => process.env.FUNDGRAPH_GOG_SSH ?? null;
+const SSH_HOST = () => env("GOG_SSH") ?? null;
 
 function shq(arg) {
   return `'${String(arg).replaceAll("'", `'\\''`)}'`;

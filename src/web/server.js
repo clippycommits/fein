@@ -72,7 +72,7 @@ export async function startWebServer(port = 4321) {
   });
 
   await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
-  console.log(`fundgraph ${VERSION} — http://localhost:${port}`);
+  console.log(`fein ${VERSION} — http://localhost:${port}`);
 
   // A single bad request must never take the server down.
   process.on("unhandledRejection", (err) => console.error("unhandled rejection:", err));
@@ -593,7 +593,7 @@ function readBody(req) {
 /** Uploads reuse the file adapters via a temp file (they take paths). */
 async function parseUpload(name, body) {
   const ext = extname(name).toLowerCase();
-  const tmp = mkdtempSync(join(tmpdir(), "fundgraph-upload-"));
+  const tmp = mkdtempSync(join(tmpdir(), "fein-upload-"));
   const file = join(tmp, `upload${ext}`);
   try {
     writeFileSync(file, body);

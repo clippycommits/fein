@@ -1,10 +1,11 @@
 {
-  "name": "fundgraph",
+  "name": "fein",
   "version": "0.3.0",
-  "description": "Open-source agentic data layer for investment teams: entity-resolved knowledge graph + relationship intelligence, exposed over MCP",
+  "description": "Fein \u2014 the fund graph for venture capital. Open-source agentic data layer for investment teams: entity-resolved knowledge graph + relationship intelligence, exposed over MCP.",
   "type": "module",
   "license": "MIT",
   "bin": {
+    "fein": "./src/cli.js",
     "fundgraph": "./src/cli.js"
   },
   "scripts": {

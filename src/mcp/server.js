@@ -1,4 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { SLUG, env } from "../brand.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { getDb } from "../db.js";
@@ -8,6 +12,10 @@ import { listReviews, resolveReview } from "../resolve/review.js";
 import { getEntity } from "../graph/queries.js";
 import { companyMemory } from "../graph/memory.js";
 
+const VERSION = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../package.json"), "utf8"),
+).version;
+
 const text = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj, null, 2) }] });
 
 async function ref(db, r) {
@@ -16,14 +24,14 @@ async function ref(db, r) {
   return res.entity;
 }
 
-/** stdio entry point (`fundgraph mcp`). FUNDGRAPH_VIEWER selects which
+/** stdio entry point (`fein mcp`). FEIN_VIEWER (or legacy FUNDGRAPH_VIEWER) selects which
  * member's private layer the agent speaks for; unset = shared layer only. */
 export async function startMcpServer() {
   const db = await getDb();
   let viewer = null;
-  if (process.env.FUNDGRAPH_VIEWER) {
+  if (env("VIEWER")) {
     const { resolveMember } = await import("../members.js");
-    viewer = (await resolveMember(db, process.env.FUNDGRAPH_VIEWER)).id;
+    viewer = (await resolveMember(db, env("VIEWER"))).id;
   }
   const server = buildMcpServer(db, { viewer });
   await server.connect(new StdioServerTransport());
@@ -31,12 +39,12 @@ export async function startMcpServer() {
 }
 
 /**
- * All fundgraph tools on a fresh McpServer, bound to one viewer. The web
+ * All Fein tools on a fresh McpServer, bound to one viewer. The web
  * server builds one of these per HTTP request (stateless Streamable HTTP),
  * so construction must stay cheap — it only registers handlers.
  */
 export function buildMcpServer(db, { viewer = null } = {}) {
-  const server = new McpServer({ name: "fundgraph", version: "0.3.0" });
+  const server = new McpServer({ name: SLUG, version: VERSION });
 
   server.tool(
     "search_entities",

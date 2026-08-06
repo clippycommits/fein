@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,8 @@ import { spawn } from "node:child_process";
 /**
  * Minimal Google OAuth (loopback flow) + REST client — no googleapis dep.
  * Needs a Desktop-app OAuth client JSON from Google Cloud Console; point
- * GOOGLE_OAUTH_CREDENTIALS at it. Tokens cache in ~/.fundgraph/.
+ * GOOGLE_OAUTH_CREDENTIALS at it. Tokens cache in ~/.fein/ (a legacy
+ * ~/.fundgraph/ is honored if present).
  * If you already use the gog CLI, prefer the gog adapter — no setup at all.
  */
 
@@ -17,7 +18,10 @@ export const SCOPES = [
   "https://www.googleapis.com/auth/drive.metadata.readonly",
 ];
 
-const TOKEN_PATH = join(homedir(), ".fundgraph", "google-token.json");
+const CONFIG_DIR = existsSync(join(homedir(), ".fundgraph"))
+  ? join(homedir(), ".fundgraph")
+  : join(homedir(), ".fein");
+const TOKEN_PATH = join(CONFIG_DIR, "google-token.json");
 
 function loadCreds() {
   const path = process.env.GOOGLE_OAUTH_CREDENTIALS;
@@ -43,7 +47,7 @@ function loadToken() {
 }
 
 function saveToken(token) {
-  mkdirSync(join(homedir(), ".fundgraph"), { recursive: true });
+  mkdirSync(CONFIG_DIR, { recursive: true });
   writeFileSync(TOKEN_PATH, JSON.stringify(token, null, 2));
 }
 
@@ -73,7 +77,7 @@ async function loopbackConsent(creds) {
           access_type: "offline",
           prompt: "consent",
         }).toString();
-      console.error(`\nOpen this URL to authorize fundgraph (read-only scopes):\n\n  ${url}\n`);
+      console.error(`\nOpen this URL to authorize Fein (read-only scopes):\n\n  ${url}\n`);
       spawn("open", [url], { stdio: "ignore" }).on("error", () => {});
       server.on("request", async (req, res) => {
         const params = new URL(req.url, redirect).searchParams;
@@ -85,7 +89,7 @@ async function loopbackConsent(creds) {
           reject(new Error(`Google authorization was refused (${error})`));
           return;
         }
-        res.end(code ? "fundgraph authorized — you can close this tab." : "missing code");
+        res.end(code ? "Fein authorized — you can close this tab." : "missing code");
         if (!code) return;
         server.close();
         try {
