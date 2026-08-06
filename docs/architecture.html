@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>fundgraph — how it works</title>
+<style>
+  /* Print palette: validated reference instance (dataviz method), light surface.
+     Color carries meaning: blue = the graph/core, orange = a human decides,
+     aqua = AI & agents, dashed gray = private. */
+  :root {
+    --ink:      #0b0b0b;
+    --ink-2:    #52514e;
+    --muted:    #898781;
+    --line:     #e1e0d9;
+    --plane:    #f9f9f7;
+    --surface:  #ffffff;
+    --blue:     #2a78d6;
+    --blue-soft:#eaf2fc;
+    --orange:   #eb6834;
+    --orange-soft:#fdf0ea;
+    --aqua:     #1baf7a;
+    --aqua-soft:#e8f7f1;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: var(--surface); }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--ink);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .page {
+    width: 210mm;
+    height: 296.5mm;
+    padding: 14mm 16mm 12mm;
+    position: relative;
+    overflow: hidden;
+    break-after: page;
+  }
+  .page:last-child { break-after: auto; }
+
+  /* ---------- shared chrome ---------- */
+  .foot {
+    position: absolute;
+    left: 16mm; right: 16mm; bottom: 7mm;
+    display: flex; justify-content: space-between;
+    font-size: 9.5px; color: var(--muted);
+    border-top: 1px solid var(--line);
+    padding-top: 6px;
+  }
+  h1 { font-size: 30px; letter-spacing: -0.5px; }
+  h2 {
+    font-size: 17px; letter-spacing: -0.2px;
+    margin: 0 0 10px;
+  }
+  h2 .no {
+    display: inline-block; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--ink); color: #fff; font-size: 12.5px; text-align: center;
+    line-height: 22px; margin-right: 8px; vertical-align: 2px;
+  }
+  p { margin-bottom: 8px; }
+  .sub { color: var(--ink-2); }
+  .tiny { font-size: 10.5px; color: var(--muted); }
+  .callout {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--blue);
+    background: var(--plane);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 12px 0;
+  }
+  .callout.orange { border-left-color: var(--orange); }
+  .callout.aqua   { border-left-color: var(--aqua); }
+  code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    background: var(--plane);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+  code.cmd {
+    display: block;
+    white-space: pre-wrap;
+    word-break: break-all;
+    padding: 5px 8px;
+    margin-top: 3px;
+  }
+  .cols { display: flex; gap: 16px; }
+  .cols > div { flex: 1; min-width: 0; }
+
+  /* ---------- page 1 ---------- */
+  .brand { display: flex; align-items: baseline; gap: 10px; margin-bottom: 2px; }
+  .brand .web { font-size: 26px; }
+  .tagline { color: var(--ink-2); font-size: 14px; margin-bottom: 14px; }
+  .lede { font-size: 14px; margin: 10px 0 4px; }
+  .lede b { }
+  .kicker {
+    text-transform: uppercase; letter-spacing: 1.2px; font-size: 10px;
+    color: var(--muted); font-weight: 600; margin-bottom: 4px;
+  }
+  .onesent {
+    font-size: 15.5px; line-height: 1.45;
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 16px; margin-top: 12px; background: var(--blue-soft);
+  }
+
+  /* ---------- step cards (page 2) ---------- */
+  .step {
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 14px 10px; margin-bottom: 10px;
+    display: flex; gap: 12px; align-items: flex-start;
+  }
+  .step .n {
+    flex: 0 0 26px; height: 26px; border-radius: 50%;
+    background: var(--blue); color: #fff; font-weight: 700;
+    text-align: center; line-height: 26px; font-size: 14px; margin-top: 2px;
+  }
+  .step h3 { font-size: 13.5px; margin-bottom: 3px; }
+  .step p { margin-bottom: 4px; }
+
+  /* strength recipe strip */
+  .recipe {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+    margin: 8px 0 2px;
+    font-size: 11.5px;
+  }
+  .chip {
+    border: 1px solid var(--line); border-radius: 999px;
+    background: var(--plane); padding: 2px 9px; white-space: nowrap;
+  }
+  .chip b { color: var(--blue); }
+  .recipe .op { color: var(--muted); font-weight: 600; }
+  .chip.result { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 700; }
+
+  /* ---------- surfaces grid (page 3) ---------- */
+  .surf {
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 13px; margin-bottom: 10px;
+  }
+  .surf h3 { font-size: 13.5px; margin-bottom: 3px; }
+  .surf .ex {
+    background: var(--plane); border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 10px; margin-top: 6px; font-size: 11px; color: var(--ink-2);
+  }
+  .toolgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; margin-top: 6px; }
+  .toolgrid div { font-size: 11px; color: var(--ink-2); }
+  .toolgrid code { font-size: 10.5px; }
+
+  table.facts { border-collapse: collapse; width: 100%; margin-top: 6px; }
+  table.facts td {
+    border-top: 1px solid var(--line); padding: 5px 8px 5px 0;
+    font-size: 11.5px; vertical-align: top;
+  }
+  table.facts td:first-child { color: var(--ink-2); width: 34%; font-weight: 600; }
+
+  /* contents box (page 1) */
+  .toc { border: 1px solid var(--line); border-radius: 8px; padding: 9px 14px; margin-top: 14px; background: var(--surface); }
+  .toc .row { display: flex; gap: 10px; padding: 2.5px 0; font-size: 11.5px; }
+  .toc b { color: var(--blue); flex: 0 0 50px; }
+  .toc span { color: var(--ink-2); }
+
+  /* comparison table (page 4) */
+  table.compare { border-collapse: collapse; width: 100%; margin-top: 8px; }
+  table.compare th {
+    font-size: 11px; text-align: left; padding: 6px 9px;
+    border-bottom: 2px solid var(--ink); vertical-align: bottom;
+  }
+  table.compare td {
+    font-size: 11px; padding: 7px 9px; border-top: 1px solid var(--line);
+    vertical-align: top; line-height: 1.45;
+  }
+  table.compare td:first-child, table.compare th:first-child { padding-left: 0; width: 24%; font-weight: 600; }
+  table.compare td:nth-child(2) { color: var(--ink-2); width: 36%; }
+  table.compare td:nth-child(3), table.compare th:nth-child(3) { background: var(--blue-soft); }
+
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+</style>
+</head>
+<body>
+
+<!-- ================= PAGE 1 — the big picture ================= -->
+<section class="page">
+  <div class="brand"><span class="web">🕸️</span><h1>fundgraph</h1></div>
+  <div class="tagline">How it works — one document for your whole team, technical or not.</div>
+
+  <div class="kicker">The problem</div>
+  <p class="lede">A fund's knowledge is scattered across <b>email, calendars, meeting notes, docs, and the CRM</b>.
+  The same person appears a hundred different ways. Nobody can see the whole picture — and neither can AI:
+  an assistant that guesses with keyword or "similarity" search fetches the wrong things and doesn't know what exists.</p>
+
+  <div class="kicker" style="margin-top:12px">What fundgraph does</div>
+  <p class="lede">fundgraph reads all of those sources and builds one <b>map of reality</b>: every person and
+  organization, recognized across sources as one entity, connected by relationship strength <b>computed from actual
+  behavior</b> — how often you really meet, email, and work together. Your team browses the map in a dashboard;
+  your AI tools plug into the exact same map and stop guessing.</p>
+
+  <svg viewBox="0 0 740 300" style="width:100%; margin-top:14px" role="img" aria-label="Architecture: your systems flow into fundgraph's three stages, consumed by the dashboard and AI agents">
+    <!-- column headers -->
+    <text x="80"  y="16" font-size="10.5" fill="#898781" font-weight="600" text-anchor="middle" letter-spacing="1">YOUR SYSTEMS</text>
+    <text x="380" y="16" font-size="10.5" fill="#898781" font-weight="600" text-anchor="middle" letter-spacing="1">FUNDGRAPH</text>
+    <text x="655" y="16" font-size="10.5" fill="#898781" font-weight="600" text-anchor="middle" letter-spacing="1">WHO USES THE MAP</text>
+
+    <!-- sources -->
+    <g font-size="11.5" fill="#0b0b0b">
+      <rect x="10" y="28"  width="140" height="30" rx="6" fill="#f9f9f7" stroke="#e1e0d9"/><text x="80" y="47" text-anchor="middle">Gmail / email</text>
+      <rect x="10" y="66"  width="140" height="30" rx="6" fill="#f9f9f7" stroke="#e1e0d9"/><text x="80" y="85" text-anchor="middle">Calendar</text>
+      <rect x="10" y="104" width="140" height="30" rx="6" fill="#f9f9f7" stroke="#e1e0d9"/><text x="80" y="123" text-anchor="middle">Meeting notes</text>
+      <rect x="10" y="142" width="140" height="30" rx="6" fill="#f9f9f7" stroke="#e1e0d9"/><text x="80" y="161" text-anchor="middle">Docs / Drive</text>
+      <rect x="10" y="180" width="140" height="30" rx="6" fill="#f9f9f7" stroke="#e1e0d9"/><text x="80" y="199" text-anchor="middle">CRM (Attio)</text>
+      <rect x="10" y="218" width="140" height="30" rx="6" fill="#f9f9f7" stroke="#e1e0d9"/><text x="80" y="237" text-anchor="middle">Exports (.mbox .ics .csv)</text>
+    </g>
+
+    <!-- arrows sources -> core -->
+    <g stroke="#c3c2b7" stroke-width="1.5" fill="none">
+      <path d="M150 43  C 190 43, 200 70, 228 88"/>
+      <path d="M150 81  C 185 81, 195 92, 228 106"/>
+      <path d="M150 119 C 185 119, 195 124, 228 128"/>
+      <path d="M150 157 C 185 157, 195 152, 228 148"/>
+      <path d="M150 195 C 185 195, 195 180, 228 166"/>
+      <path d="M150 233 C 190 233, 200 205, 228 186"/>
+    </g>
+    <polygon points="228,132 236,137 228,142" fill="#c3c2b7" transform="translate(0,0)"/>
+
+    <!-- core -->
+    <rect x="238" y="30" width="284" height="240" rx="10" fill="#ffffff" stroke="#2a78d6" stroke-width="1.75"/>
+    <g>
+      <rect x="252" y="46" width="256" height="56" rx="7" fill="#eaf2fc"/>
+      <text x="264" y="66" font-size="12" font-weight="700" fill="#0b0b0b">1 · Ingest</text>
+      <text x="264" y="82" font-size="10.5" fill="#52514e">Every source becomes the same simple record:</text>
+      <text x="264" y="95" font-size="10.5" fill="#52514e">a document + who was involved.</text>
+
+      <line x1="380" y1="102" x2="380" y2="114" stroke="#2a78d6" stroke-width="1.5"/>
+      <polygon points="375,112 380,120 385,112" fill="#2a78d6"/>
+
+      <rect x="252" y="120" width="256" height="56" rx="7" fill="#eaf2fc"/>
+      <text x="264" y="140" font-size="12" font-weight="700" fill="#0b0b0b">2 · Resolve identities</text>
+      <text x="264" y="156" font-size="10.5" fill="#52514e">"M. Chen", "Chen, Maya", maya@… → one person.</text>
+      <text x="264" y="169" font-size="10.5" fill="#52514e">Sure → merge. Unsure → <tspan fill="#eb6834" font-weight="700">ask a human</tspan>.</text>
+
+      <line x1="380" y1="176" x2="380" y2="188" stroke="#2a78d6" stroke-width="1.5"/>
+      <polygon points="375,186 380,194 385,186" fill="#2a78d6"/>
+
+      <rect x="252" y="194" width="256" height="56" rx="7" fill="#eaf2fc"/>
+      <text x="264" y="214" font-size="12" font-weight="700" fill="#0b0b0b">3 · Build the graph</text>
+      <text x="264" y="230" font-size="10.5" fill="#52514e">People &amp; orgs, connected. Strength is computed</text>
+      <text x="264" y="243" font-size="10.5" fill="#52514e">from real interactions — never guessed by AI.</text>
+    </g>
+
+    <!-- arrows core -> consumers -->
+    <g stroke="#c3c2b7" stroke-width="1.5" fill="none">
+      <path d="M522 110 C 550 110, 555 96, 578 88"/>
+      <path d="M522 190 C 550 190, 555 204, 578 212"/>
+    </g>
+
+    <!-- consumers -->
+    <rect x="580" y="56" width="150" height="64" rx="8" fill="#f9f9f7" stroke="#e1e0d9"/>
+    <text x="655" y="80" font-size="12" font-weight="700" fill="#0b0b0b" text-anchor="middle">Your team</text>
+    <text x="655" y="96" font-size="10.5" fill="#52514e" text-anchor="middle">web dashboard — explore,</text>
+    <text x="655" y="109" font-size="10.5" fill="#52514e" text-anchor="middle">warm paths, radar, review</text>
+
+    <rect x="580" y="180" width="150" height="64" rx="8" fill="#e8f7f1" stroke="#1baf7a"/>
+    <text x="655" y="204" font-size="12" font-weight="700" fill="#0b0b0b" text-anchor="middle">Your AI agents</text>
+    <text x="655" y="220" font-size="10.5" fill="#52514e" text-anchor="middle">Claude &amp; other tools, via</text>
+    <text x="655" y="233" font-size="10.5" fill="#52514e" text-anchor="middle">one MCP endpoint</text>
+
+    <!-- shared db note -->
+    <text x="380" y="290" font-size="10" fill="#898781" text-anchor="middle">One local database. The dashboard and the agent endpoint are the same process, reading the same live graph.</text>
+  </svg>
+
+  <div class="onesent"><b>In one sentence:</b> fundgraph turns your fund's scattered communication into a single,
+  trustworthy map of <i>who you know and how well</i> — that both people and AI can navigate.</div>
+
+  <div class="toc">
+    <div class="kicker" style="margin-bottom:4px">What's inside</div>
+    <div class="row"><b>Page 2</b><span>The pipeline, step by step — how scattered data becomes one graph, with a human in the loop.</span></div>
+    <div class="row"><b>Page 3</b><span>What you get — warm paths, radar, briefs &amp; fund memory, agents. Plus: real questions it answers.</span></div>
+    <div class="row"><b>Page 4</b><span>The ideas, in plain language — what a knowledge graph is, and why "AI document search" (RAG) isn't enough.</span></div>
+    <div class="row"><b>Page 5</b><span>How agents connect (MCP, explained simply) — and the technology stack, including what Postgres is.</span></div>
+    <div class="row"><b>Page 6</b><span>Trust — privacy layers, where AI is allowed and where it's banned, and the technical fact sheet.</span></div>
+  </div>
+
+  <div class="foot"><span>fundgraph · how it works</span><span>page 1 of 6</span></div>
+</section>
+
+<!-- ================= PAGE 2 — the pipeline ================= -->
+<section class="page">
+  <h2>The pipeline, step by step</h2>
+
+  <div class="step">
+    <div class="n">1</div>
+    <div>
+      <h3>Ingest — everything becomes one simple shape</h3>
+      <p class="sub">Drop in a Gmail export, a calendar file, a CSV of contacts, or connect Attio live. Every source is
+      reduced to the same record: <i>a document (an email, a meeting, a note) plus the people and organizations involved.</i></p>
+      <p class="tiny">Technical: adapters for .mbox / .ics / .csv / .jsonl, Granola, Attio, Gmail/Calendar/Drive APIs. Ingest is
+      idempotent — re-importing the same data updates in place, never duplicates, and never destroys review history.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="n" style="background:var(--orange)">2</div>
+    <div>
+      <h3>Entity resolution — is "M. Chen" the same person as "Maya Chen"?</h3>
+      <p class="sub">Every name and address is matched against known people using several signals (same email, same name at
+      the same firm, and so on). The score decides what happens next — and <b>a tie always goes to a human</b>:</p>
+      <svg viewBox="0 0 660 78" style="width:96%; margin:6px 0 2px" role="img" aria-label="Resolution score bands: below 0.70 kept separate; 0.70 to 0.95 asks a human; 0.95 and above merged automatically">
+        <rect x="10"  y="18" width="248" height="22" rx="4" fill="#f9f9f7" stroke="#e1e0d9"/>
+        <rect x="262" y="18" width="188" height="22" rx="4" fill="#fdf0ea" stroke="#eb6834"/>
+        <rect x="454" y="18" width="196" height="22" rx="4" fill="#eaf2fc" stroke="#2a78d6"/>
+        <text x="134" y="33" font-size="11.5" text-anchor="middle" fill="#52514e">kept separate</text>
+        <text x="356" y="33" font-size="11.5" text-anchor="middle" fill="#0b0b0b" font-weight="700">asks a human ⚠</text>
+        <text x="552" y="33" font-size="11.5" text-anchor="middle" fill="#0b0b0b" font-weight="700">merged automatically</text>
+        <text x="10"  y="62" font-size="10" fill="#898781">score 0</text>
+        <text x="262" y="62" font-size="10" fill="#898781" text-anchor="middle">0.70</text>
+        <text x="454" y="62" font-size="10" fill="#898781" text-anchor="middle">0.95</text>
+        <text x="650" y="62" font-size="10" fill="#898781" text-anchor="end">1.0</text>
+      </svg>
+      <div class="ex" style="background:var(--plane); border:1px solid var(--line); border-radius:6px; padding:7px 10px; margin:6px 0 4px; font-size:11px; color:var(--ink-2)">
+        <b style="color:var(--ink)">Real example — one person, five appearances:</b>
+        Maya Chen &lt;maya@nordwind.vc&gt; · "Chen, Maya" (reversed, in an email header) · an encoded form from a
+        calendar invite · an Attio CRM contact — merged automatically. "M. Chen" &lt;mchen@gmail.com&gt; (a personal
+        address, score 0.83) — <span style="color:var(--orange); font-weight:700">asked a human first</span>, then merged. One node on the map.
+      </div>
+      <p class="tiny">Technical: blocking → candidate generation → probabilistic scoring → human review queue. Conflicting
+      evidence (same name, different work domain) always asks. Decisions are recorded, audited, and replayed if the graph
+      is ever rebuilt from scratch — a click is never lost.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="n">3</div>
+    <div>
+      <h3>Relationship strength — computed, with receipts</h3>
+      <p class="sub">Every connection's strength comes from a transparent recipe over real events — recent contact counts
+      for more, and every score can show the evidence behind it ("3 meetings, 2 emails, 1 co-authored doc"):</p>
+      <div class="recipe">
+        <span class="chip"><b>3</b> meetings ×3</span><span class="op">+</span>
+        <span class="chip"><b>2</b> direct emails ×2.5</span><span class="op">+</span>
+        <span class="chip"><b>1</b> shared doc ×1.5</span><span class="op">→</span>
+        <span class="chip">recency decay (180-day half-life)</span><span class="op">→</span>
+        <span class="chip result">strength 74%</span>
+      </div>
+      <p class="tiny">Technical: weight(kind) × decay(age), saturating via 1 − e<sup>−W/6</sup> so evidence accumulates but
+      never exceeds 100%. All weights are editable in Settings per firm; saving rebuilds the graph instantly. The graph is a
+      read model — deterministically rebuilt, never hand-edited.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="n" style="background:var(--aqua)">4</div>
+    <div>
+      <h3>Serve — one map, two doors</h3>
+      <p class="sub">The finished graph is served two ways from the same process: a <b>dashboard</b> for people and an
+      <b>MCP endpoint</b> for AI agents. Both see the same live data; a review decision made in one is instantly true in the other.</p>
+      <p class="tiny">Technical: single Node process; embedded Postgres (zero setup) or your own <code>DATABASE_URL</code>.
+      MCP is served over Streamable HTTP at <code>/mcp</code>.</p>
+    </div>
+  </div>
+
+  <div class="callout orange"><b>The trust rule:</b> the system never merges two identities on a guess, and no AI model
+  ever assigns a relationship score. Anything uncertain is a question for a human — that's what makes the map safe to act on.</div>
+
+  <div class="foot"><span>fundgraph · how it works</span><span>page 2 of 6</span></div>
+</section>
+
+<!-- ================= PAGE 3 — what you get ================= -->
+<section class="page">
+  <h2>What you get out of it</h2>
+
+  <div class="cols">
+    <div>
+      <div class="surf">
+        <h3>Warm paths — the best route to an introduction</h3>
+        <p class="sub">Ask "how do I get to Priya?" and the graph finds the strongest chain of real relationships,
+        plus a ranked list of who should make the intro — scored by their <i>weaker</i> leg, because an introducer
+        is only as good as their weaker relationship.</p>
+        <svg viewBox="0 0 300 96" style="width:100%; margin-top:6px" role="img" aria-label="Warm path example: Tom to Dana 26 percent, Dana to Priya 66 percent, path strength 17 percent">
+          <line x1="52" y1="34" x2="128" y2="34" stroke="#2a78d6" stroke-width="2.5"/>
+          <line x1="172" y1="34" x2="248" y2="34" stroke="#2a78d6" stroke-width="3.5"/>
+          <circle cx="40" cy="34" r="11" fill="#2a78d6"/>
+          <circle cx="150" cy="34" r="11" fill="#2a78d6"/>
+          <circle cx="260" cy="34" r="11" fill="#2a78d6"/>
+          <text x="40"  y="62" font-size="10.5" text-anchor="middle" fill="#0b0b0b" font-weight="600">Tom</text>
+          <text x="150" y="62" font-size="10.5" text-anchor="middle" fill="#0b0b0b" font-weight="600">Dana</text>
+          <text x="260" y="62" font-size="10.5" text-anchor="middle" fill="#0b0b0b" font-weight="600">Priya</text>
+          <text x="90"  y="24" font-size="10" text-anchor="middle" fill="#52514e">26%</text>
+          <text x="210" y="24" font-size="10" text-anchor="middle" fill="#52514e">66%</text>
+          <text x="150" y="88" font-size="10" text-anchor="middle" fill="#898781">path strength 26% × 66% ≈ 17%</text>
+        </svg>
+      </div>
+
+      <div class="surf">
+        <h3>Radar — who needs attention <i>now</i></h3>
+        <p class="sub">Every relationship has its own rhythm. Radar learns each pair's usual contact interval, so
+        "overdue" is relative: three quiet weeks are nothing for a quarterly contact and alarming for a weekly one.</p>
+        <div class="ex">overdue &nbsp;·&nbsp; Priya ↔ Maya — last contact 16d ago · usually every 10d · <b>6d overdue</b></div>
+      </div>
+
+      <div class="surf">
+        <h3>Briefs &amp; fund memory</h3>
+        <p class="sub">Click any person: strongest relationships with the evidence behind each score, recent shared
+        documents, and the firm's deal history with their company — <b>including the passes and the stated reasons</b>,
+        so "have we seen this company before, and why did we say no?" has an answer.</p>
+      </div>
+    </div>
+
+    <div>
+      <div class="surf" style="border-color:var(--aqua)">
+        <h3>Agents on the graph — via MCP</h3>
+        <p class="sub">MCP is the open standard that lets AI assistants call tools. fundgraph exposes the whole map as
+        one endpoint, so Claude (or any MCP client) answers from <b>facts in your graph</b> instead of guessing.</p>
+        <div class="ex" style="background:var(--aqua-soft); border-color:var(--aqua)">
+          <b>You:</b> "Prep me for my meeting with Priya Nair. I'm Dana."<br>
+          <b>Claude:</b> calls <code>meeting_prep</code> → gets her profile, your relationship history with receipts,
+          shared documents, your warm paths and best introducers → writes the brief.<br>
+          <span class="tiny">Structured facts from the graph; prose from the model; nothing hallucinated.</span>
+        </div>
+        <div class="toolgrid">
+          <div><code>meeting_prep</code> — everything for one meeting</div>
+          <div><code>company_memory</code> — deals, incl. passes</div>
+          <div><code>find_warm_path</code> · <code>find_introducers</code></div>
+          <div><code>relationship_radar</code> — timing</div>
+          <div><code>entity_brief</code> · <code>search_entities</code></div>
+          <div><code>review_queue</code> · <code>review_resolve</code></div>
+        </div>
+        <p class="tiny" style="margin-top:8px">Connect once, while the dashboard is running:</p>
+        <code class="cmd">claude mcp add --transport http fundgraph http://localhost:4321/mcp</code>
+      </div>
+
+      <div class="surf">
+        <h3>Human controls, in the same UI</h3>
+        <p class="sub">The review queue (confirm/reject uncertain matches), manual merge/unmerge, per-firm scoring
+        weights, automated-sender detection (newsletters and robots stay out of the graph), and a full audit trail
+        of every change.</p>
+      </div>
+
+      <div class="callout" style="margin:0 0 10px"><b>Why not just vector search?</b> Similarity search retrieves
+      <i>text that sounds related</i>; relationship questions need a graph with verified identities.
+      <span class="tiny">Full plain-language comparison on page 4.</span></div>
+    </div>
+  </div>
+
+  <h2 style="margin-top:2px">Ask it like a person — examples</h2>
+  <table class="facts">
+    <tr><td style="width:52%">"Who should intro us to Priya Nair at Meridian?"</td>
+        <td>Warm path tab → ranked introducers · agent tool <code>find_introducers</code></td></tr>
+    <tr><td>"Which relationships are quietly going cold this month?"</td>
+        <td>Radar tab · agent tool <code>relationship_radar</code></td></tr>
+    <tr><td>"Have we seen Copperline Metrics before — and why did we pass?"</td>
+        <td>Company brief → deal history · agent tool <code>company_memory</code></td></tr>
+    <tr><td>"Prep me for tomorrow's meeting with Priya. I'm Dana."</td>
+        <td>Person brief in the dashboard · agent tool <code>meeting_prep</code></td></tr>
+  </table>
+
+  <div class="foot"><span>fundgraph · how it works</span><span>page 3 of 6</span></div>
+</section>
+
+<!-- ================= PAGE 4 — the ideas, plainly ================= -->
+<section class="page">
+  <h2>The ideas, in plain language</h2>
+
+  <div class="cols">
+    <div style="flex:1.25">
+      <h3 style="font-size:13.5px; margin-bottom:4px">What is a "knowledge graph"?</h3>
+      <p class="sub">A graph is just <b>things and the connections between them</b> — circles and lines. Here the
+      circles are people and organizations; every line is a relationship, carrying a strength score and the evidence
+      behind it. Think of it as <b>a map assembled from your documents</b>: the documents stay where they are, and the
+      map records what they prove — who exists, who knows whom, how well, since when.</p>
+      <p class="tiny">Under the hood there's no exotic technology: the map is ordinary database tables — one for
+      people &amp; orgs, one for connections, one for the documents behind them. "Graph" describes the shape of the
+      data, not a special machine.</p>
+    </div>
+    <div>
+      <svg viewBox="0 0 250 150" style="width:100%" role="img" aria-label="A small graph: You connect to Dana 74%, Maya 68%; Dana connects to Priya 66%">
+        <line x1="60" y1="52" x2="150" y2="30"  stroke="#2a78d6" stroke-width="4"/>
+        <line x1="60" y1="52" x2="140" y2="98"  stroke="#2a78d6" stroke-width="3"/>
+        <line x1="150" y1="30" x2="216" y2="86" stroke="#2a78d6" stroke-width="2.5"/>
+        <line x1="140" y1="98" x2="216" y2="86" stroke="#c3c2b7" stroke-width="1.5"/>
+        <circle cx="60"  cy="52" r="12" fill="#0b0b0b"/>
+        <circle cx="150" cy="30" r="10" fill="#2a78d6"/>
+        <circle cx="140" cy="98" r="10" fill="#2a78d6"/>
+        <circle cx="216" cy="86" r="10" fill="#2a78d6"/>
+        <text x="60"  y="78"  font-size="10" text-anchor="middle" font-weight="700" fill="#0b0b0b">You</text>
+        <text x="150" y="16"  font-size="10" text-anchor="middle" fill="#0b0b0b">Dana</text>
+        <text x="128" y="118" font-size="10" text-anchor="middle" fill="#0b0b0b">Maya</text>
+        <text x="222" y="106" font-size="10" text-anchor="middle" fill="#0b0b0b">Priya</text>
+        <text x="100" y="32" font-size="9" fill="#52514e">74%</text>
+        <text x="90"  y="88" font-size="9" fill="#52514e">68%</text>
+        <text x="192" y="52" font-size="9" fill="#52514e">66%</text>
+        <text x="125" y="142" font-size="9" fill="#898781" text-anchor="middle">line weight = how strong, with receipts</text>
+      </svg>
+    </div>
+  </div>
+
+  <h3 style="font-size:13.5px; margin:12px 0 4px">Three ways to point AI at your fund's data</h3>
+  <div class="cols">
+    <div class="surf" style="margin:0">
+      <h3 style="font-size:12px">1 · The model alone</h3>
+      <p class="tiny" style="color:var(--ink-2)">Claude/ChatGPT know nothing about <i>your</i> fund. Asked anyway,
+      they answer fluently — from nothing. Confident guessing.</p>
+    </div>
+    <div class="surf" style="margin:0">
+      <h3 style="font-size:12px">2 · "AI document search" (RAG)</h3>
+      <p class="tiny" style="color:var(--ink-2)">The model searches your files for passages that <i>sound similar</i>
+      to the question, reads the top few, answers. Great for "find the clause". Weak when the answer requires knowing
+      who's who, weighing <i>all</i> the evidence, or noticing what's missing.</p>
+    </div>
+    <div class="surf" style="margin:0; border-color:var(--blue)">
+      <h3 style="font-size:12px">3 · A verified map (fundgraph)</h3>
+      <p class="tiny" style="color:var(--ink-2)">The facts are extracted, identity-checked, and connected <i>before</i>
+      any question is asked. The model then queries the finished map and writes prose from real numbers.</p>
+    </div>
+  </div>
+
+  <table class="compare">
+    <tr><th>The question</th><th>Searching a pile of text (RAG)</th><th>Asking the map (fundgraph)</th></tr>
+    <tr>
+      <td>"Who can intro me to Priya?"</td>
+      <td>Returns emails that <i>mention</i> Priya. Whether the senders actually know her — and how well — is a guess.</td>
+      <td>Computes the strongest chain of real relationships (Tom → Dana 26% → Priya 66%) and ranks introducers by their weaker leg.</td>
+    </tr>
+    <tr>
+      <td>"How strong is our Meridian relationship?"</td>
+      <td>Whatever the top few retrieved paragraphs imply — one lucky email can dominate the answer.</td>
+      <td>Sums <i>every</i> touchpoint (meetings, emails, docs), weighted and time-decayed — with the receipts listed.</td>
+    </tr>
+    <tr>
+      <td>"Is M. Chen the same person as Maya Chen?"</td>
+      <td>To text search these are just different strings. It cannot know, so it silently treats them as two people.</td>
+      <td>Identity resolution scored the match (0.83), asked a human, and merged. The map has one Maya.</td>
+    </tr>
+    <tr>
+      <td>"Have we seen this company before?"</td>
+      <td>Maybe surfaces an old mention — if you phrase the query luckily. Silence proves nothing.</td>
+      <td>Deal history is recorded structurally: every INVEST and every PASS with its stated reason and source document.</td>
+    </tr>
+  </table>
+
+  <div class="callout" style="margin-top:12px"><b>Not either/or.</b> Document search is still the right tool for
+  "find the clause in the LPA". fundgraph exists because <b>relationship questions need structure</b> — and once the
+  map exists, the AI's answers to those questions stop being guesses. The two compose: facts from the graph, prose
+  from the model.</div>
+
+  <div class="foot"><span>fundgraph · how it works</span><span>page 4 of 6</span></div>
+</section>
+
+<!-- ================= PAGE 5 — MCP plainly + the stack ================= -->
+<section class="page">
+  <h2>How agents connect — MCP, in plain language</h2>
+  <p class="sub" style="max-width:94%"><b>MCP (Model Context Protocol)</b> is an open standard — think <b>USB-C for
+  AI</b>. Instead of a custom integration per app, any assistant that speaks MCP (Claude Desktop, Claude Code, Cursor,
+  and others) can plug into any MCP "server". fundgraph is such a server: it offers the assistant a menu of eleven
+  named <b>tools</b> — small, well-defined actions like <code>meeting_prep</code> or <code>find_warm_path</code> —
+  each with documented inputs and outputs. The assistant reads the menu and decides, per question, which tool answers it.</p>
+
+  <svg viewBox="0 0 700 220" style="width:100%; margin:8px 0 0" role="img" aria-label="Sequence: you ask Claude, Claude calls a fundgraph tool, fundgraph returns facts, Claude writes the brief">
+    <!-- actors -->
+    <rect x="30"  y="10" width="120" height="34" rx="7" fill="#f9f9f7" stroke="#e1e0d9"/>
+    <rect x="290" y="10" width="120" height="34" rx="7" fill="#e8f7f1" stroke="#1baf7a"/>
+    <rect x="550" y="10" width="120" height="34" rx="7" fill="#eaf2fc" stroke="#2a78d6"/>
+    <text x="90"  y="31" font-size="12" font-weight="700" text-anchor="middle" fill="#0b0b0b">You</text>
+    <text x="350" y="31" font-size="12" font-weight="700" text-anchor="middle" fill="#0b0b0b">Claude</text>
+    <text x="610" y="31" font-size="12" font-weight="700" text-anchor="middle" fill="#0b0b0b">fundgraph</text>
+    <!-- lifelines -->
+    <g stroke="#e1e0d9" stroke-width="1.5" stroke-dasharray="3 4">
+      <line x1="90"  y1="44" x2="90"  y2="205"/>
+      <line x1="350" y1="44" x2="350" y2="205"/>
+      <line x1="610" y1="44" x2="610" y2="205"/>
+    </g>
+    <!-- messages -->
+    <g font-size="10.5">
+      <line x1="90" y1="72" x2="342" y2="72" stroke="#0b0b0b" stroke-width="1.5"/>
+      <polygon points="342,68 350,72 342,76" fill="#0b0b0b"/>
+      <text x="220" y="64" text-anchor="middle" fill="#0b0b0b">① "Prep me for my meeting with Priya. I'm Dana."</text>
+
+      <line x1="350" y1="108" x2="602" y2="108" stroke="#1baf7a" stroke-width="1.5"/>
+      <polygon points="602,104 610,108 602,112" fill="#1baf7a"/>
+      <text x="480" y="100" text-anchor="middle" fill="#0b0b0b">② picks a tool from the menu: <tspan font-family="ui-monospace, Menlo, monospace">meeting_prep(Priya, me: Dana)</tspan></text>
+
+      <line x1="610" y1="144" x2="358" y2="144" stroke="#2a78d6" stroke-width="1.5"/>
+      <polygon points="358,140 350,144 358,148" fill="#2a78d6"/>
+      <text x="480" y="136" text-anchor="middle" fill="#0b0b0b">③ returns <tspan font-weight="700">facts</tspan>: profile · history with receipts · warm paths · introducers</text>
+
+      <line x1="350" y1="180" x2="98" y2="180" stroke="#0b0b0b" stroke-width="1.5"/>
+      <polygon points="98,176 90,180 98,184" fill="#0b0b0b"/>
+      <text x="220" y="172" text-anchor="middle" fill="#0b0b0b">④ writes the brief <tspan font-style="italic">from those facts</tspan></text>
+    </g>
+    <text x="350" y="214" font-size="10" fill="#898781" text-anchor="middle">The assistant never rummages the database — it can only call the listed tools, and every answer passes the same privacy filters.</text>
+  </svg>
+
+  <div class="cols" style="margin-top:8px">
+    <div class="callout aqua" style="margin:0">
+      <b>Why this matters:</b> the model contributes language and judgment; the numbers, names, and paths come from the
+      graph. If the graph doesn't know something, the honest answer is "no path found" — not an invented one.
+    </div>
+    <div class="callout" style="margin:0">
+      <b>Setup is one line</b> while the dashboard runs:
+      <code class="cmd">claude mcp add --transport http fundgraph http://localhost:4321/mcp</code>
+      <span class="tiny">Add <code>?as=Seb%20Larkin</code> to give an agent one member's private view — it then sees
+      exactly what that person would see, nothing more.</span>
+    </div>
+  </div>
+
+  <h2 style="margin-top:14px">What it's built on</h2>
+  <table class="facts">
+    <tr><td>The application</td><td><b>JavaScript on Node.js</b> — the same mainstream technology behind most modern web
+      services. One program, ~no external services, runs on a laptop. Open source (MIT), so anyone can audit exactly
+      what it does with your data.</td></tr>
+    <tr><td>The database — and what "Postgres" means</td><td><b>PostgreSQL ("Postgres")</b> is one of the world's most
+      trusted database systems — ~30 years old, free, and used by banks, airlines, and most tech companies. A database
+      is simply a program that stores structured records and answers questions about them reliably
+      (think: industrial&#8209;strength spreadsheets with a query language). fundgraph ships with an <b>embedded</b> Postgres
+      (<b>PGlite</b>) — it runs <i>inside</i> the app, keeps everything in one folder on your machine, and needs zero
+      installation. When a team outgrows one laptop, point <code>DATABASE_URL</code> at a normal Postgres server —
+      same data, same code.</td></tr>
+    <tr><td>The dashboard</td><td>Plain HTML/CSS/JavaScript with <b>D3</b>, the standard library for interactive data
+      graphics — that's the force-directed network you see. No heavy framework; the whole front-end is three files.</td></tr>
+    <tr><td>AI — used narrowly</td><td><b>Anthropic's Claude</b>, called only in the extraction step to read document
+      text and propose candidates (people, orgs, deal signals) for the deterministic pipeline to verify. The graph,
+      scoring, paths, and radar all work with the AI switched off.</td></tr>
+    <tr><td>Agent interface</td><td>The official <b>MCP SDK</b> — one endpoint, eleven tools, served by the same process
+      as the dashboard (or standalone over stdio for headless setups).</td></tr>
+  </table>
+
+  <div class="foot"><span>fundgraph · how it works</span><span>page 5 of 6</span></div>
+</section>
+
+<!-- ================= PAGE 6 — privacy, AI boundaries, tech facts ================= -->
+<section class="page">
+  <h2>Privacy layers — share the map, not the mail</h2>
+  <p class="sub" style="max-width:92%">The objection every partner raises: <i>"I'm not putting my inbox where the whole
+  team can read it."</i> fundgraph's answer: each member can keep sources in a <b>private layer</b>. The team learns that
+  a connection <i>exists</i> and who to ask — never the evidence behind it.</p>
+
+  <svg viewBox="0 0 700 170" style="width:100%; margin:10px 0 2px" role="img" aria-label="Privacy layers: shared layer visible to everyone; Seb's private layer produces a locked hint for Tom and full detail for Seb">
+    <!-- layers -->
+    <rect x="10" y="24" width="330" height="60" rx="8" fill="#eaf2fc" stroke="#2a78d6"/>
+    <text x="24" y="46" font-size="12" font-weight="700" fill="#0b0b0b">Shared layer</text>
+    <text x="24" y="62" font-size="10.5" fill="#52514e">team meetings, CRM, anything imported for everyone —</text>
+    <text x="24" y="75" font-size="10.5" fill="#52514e">visible to the whole team, full detail</text>
+
+    <rect x="10" y="96" width="330" height="60" rx="8" fill="#ffffff" stroke="#898781" stroke-dasharray="5 4"/>
+    <text x="24" y="118" font-size="12" font-weight="700" fill="#0b0b0b">Seb's private layer 🔒</text>
+    <text x="24" y="134" font-size="10.5" fill="#52514e">his own inbox — e.g. two emails with Priya Nair.</text>
+    <text x="24" y="147" font-size="10.5" fill="#52514e">Only Seb ever sees these documents.</text>
+
+    <!-- views -->
+    <rect x="380" y="24" width="310" height="60" rx="8" fill="#f9f9f7" stroke="#e1e0d9"/>
+    <text x="394" y="44" font-size="11.5" font-weight="700" fill="#0b0b0b">Tom asks: "warm path to Priya?"</text>
+    <text x="394" y="60" font-size="10.5" fill="#52514e">His own weak route, plus: <tspan font-weight="700">Ask a colleague — Seb 🔒</tspan></text>
+    <text x="394" y="74" font-size="10.5" fill="#52514e">No strength, no titles. Brief says "2 documents withheld".</text>
+
+    <rect x="380" y="96" width="310" height="60" rx="8" fill="#f9f9f7" stroke="#e1e0d9"/>
+    <text x="394" y="116" font-size="11.5" font-weight="700" fill="#0b0b0b">Seb asks the same question</text>
+    <text x="394" y="132" font-size="10.5" fill="#52514e">Direct 54% path to Priya, both emails listed —</text>
+    <text x="394" y="146" font-size="10.5" fill="#52514e">his private evidence works for him, silently for others.</text>
+
+    <g stroke="#c3c2b7" stroke-width="1.5" fill="none">
+      <path d="M340 54 L 376 54"/><polygon points="374,50 382,54 374,58" fill="#c3c2b7"/>
+      <path d="M340 126 L 376 126"/><polygon points="374,122 382,126 374,130" fill="#c3c2b7"/>
+    </g>
+  </svg>
+  <p class="tiny">The principle: <b>existence is shared, evidence is private.</b> Enforced server-side on every query
+  (a standing "leak probe" test suite verifies it). Honest boundary: this is a cooperative model for one trusted team on
+  one machine — not a defense against someone with direct access to the database file.</p>
+
+  <h2 style="margin-top:14px">Where AI is used — and where it's banned</h2>
+  <div class="cols">
+    <div class="callout aqua" style="margin:0">
+      <b>AI is used for reading, not deciding.</b> An LLM mines document <i>text</i> ("their CFO Ruth Calloway
+      flagged…") and proposes people, orgs, and deal signals no structured field ever sees. Every proposal is then
+      checked by plain code: the name must literally appear in the text, emails must match exactly, low confidence is
+      dropped — and the survivors go through the <b>same</b> resolution-and-review pipeline as everything else.
+    </div>
+    <div class="callout orange" style="margin:0">
+      <b>AI is banned from scoring.</b> Models confidently misjudge relationships, so no LLM ever sets a strength,
+      merges an identity, or invents a contact. The LLM proposes; deterministic code and humans dispose. That division
+      is what makes the graph safe for agents to act on.
+    </div>
+  </div>
+
+  <h2 style="margin-top:14px">Quick reference</h2>
+  <table class="facts">
+    <tr><td>Run it</td><td><code>npm install &amp;&amp; npm start</code> → http://localhost:4321. First run offers a one-click
+      fictional sample world — the graph, a pending review, a team with a private layer — so you can try everything before
+      connecting real data.</td></tr>
+    <tr><td>Data in</td><td>Gmail Takeout (.mbox, streamed — multi-GB is fine), .ics, .csv, .jsonl, Granola cache, Attio live sync, Gmail/Calendar/Drive APIs. All ingestion is idempotent — re-importing never duplicates.</td></tr>
+    <tr><td>Agents</td><td>MCP over Streamable HTTP at <code>/mcp</code> (11 tools), or stdio (<code>fundgraph mcp</code>). Per-member scoping: <code>?as=&lt;member&gt;</code> binds an agent to that person's private layer.</td></tr>
+    <tr><td>Trust &amp; audit</td><td>Deterministic scoring with receipts · human review for uncertain merges · decisions replayed on rebuilds · full audit trail · automated-sender filtering (robots stay out of the graph) · privacy leak-probe in the test suite.</td></tr>
+    <tr><td>Stack</td><td>Node.js 20+ · embedded Postgres (PGlite), or <code>DATABASE_URL</code> for a shared server · D3 dashboard · Anthropic Claude (extraction only) · MCP SDK — plain-language tour on page 5. MIT open source.</td></tr>
+  </table>
+
+  <div class="foot"><span>fundgraph · how it works · v0.3.0 · August 2026</span><span>page 6 of 6</span></div>
+</section>
+
+</body>
+</html>

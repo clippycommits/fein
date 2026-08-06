@@ -327,6 +327,9 @@ async function showBrief(id) {
          </div>`).join("")
       : "") +
     `<h3 class="section-title">Recent documents</h3>` +
+    (b.withheldDocuments
+      ? `<p class="hint">🔒 ${b.withheldDocuments} document${b.withheldDocuments === 1 ? "" : "s"} withheld — in colleagues' private layers.</p>`
+      : "") +
     (b.recentDocuments.length ? b.recentDocuments.map((d) =>
       `<div class="doc-row">${esc(d.title ?? "(untitled)")} <span class="src">· ${esc(d.source)}${d.occurred_at ? " · " + esc(d.occurred_at.slice(0, 10)) : ""}</span></div>`).join("") : `<div class="empty"><p>None.</p></div>`);
   // CSSOM writes aren't governed by style-src, unlike parsed style attributes.
@@ -500,6 +503,7 @@ async function renderData() {
   renderExtractStatus(); // independent fetch; the tab must not block on it
   renderAttio();
   renderMembers();
+  renderMcp();
   $("#sources").innerHTML = docs.sources.length
     ? `<table class="mini"><tr><th>Source</th><th>Kinds</th><th class="num">Docs</th><th>Latest</th></tr>` +
       docs.sources.map((s) =>
@@ -521,6 +525,11 @@ async function renderData() {
 /* ---------- members & privacy layers ---------- */
 async function renderMembers() {
   const members = await renderViewers();
+  const layerSel = $("#upload-layer");
+  const kept = layerSel.value;
+  layerSel.innerHTML = `<option value="">Shared layer — whole team</option>` +
+    members.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}&#39;s private layer 🔒</option>`).join("");
+  if ([...layerSel.options].some((o) => o.value === kept)) layerSel.value = kept;
   $("#members").innerHTML = members.length
     ? `<table class="mini"><tr><th>Member</th><th class="num">Private docs</th><th></th></tr>` +
       members.map((m) =>
@@ -578,6 +587,21 @@ async function removeMember({ id, name, docs }) {
   }
   toast(`Removed ${name}`, "good");
   await Promise.all([renderMembers(), renderStats(), renderGraph()]);
+}
+
+/* ---------- MCP endpoint ---------- */
+function renderMcp() {
+  const cmd = `claude mcp add --transport http fundgraph ${location.origin}/mcp`;
+  $("#mcp-info").innerHTML =
+    `<div class="mcp-cmd"><code>${esc(cmd)}</code>
+       <button id="copy-mcp" class="small">Copy</button></div>
+     <p class="hint">…or in Claude Desktop: Settings → Connectors → add <code>${esc(location.origin)}/mcp</code>.
+       Append <code>?as=Seb%20Larkin</code> to the URL to bind an agent to that member's private
+       layer. Headless alternative (dashboard not running): <code>fundgraph mcp</code> over stdio.</p>`;
+  $("#copy-mcp").addEventListener("click", async () => {
+    await navigator.clipboard.writeText(cmd);
+    toast("MCP connect command copied", "good");
+  });
 }
 
 /* ---------- Attio connector ---------- */
@@ -799,19 +823,21 @@ $("#file-input").addEventListener("change", (ev) => {
 
 async function uploadFile(file) {
   const out = $("#ingest-result");
+  const layer = $("#upload-layer").value;
   out.innerHTML = `ingesting <strong>${esc(file.name)}</strong>…`;
   try {
-    const res = await api(`/api/ingest?name=${encodeURIComponent(file.name)}`, {
-      method: "POST",
-      body: await file.text(),
-    });
+    const res = await api(
+      `/api/ingest?name=${encodeURIComponent(file.name)}${layer ? `&as=${encodeURIComponent(layer)}` : ""}`,
+      { method: "POST", body: await file.text() }
+    );
     out.innerHTML = `<span class="ok">✓</span> ${res.ingested.docCount} docs, ${res.ingested.mentionCount} mentions ·
       resolved ${res.resolved.attached + res.resolved.created}, queued ${res.resolved.queued} for review ·
       ${res.edges.edges} connections` +
+      (res.layer ? `<br><span class="hint">🔒 into ${esc(res.layer)}'s private layer</span>` : "") +
       (res.stats.pendingExtraction > 0
         ? `<br><span class="hint">${res.stats.pendingExtraction} document bodies ready for LLM extraction ↓</span>`
         : "");
-    toast(`Ingested ${file.name}`, "good");
+    toast(res.layer ? `Ingested ${file.name} into ${res.layer}'s private layer` : `Ingested ${file.name}`, "good");
     renderExtractStatus();
     await Promise.all([renderStats(), renderGraph(), renderData()]);
   } catch (err) {
@@ -828,7 +854,7 @@ $("#ob-sample").addEventListener("click", async () => {
     const res = await api("/api/sample", { method: "POST" });
     $("#onboarding").hidden = true;
     toast(`Sample loaded: ${res.stats.entities} entities, ${res.stats.edges} connections`, "good");
-    await Promise.all([renderStats(), renderGraph()]);
+    await Promise.all([renderStats(), renderGraph(), renderViewers()]);
     setTimeout(fitView, 1600);
   } finally {
     btn.disabled = false;

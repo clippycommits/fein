@@ -29,7 +29,7 @@ npm install
 npm start          # → http://localhost:4321
 ```
 
-First run shows onboarding: load the bundled (fictional) sample dataset with one click, or drop in your own export. Embedded mode is **single-process** (a lockfile enforces this): stop the web server before running CLI ingests, or use `DATABASE_URL` to run several processes.
+First run shows onboarding: load the bundled (fictional) sample dataset with one click — it seeds the whole demo world, including a two-member team with a private layer — or drop in your own export. The dashboard also serves the [MCP endpoint](#mcp--agents-on-the-graph) at `/mcp`, so agents and the UI share one process. Embedded mode is **single-process** (a lockfile enforces this): stop the web server before running CLI ingests, or use `DATABASE_URL` to run several processes.
 
 ## The dashboard
 
@@ -190,9 +190,11 @@ fundgraph ingest seb-inbox.mbox --as "Seb Larkin"   # → Seb's private layer
 fundgraph path "Tom Merrill" "Priya Nair" --as "Tom Merrill"
 ```
 
-In the dashboard, the **Viewing as** switch in the header changes layer; the
-Data tab manages members. For agents, `FUNDGRAPH_VIEWER=<member>` binds an MCP
-server to one person's view.
+All of this works without the terminal too: the Data tab manages members, the
+**Uploads land in** selector above the dropzone targets a member's private
+layer, and the **Viewing as** switch in the header changes whose view you see.
+For agents, `?as=<member>` on the MCP URL (or `FUNDGRAPH_VIEWER=<member>` for
+stdio) binds an MCP server to one person's view.
 
 **What "existence is shared" actually means.** A person the firm already knows
 (they appear in any shared document) stays visible to everyone, and a colleague's
@@ -221,11 +223,26 @@ the roadmap below.
 
 ## MCP — agents on the graph
 
+The dashboard serves the graph as a Streamable-HTTP MCP endpoint at
+`http://localhost:4321/mcp` — same process, same live database, no conflict
+with the embedded single-process rule. With `npm start` running:
+
+```bash
+claude mcp add --transport http fundgraph http://localhost:4321/mcp
+```
+
+(Claude Desktop: Settings → Connectors → add the same URL. The Data tab shows
+this command with a copy button.) Append `?as=Seb%20Larkin` to bind the agent
+to that member's private layer — unknown members are rejected, never silently
+given the shared view.
+
+Without the dashboard running, the stdio flavor works anywhere:
+
 ```bash
 claude mcp add fundgraph -- node /path/to/fundgraph/src/cli.js mcp
 ```
 
-Tools: `meeting_prep` (one call: profile + relationship history + receipts + your warm paths to them), `company_memory` (every recorded deal signal for a company — investments *and passes with their reasoning* — with document provenance), `find_warm_path`, `find_introducers`, `entity_brief`, `search_entities`, `strongest_connections`, `graph_stats`, `review_queue`, `review_resolve`.
+Tools: `meeting_prep` (one call: profile + relationship history + receipts + your warm paths to them), `company_memory` (every recorded deal signal for a company — investments *and passes with their reasoning* — with document provenance), `relationship_radar`, `find_warm_path`, `find_introducers`, `entity_brief`, `search_entities`, `strongest_connections`, `graph_stats`, `review_queue`, `review_resolve`.
 
 ## CLI
 

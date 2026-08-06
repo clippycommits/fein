@@ -13,9 +13,11 @@ import { findWarmPath, findIntroducers } from "../graph/paths.js";
 import { searchEntities, entityBrief, counts, getEntity } from "../graph/queries.js";
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
 import { putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
-import { listMembers, addMember, removeMember, getMember, visibleLayers } from "../members.js";
+import { listMembers, addMember, removeMember, getMember, resolveMember, visibleLayers } from "../members.js";
 import { extractPending, extractionStats } from "../extract/pipeline.js";
 import { extractConfig, isAuthError } from "../extract/client.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { buildMcpServer } from "../mcp/server.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const PUBLIC = join(ROOT, "src/web/public");
@@ -103,6 +105,40 @@ async function route(db, req, res, url, port) {
   }
 
   if (req.method !== "GET") guardCrossOrigin(req, port);
+
+  // ---- MCP endpoint: the same graph, for agents, from the same process ----
+  // Stateless Streamable HTTP: a fresh server per request, so the dashboard
+  // and any number of MCP clients share one embedded database with no
+  // single-process conflict. `?as=<member>` binds the agent to that member's
+  // private layer (name, email, or id — errors loudly rather than silently
+  // answering from the wrong layer).
+  if (path === "/mcp") {
+    if (req.method !== "POST") {
+      return json(res, {
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Method not allowed — POST JSON-RPC to this endpoint" },
+        id: null,
+      }, 405);
+    }
+    let viewer = null;
+    if (url.searchParams.get("as")) {
+      try {
+        viewer = (await resolveMember(db, url.searchParams.get("as"))).id;
+      } catch (err) {
+        throw withStatus(new Error(err.message), 400);
+      }
+    }
+    const body = parseJson(await readBody(req));
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // stateless
+      enableJsonResponse: true,
+    });
+    const mcp = buildMcpServer(db, { viewer });
+    res.on("close", () => { transport.close(); mcp.close(); });
+    await mcp.connect(transport);
+    await transport.handleRequest(req, res, body);
+    return;
+  }
 
   // ---- read endpoints ----
   if (req.method === "GET") {
@@ -208,35 +244,34 @@ async function route(db, req, res, url, port) {
 
   if (req.method === "POST" && path === "/api/ingest") {
     const name = String(url.searchParams.get("name") ?? "upload.jsonl").slice(0, 200);
+    // `?as=<member>` targets that member's private layer. Unknown members are
+    // a hard 400: silently landing someone's inbox in the shared layer would
+    // be the exact leak the layer model exists to prevent.
+    let member = null;
+    if (url.searchParams.get("as")) {
+      try {
+        member = await resolveMember(db, url.searchParams.get("as"));
+      } catch (err) {
+        throw withStatus(new Error(err.message), 400);
+      }
+    }
     const docs = await parseUpload(name, await readBody(req));
-    const ingested = await ingestDocs(db, docs);
+    const ingested = await ingestDocs(db, docs, { owner: member?.id ?? "" });
     const resolved = await resolveMentions(db);
     const edges = await rebuildEdges(db);
-    await audit(db, "ingest", { file: name, ...ingested });
-    return json(res, { ingested, resolved, edges, stats: await counts(db) });
+    // The audit trail is a shared surface: a private upload's filename is
+    // content, so log only whose layer grew — existence, not evidence.
+    await audit(db, "ingest", member
+      ? { file: "(private upload)", layer: member.name, ...ingested }
+      : { file: name, ...ingested });
+    return json(res, { ingested, resolved, edges, layer: member?.name ?? null, stats: await counts(db) });
   }
 
   if (req.method === "POST" && path === "/api/sample") {
-    const { readdirSync } = await import("node:fs");
-    const fixtureDir = join(ROOT, "sample/fixtures");
-    let fixtures = [];
-    try {
-      fixtures = readdirSync(fixtureDir)
-        .filter((f) => f.endsWith(".jsonl"))
-        .flatMap((f) => loadJsonl(join(fixtureDir, f)));
-    } catch {} // fixtures are optional
-    const docs = [
-      ...loadJsonl(join(ROOT, "sample/seed.jsonl")),
-      ...(await (await import("../ingest/mbox.js")).loadMbox(join(ROOT, "sample/sample.mbox"))),
-      ...(await import("../ingest/ics.js")).loadIcs(join(ROOT, "sample/sample.ics")),
-      ...(await import("../ingest/csv.js")).loadCsv(join(ROOT, "sample/contacts.csv")),
-      ...fixtures,
-    ];
-    const ingested = await ingestDocs(db, docs);
-    const resolved = await resolveMentions(db);
-    const edges = await rebuildEdges(db);
-    await audit(db, "ingest", { file: "bundled sample dataset", ...ingested });
-    return json(res, { ingested, resolved, edges, stats: await counts(db) });
+    const { loadSampleDataset } = await import("../ingest/sample.js");
+    const result = await loadSampleDataset(db);
+    await audit(db, "ingest", { file: "bundled sample dataset", ...result.ingested });
+    return json(res, { ...result, stats: await counts(db) });
   }
 
   if (req.method === "POST" && path === "/api/reresolve") {

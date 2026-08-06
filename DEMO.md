@@ -2,7 +2,11 @@
 
 Setup: `npm start` → http://localhost:4321. On an empty database you get the
 onboarding screen — "Load sample dataset" is itself a demo moment (data lands,
-resolves, and the graph appears in one click).
+resolves, and the graph appears in one click). That one click seeds the whole
+world below: the shared graph, the review queue, the two-member team (Tom +
+Seb Larkin) and Seb's private layer. `sample/sample.mbox`, `sample.ics`, and
+`contacts.csv` are deliberately left out — they're your live-drag ammunition
+for step 5. Everything in this script happens in the browser.
 
 ## 1. The problem (30s)
 
@@ -29,18 +33,21 @@ context, pre-meeting brief one click away (click any node).
 
 ## 4. Entity resolution — "the magic" (2 min)
 
-Review queue tab. "The same person appears 100+ different ways across sources —
+Reviews tab. "The same person appears 100+ different ways across sources —
 `M. Chen` from a gmail address vs `Maya Chen` at Nordwind. Above 95% confidence
 the system merges deterministically; between 70–95% **it asks a human** — never
 merges on a guess." Click ✓ — the gmail alias merges into Maya, graph updates.
 
 ## 5. Live ingest (1.5 min)
 
-Add-data tab. Drag `sample/sample.mbox` in — 3 emails ingest, resolve, and a new
-node (Theo Marchetti) appears, correctly deduped across formats: `"Chen, Maya"`
-reversed-name form, an RFC-2047-encoded name, a CSV contact — all land on the
-right entities. Works the same with a Gmail Takeout mbox, a calendar .ics, or an
-Attio CSV export.
+Data tab. Drag `sample/sample.mbox` in — 3 emails ingest, resolve, and land on
+the **right existing people**: `"Chen, Maya"` in reversed-name form, an
+RFC-2047-encoded Elena Ruiz, Theo Marchetti writing from a different thread.
+Watch the connection count tick up while the people count doesn't — that's the
+pitch line: *"eight more documents, zero new duplicates."* Follow with
+`sample.ics` and `contacts.csv` if you want the cross-format point (a calendar
+attendee line and a `"Nair, Priya"` CSV row landing on the same entities).
+Works the same with a Gmail Takeout mbox or an Attio CSV export.
 
 ## 5b. Connect the CRM live (1 min)
 
@@ -56,14 +63,18 @@ Attio can't do that on its own — it has no view of who actually emails whom.
 This answers the question every partner asks: *"I'm not putting my inbox where
 the whole team can read it."*
 
-Data tab shows the team. Seb has connected his own email — those documents are
-his **private layer**. Switch **Viewing as** to Tom, then ask for a warm path to
-Priya Nair:
+Data tab shows the team (seeded by the sample load — in your own install this
+is **Uploads land in → member** on the dropzone). Seb's correspondence with
+Priya is his **private layer**. Switch **Viewing as** to Tom, then ask for a
+warm path from Tom Merrill to Priya Nair:
 
-- Tom gets his own weak public route, **plus** "Ask a colleague: Seb Larkin 🔒"
-- The locked hop shows no strength, no documents, no titles — Tom's brief on
-  Priya says only *"2 documents withheld"*
-- Switch to Seb and the same query is a direct 55% path with both emails listed
+- Tom gets his own weak ~17% route through Dana, **plus** "Ask a colleague:
+  Seb Larkin 🔒" — no strength, no documents, no titles
+- Tom's brief on Priya says only *"2 documents withheld"*
+- Switch **Viewing as** to Seb and rerun the same Tom → Priya query: the route
+  through Seb now carries real numbers (38% × 54%) because his own evidence is
+  visible to him. Ask Seb → Priya and it's a direct ~54% hop, both private
+  emails listed in Priya's brief
 
 Say the point out loud: **evidence is private, existence is shared.** You learn
 that a route exists and who to ask — which is the entire value of a relationship
@@ -88,7 +99,15 @@ is recorded in the audit trail (Data tab).
 
 ## 7. Agents on top (1 min)
 
-"The same graph is one MCP endpoint" — in Claude:
+"The same graph is one MCP endpoint — served by the dashboard you're looking
+at." Show the Data tab's **Agents (MCP)** section, hit Copy, and (done once,
+before the call) connect it:
+
+```bash
+claude mcp add --transport http fundgraph http://localhost:4321/mcp
+```
+
+Then in Claude:
 
 > *Prep me for my meeting with Priya Nair. I'm Dana.*
 
@@ -96,6 +115,10 @@ Claude calls `meeting_prep` and gets, in one shot: her profile, relationship
 history with receipts, recent shared documents, and Dana's warm paths and best
 introducers to her — then writes the brief. Structured data from the graph,
 prose from the model, nothing hallucinated.
+
+Optional privacy kicker: reconnect with `?as=Seb%20Larkin` on the URL and ask
+the same about Priya — the agent now cites Seb's two private emails, exactly as
+the Viewing-as switch did in the browser.
 
 ## Live-data variant
 
@@ -106,6 +129,11 @@ ambiguity.
 
 ## Notes
 
-- Embedded DB is single-process: stop the web server before starting the MCP
-  server on the same data dir (or use `DATABASE_URL` Postgres to run both).
+- The dashboard serves MCP itself (`/mcp`), so the demo needs exactly one
+  process. The single-process caveat only applies to the stdio flavor
+  (`fundgraph mcp`) or CLI ingests while the web server runs — use
+  `DATABASE_URL` Postgres if you need several processes on one database.
+- The **Extract pending documents** button calls the Anthropic API — export
+  `ANTHROPIC_API_KEY` before `npm start` if you want to run it live on the
+  call; everything else works without credentials.
 - Everything in the default demo dataset is fictional.

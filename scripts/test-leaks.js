@@ -82,6 +82,52 @@ for (const ep of ["/api/documents", "/api/reviews"]) {
 if (!sebSees) { leaks++; console.log("  FAIL: the owner sees nothing either — over-filtering, not privacy"); }
 else console.log(`  ok  the owner still sees their own data (${sebSees} markers)`);
 
+// The MCP endpoint is a read surface like any other — probe every tool with
+// the same markers. Probe queries never contain a marker themselves, so any
+// hit is a real leak, not an echo.
+const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+const mcpClient = async (asParam) => {
+  const client = new Client({ name: "leak-probe", version: "0.0.0" });
+  await client.connect(new StreamableHTTPClientTransport(
+    new URL(`${BASE}/mcp${asParam ? `?${asParam}` : ""}`)));
+  return client;
+};
+const mcpProbe = async (label, asParam) => {
+  const client = await mcpClient(asParam);
+  const calls = [
+    ["search_entities", { query: "secret" }],
+    ["search_entities", { query: "nair" }],
+    ["entity_brief", { entity: "Seb Larkin" }],
+    ["strongest_connections", { entity: "Seb Larkin" }],
+    ["meeting_prep", { entity: "Seb Larkin", me: "Tom Merrill" }],
+    ["relationship_radar", {}],
+    ["review_queue", {}],
+    ["graph_stats", {}],
+  ];
+  for (const [name, args] of calls) {
+    const text = JSON.stringify(
+      await client.callTool({ name, arguments: args }).catch((e) => String(e)));
+    for (const m of MARKERS) {
+      if (text.includes(m)) { leaks++; console.log(`  LEAK [${label}] mcp:${name} contains ${m}`); }
+    }
+  }
+  await client.close();
+};
+console.log("\nProbing MCP as TOM (must see no marker):");
+await mcpProbe("tom", `as=${tom.id}`);
+console.log("Probing MCP with NO viewer:");
+await mcpProbe("shared", "");
+
+console.log("Control — Seb's own MCP agent SHOULD see his layer:");
+const sebAgent = await mcpClient(`as=${seb.id}`);
+const own = JSON.stringify(
+  await sebAgent.callTool({ name: "entity_brief", arguments: { entity: "Seb Larkin" } }));
+if (!MARKERS.some((m) => own.includes(m))) {
+  leaks++; console.log("  FAIL: the owner's agent sees nothing — over-filtering, not privacy");
+} else console.log("  ok  the owner's MCP agent sees their own data");
+await sebAgent.close();
+
 server.close();
 await new Promise((r) => setTimeout(r, 300));
 rmSync(dataDir, { recursive: true, force: true });

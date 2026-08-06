@@ -71,6 +71,10 @@
         <p class="hint">.mbox (Gmail export) · .ics (calendar) · .csv (CRM contacts) · .jsonl</p>
         <input id="file-input" type="file" accept=".jsonl,.json,.mbox,.ics,.csv" hidden>
       </div>
+      <label id="upload-layer-wrap" title="Whose layer uploaded documents land in">
+        <span>Uploads land in</span>
+        <select id="upload-layer"><option value="">Shared layer — whole team</option></select>
+      </label>
       <div id="ingest-result"></div>
       <h3 class="section-title">Unstructured extraction</h3>
       <p class="hint">Mine document bodies (email text, meeting notes, memos) for people and organizations with an LLM. Every mention is grounded against the source text, then flows through the same resolve → review pipeline — nothing merges on a model's say-so.</p>
@@ -87,7 +91,8 @@
         <input id="member-email" placeholder="Email (optional)" autocomplete="off">
         <button id="member-add" class="small" type="submit">Add</button>
       </form>
-      <p class="hint">Ingest into a member's private layer from the CLI:
+      <p class="hint">To load someone's data into their private layer, pick them under
+        <strong>Uploads land in</strong> above and drop the file — or from the CLI:
         <code>fundgraph ingest inbox.mbox --as "Name"</code></p>
 
       <h3 class="section-title">Attio workspace</h3>
@@ -97,6 +102,11 @@
       <h3 class="section-title">Other live connectors</h3>
       <p class="hint">Pull Gmail, Calendar, and Drive from the CLI:<br>
         <code>fundgraph ingest-gog gmail</code> · <code>ingest-granola</code> · <code>ingest-google gmail</code></p>
+      <h3 class="section-title">Agents (MCP)</h3>
+      <p class="hint">The same graph is <strong>one MCP endpoint</strong>, served live by this
+        dashboard — <code>meeting_prep</code>, <code>find_warm_path</code>, <code>company_memory</code>,
+        <code>relationship_radar</code> and friends, all answering from what you see here.</p>
+      <div id="mcp-info"></div>
       <h3 class="section-title">Audit trail</h3>
       <div id="audit"></div>
     </section>

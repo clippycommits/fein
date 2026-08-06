@@ -16,18 +16,27 @@ async function ref(db, r) {
   return res.entity;
 }
 
+/** stdio entry point (`fundgraph mcp`). FUNDGRAPH_VIEWER selects which
+ * member's private layer the agent speaks for; unset = shared layer only. */
 export async function startMcpServer() {
   const db = await getDb();
-  const server = new McpServer({ name: "fundgraph", version: "0.2.0" });
-
-  // Which privacy layer this agent speaks for. Set FUNDGRAPH_VIEWER to a
-  // member name, email, or id to give the agent that person's private layer;
-  // unset, it sees the shared layer only.
   let viewer = null;
   if (process.env.FUNDGRAPH_VIEWER) {
     const { resolveMember } = await import("../members.js");
     viewer = (await resolveMember(db, process.env.FUNDGRAPH_VIEWER)).id;
   }
+  const server = buildMcpServer(db, { viewer });
+  await server.connect(new StdioServerTransport());
+  return server;
+}
+
+/**
+ * All fundgraph tools on a fresh McpServer, bound to one viewer. The web
+ * server builds one of these per HTTP request (stateless Streamable HTTP),
+ * so construction must stay cheap — it only registers handlers.
+ */
+export function buildMcpServer(db, { viewer = null } = {}) {
+  const server = new McpServer({ name: "fundgraph", version: "0.3.0" });
 
   server.tool(
     "search_entities",
@@ -179,6 +188,5 @@ export async function startMcpServer() {
     async ({ review_id, decision }) => text(await resolveReview(db, review_id, decision))
   );
 
-  await server.connect(new StdioServerTransport());
   return server;
 }

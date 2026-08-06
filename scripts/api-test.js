@@ -66,7 +66,7 @@ const send = async (method, path, body, headers = {}) => {
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 
-console.log("[1/8] health, security, empty state");
+console.log("[1/10] health, security, empty state");
 {
   const h = await get("/api/health");
   check(h.status === 200 && h.body.ok === true && h.body.version, "health reports ok + version", h.body);
@@ -80,19 +80,21 @@ console.log("[1/8] health, security, empty state");
   check(missing.status === 404, "unknown API route 404s");
 }
 
-console.log("[2/8] onboarding: load sample dataset");
+console.log("[2/10] onboarding: load sample dataset");
 {
   const res = await send("POST", "/api/sample", {}, { origin: BASE });
-  // 24 core docs + 20 extraction fixtures (sample/fixtures/*.jsonl, bodies included)
-  check(res.status === 200 && res.body.stats.documents === 44, "sample dataset loads (44 docs)", res.body.stats);
-  check(res.body.stats.entities === 23, "sample resolves to 23 entities", res.body.stats);
+  // 16 seed docs + 22 fixtures (incl. the team) + Seb's 2 private emails.
+  // sample.mbox / sample.ics / contacts.csv stay OUT — they're the live-drag demo.
+  check(res.status === 200 && res.body.stats.documents === 40, "sample dataset loads (40 docs)", res.body.stats);
+  check(res.body.stats.entities === 26, "sample resolves to 26 entities", res.body.stats);
   check(res.body.stats.pendingExtraction === 20, "fixture bodies are pending extraction", res.body.stats);
+  check(res.body.members?.length === 2, "sample seeds the two-member team", res.body.members);
 }
 
-console.log("[3/8] read endpoints");
+console.log("[3/10] read endpoints");
 {
   const graph = await get("/api/graph");
-  check(graph.body.nodes.length === 12 && graph.body.links.length > 5, "graph payload has people + links",
+  check(graph.body.nodes.length === 14 && graph.body.links.length > 5, "graph payload has people + links",
     { nodes: graph.body.nodes.length, links: graph.body.links.length });
   const search = await get("/api/search?q=maya");
   check(search.body.length >= 1 && search.body[0].canonical_name === "Maya Chen", "search finds Maya", search.body);
@@ -106,10 +108,12 @@ console.log("[3/8] read endpoints");
   const badPath = await get("/api/path?from=onlyone");
   check(badPath.status === 400, "missing param 400s", badPath);
   const docs = await get("/api/documents");
-  check(docs.body.total === 44 && docs.body.sources.length >= 4, "documents breakdown by source", docs.body.sources.map((s) => s.source));
+  // 40 ingested minus Seb's 2 private emails: the shared view counts what it may show.
+  check(docs.body.total === 38 && docs.body.withheld === 2 && docs.body.sources.length >= 4,
+    "documents breakdown by source, private layer withheld", { total: docs.body.total, withheld: docs.body.withheld });
 }
 
-console.log("[4/8] review flow + audit");
+console.log("[4/10] review flow + audit");
 {
   const reviews = await get("/api/reviews");
   check(reviews.body.length === 1, "one pending review (M. Chen)", reviews.body.length);
@@ -122,7 +126,7 @@ console.log("[4/8] review flow + audit");
     audit.body.map((a) => a.action));
 }
 
-console.log("[5/8] settings: customization rebuilds the graph");
+console.log("[5/10] settings: customization rebuilds the graph");
 {
   const before = await get("/api/settings");
   check(before.body.weights.meeting === 3 && before.body.halfLifeDays === 180, "default settings served", before.body);
@@ -139,7 +143,7 @@ console.log("[5/8] settings: customization rebuilds the graph");
   check(/unknown weight/.test(invalid.body?.error ?? ""), "client error message is preserved", invalid.body);
 }
 
-console.log("[6/8] hostile input");
+console.log("[6/10] hostile input");
 {
   // Malformed request targets must not crash the process.
   for (const target of ["//%ff", "//[", "//:", "//%c0%ae", "//"]) {
@@ -166,7 +170,7 @@ console.log("[6/8] hostile input");
   check(protoWeight.status === 400, "prototype-named weight is rejected with 400", protoWeight);
 }
 
-console.log("[7/8] attio connector (mocked workspace)");
+console.log("[7/10] attio connector (mocked workspace)");
 {
   check((await get("/api/connectors/attio")).body.connected === false, "starts disconnected");
   const bad = await send("POST", "/api/connectors/attio", { apiKey: "wrong" });
@@ -191,7 +195,7 @@ console.log("[7/8] attio connector (mocked workspace)");
   check(docs.body.sources.some((s) => s.source === "attio"), "disconnect keeps ingested data");
 }
 
-console.log("[8/8] upload + reresolve");
+console.log("[8/10] upload + reresolve");
 {
   const csv = readFileSync(join(root, "sample/contacts.csv"), "utf8");
   const up = await send("POST", "/api/ingest?name=contacts.csv", csv);
@@ -207,6 +211,84 @@ console.log("[8/8] upload + reresolve");
     "replayed accept restores the merged gmail alias", maya.emails);
   const post = await get("/api/reviews");
   check(post.body.length === 0, "no re-asked question after replay", post.body.length);
+}
+
+console.log("[9/10] privacy layers: one-click scene, private upload, scoping");
+{
+  const members = (await get("/api/members")).body;
+  const tom = members.find((m) => m.name === "Tom Merrill");
+  const seb = members.find((m) => m.name === "Seb Larkin");
+  check(tom && seb, "the sample seeded the team", members.map((m) => m.name));
+  const again = await send("POST", "/api/sample", {});
+  check(again.status === 200 && (await get("/api/members")).body.length === members.length,
+    "reloading the sample never duplicates members");
+
+  const docs = await get("/api/documents");
+  check(docs.body.withheld === 2, "Seb's two private documents are withheld from the shared view", docs.body.withheld);
+  const sebDocs = await get(`/api/documents?as=${seb.id}`);
+  check(!sebDocs.body.withheld, "nothing is withheld from their owner", sebDocs.body.withheld);
+
+  const tomE = (await get("/api/search?q=tom")).body.find((e) => e.canonical_name === "Tom Merrill");
+  const priyaE = (await get("/api/search?q=priya")).body[0];
+  const path = await get(`/api/path?from=${tomE.id}&to=${priyaE.id}&as=${tom.id}`);
+  check(path.body.path?.path?.length >= 2, "Tom has his own public route to Priya", path.body.path?.pathStrength);
+  check(path.body.viaPrivate?.some((v) => v.owner === "Seb Larkin"),
+    "\"ask a colleague\" names Seb without exposing evidence", path.body.viaPrivate);
+
+  const secret = JSON.stringify({
+    source: "local", kind: "note", external_id: "priv-tom-1", title: "ZARA-PRIVATE-MARKER",
+    occurred_at: "2026-08-01T00:00:00Z",
+    people: [{ name: "Tom Merrill", email: "tom@ridgeline.vc", role: "from" },
+             { name: "Zara Quist", email: "zara@quist.example", role: "to" }],
+  });
+  const badAs = await send("POST", "/api/ingest?name=p.jsonl&as=nobody", secret);
+  check(badAs.status === 400, "unknown member on private ingest is a hard 400", badAs.status);
+  const up = await send("POST", `/api/ingest?name=zara-inbox.jsonl&as=${tom.id}`, secret);
+  check(up.status === 200 && up.body.layer === "Tom Merrill", "upload lands in Tom's private layer", up.body.layer);
+  const audit = await get("/api/audit");
+  const row = audit.body.find((a) => a.detail?.layer === "Tom Merrill");
+  check(row && row.detail.file === "(private upload)" && !JSON.stringify(audit.body).includes("zara-inbox"),
+    "audit records whose layer grew, never the private filename", row?.detail);
+  const sharedGraph = await get("/api/graph");
+  check(!sharedGraph.body.nodes.some((n) => n.name === "Zara Quist"),
+    "a private-only person is hidden from the shared graph");
+  const tomGraph = await get(`/api/graph?as=${tom.id}`);
+  check(tomGraph.body.nodes.some((n) => n.name === "Zara Quist"), "her owner sees her");
+}
+
+console.log("[10/10] MCP over HTTP: one endpoint, viewer-scoped");
+{
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+  const connect = async (qs = "") => {
+    const client = new Client({ name: "api-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${BASE}/mcp${qs}`)));
+    return client;
+  };
+  const asText = (r) => JSON.parse(r.content[0].text);
+
+  const client = await connect();
+  const tools = (await client.listTools()).tools.map((t) => t.name);
+  check(tools.length === 11 && tools.includes("meeting_prep") && tools.includes("company_memory"),
+    "all 11 tools listed over HTTP", tools);
+  const stats = asText(await client.callTool({ name: "graph_stats", arguments: {} }));
+  check(stats.documents > 0, "graph_stats answers from the live database", stats.documents);
+  const shared = asText(await client.callTool({ name: "entity_brief", arguments: { entity: "Priya Nair" } }));
+  check(shared.withheldDocuments >= 2, "a shared-layer agent gets a withheld count, not content", shared.withheldDocuments);
+  check(!JSON.stringify(shared).includes("Fund II allocation — timing question"),
+    "private titles never reach the shared-layer agent");
+  await client.close();
+
+  const sebClient = await connect("?as=Seb%20Larkin");
+  const own = asText(await sebClient.callTool({ name: "entity_brief", arguments: { entity: "Priya Nair" } }));
+  check(JSON.stringify(own).includes("Fund II allocation — timing question"),
+    "?as=Seb binds the agent to Seb's private layer");
+  await sebClient.close();
+
+  const rejected = await fetch(`${BASE}/mcp`);
+  check(rejected.status === 405, "GET /mcp is refused (POST JSON-RPC only)", rejected.status);
+  const badViewer = await send("POST", "/mcp?as=nobody", {});
+  check(badViewer.status === 400, "unknown ?as member is a hard 400, never a silent fallback", badViewer.status);
 }
 
 server.close();

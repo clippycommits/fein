@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { fileURLToPath } from "node:url";
 import { getDb } from "./db.js";
 import { loadJsonl } from "./ingest/local.js";
 import { ingestDocs } from "./ingest/index.js";
@@ -329,10 +328,12 @@ async function main() {
       break;
     }
     case "demo": {
-      const dir = fileURLToPath(new URL("../sample/seed.jsonl", import.meta.url));
-      console.log("ingest:", JSON.stringify(await ingestDocs(db, loadJsonl(dir))));
-      console.log("resolve:", JSON.stringify(await resolveMentions(db)));
-      console.log("edges:", JSON.stringify(await rebuildEdges(db)));
+      const { loadSampleDataset } = await import("./ingest/sample.js");
+      const r = await loadSampleDataset(db);
+      console.log("ingest:", JSON.stringify(r.ingested));
+      console.log("resolve:", JSON.stringify(r.resolved));
+      console.log("edges:", JSON.stringify(r.edges));
+      console.log("members:", r.members.map((m) => m.name).join(", "));
       console.log("stats:", JSON.stringify(await counts(db)));
       break;
     }

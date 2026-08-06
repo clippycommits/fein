@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0 — 2026-08-04
+
+**The demo-in-one-process release**: everything the demo script needs happens
+in the browser, and agents connect to the running dashboard.
+
+### Added
+- **MCP over HTTP**: the dashboard serves a Streamable-HTTP MCP endpoint at
+  `/mcp` (stateless, one server per request), so the web UI and agents share
+  one process and one live embedded database — no more stopping the dashboard
+  to run `fundgraph mcp`. `?as=<member>` binds an agent to that member's
+  private layer; unknown members are rejected, never silently downgraded to
+  the shared view. The Data tab shows the endpoint with a copyable
+  `claude mcp add` command.
+- **Private-layer uploads from the UI**: an "Uploads land in" selector on the
+  Data tab dropzone targets any member's private layer
+  (`/api/ingest?as=<member>`). The shared audit trail records whose layer grew
+  — never the private filename.
+- **One-click demo world**: "Load sample dataset" now also seeds the
+  two-member team (Tom + Seb Larkin) and Seb's private correspondence with
+  Priya Nair, so the privacy-layers demo works on a fresh install. The loader
+  is idempotent, shared with `fundgraph demo`, and deliberately leaves
+  `sample.mbox` / `sample.ics` / `contacts.csv` out as live-drag demo files.
+- Entity briefs in the UI show the withheld-documents count ("existence is
+  shared, evidence is not" made visible).
+- Tests: 64 API assertions including an MCP round-trip and viewer scoping;
+  the leak probe now sweeps every MCP tool as the wrong viewer, plus an
+  owner control against over-filtering.
+
 ## 0.2.0 — 2026-08-03
 
 **The product release**: web dashboard, every adapter, customization, hardening.

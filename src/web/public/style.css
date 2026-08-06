@@ -424,6 +424,9 @@ line.link.on-path { stroke: var(--series-2); }
 
 /* Privacy layers */
 #viewer-wrap { display: flex; align-items: center; gap: 8px; margin-left: auto; font-size: 12px; color: var(--ink-2); }
+#upload-layer-wrap { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: 12px; color: var(--ink-2); }
+#upload-layer-wrap select { flex: 1; min-width: 0; }
+#upload-layer-wrap select,
 #viewer-wrap select {
   padding: 5px 8px;
   border: 1px solid var(--border);
@@ -439,6 +442,19 @@ line.link.private { stroke-dasharray: 4 4; opacity: 0.55; }
 .row-form { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
 .row-form input { margin: 0; }
 .row-form button { white-space: nowrap; }
+
+/* MCP endpoint */
+.mcp-cmd { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.mcp-cmd code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.mcp-cmd button { white-space: nowrap; }
 
 /* Radar */
 .radar-counts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }

@@ -1,6 +1,6 @@
 {
   "name": "fundgraph",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Open-source agentic data layer for investment teams: entity-resolved knowledge graph + relationship intelligence, exposed over MCP",
   "type": "module",
   "license": "MIT",
