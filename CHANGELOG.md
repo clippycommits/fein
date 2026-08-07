@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.5.0 — 2026-08-08
+
+**The hardening release**: the data layer grows up for shared firm
+deployments — every read answers as the viewer, every write records its
+actor, private evidence stays in its layer even through resolution, and the
+graph stops doing O(everything) work on every click.
+
+### Added
+- **Audit actors**: every audit row records who did it — the member's name
+  for humans (`?as=`/`--as`), `agent:<member>` for MCP callers, `local`
+  otherwise. The dashboard's audit feed shows non-local actors.
+- **Participant cap**: a document with more distinct resolved people than
+  `maxDocParticipants` (Settings, default 50) contributes no pair-edges and
+  no radar history — a 500-recipient mailing-list email no longer fans out
+  into 124,750 edges. The document and mentions are kept, so changing the
+  cap applies or undoes it on the next rebuild.
+- **Bounded graph payloads**: `/api/graph` takes `?limit=` (default 300),
+  `?focus=<id>` and `?radius=` for ego graphs, returns
+  `totalNodes`/`totalLinks`/`truncated`, and the dashboard says
+  "N of M people" when truncated. Bounding happens strictly after the
+  privacy filters, so pruning inherits their guarantees.
+- **Automated-sender override**: `fein automated mark/unmark`, a toggle on
+  the dashboard entity brief, and `POST /api/entity/:id/automated` — human
+  verdicts survive re-detection, merges, unmerges, and full rebuilds.
+- **Scoring constants in Settings**: the resolution band (auto-merge 0.95 /
+  review floor 0.70), radar overdue/cold ratios and dormancy window, the
+  private-hop routing prior, and the participant cap are per-firm knobs
+  now, editable from the dashboard.
+
+### Changed
+- **One viewer resolver**: every `?as=` (API reads, uploads, `/mcp`, stats)
+  accepts a member id, exact name, or email — and unknown or ambiguous refs
+  are a loud 400 listing candidates. `/api/*` reads used to silently answer
+  from the shared layer on an unknown id; they no longer do.
+- **Viewer-scoped stats**: `/api/stats` counts only what the viewer can
+  open (documents, entities, reviews badge, edges), with a
+  `withheldDocuments` hint. Mutation endpoints scope their stats the same
+  way. The CLI gained `fein stats --as`.
+- **Private-evidence absorption policy**: resolution no longer folds a
+  private mention's email/org/alias into the shared entity record — the
+  shared columns only ever hold shared-witnessed values (or explicit human
+  merges). Privately-witnessed evidence lives in a per-layer overlay
+  (`entity_evidence`) visible only to its owner; display names come only
+  from shared witnesses. Matching stays global, so resolution quality is
+  unchanged.
+- **Incremental edge rebuilds**: review decisions, merges, and unmerges
+  recompute only the edges touching the affected entities (all layers)
+  instead of rewriting the whole table; ingest and settings changes keep
+  the full rebuild. Inserts across ingest and edge writes are chunked
+  multi-row statements now.
+
+### Fixed
+24 findings from a four-lens adversarial review (privacy, correctness,
+integration, test honesty) of this release's own changes — the most
+serious, all pinned by tests:
+- A manual merge could lift a private-only entity's display name into the
+  shared canonical name, and audit rows for overrides/merges echoed private
+  names into the shared audit trail (ids only now).
+- Human input (merges, automated overrides) against privately-evidenced
+  entities was silently dropped by `fein reresolve`; replay now matches on
+  the shared + private-evidence union.
+- An entity first seen privately kept its private display name even after
+  shared witnesses arrived (name now re-derives from the first shared
+  witness); `removeMember --reassign-shared` deleted the only copy of the
+  departed layer's evidence instead of promoting it.
+- The incremental rebuild diverged from a full rebuild when an operation
+  moved a document across the participant-cap boundary (falls back to a
+  full rebuild there).
+- The dashboard's Explore search and merge picker never sent `?as=`, so
+  private-layer people were unfindable exactly for their owner.
+
+### Upgrading
+Existing databases carry evidence absorbed under the old policy in their
+shared entity records. Fein detects this on boot and warns until you run
+`fein reresolve` once, which rebuilds entities under the new policy and
+replays your reviews, merges, and overrides. See DEPLOY.md.
+
 ## 0.4.0 — 2026-08-07
 
 **The Fein release**: the product is now Fein (the fund graph for venture

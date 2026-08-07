@@ -1,6 +1,6 @@
 {
   "name": "fein",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Fein \u2014 the fund graph for venture capital. Open-source agentic data layer for investment teams: entity-resolved knowledge graph + relationship intelligence, exposed over MCP.",
   "type": "module",
   "license": "MIT",
