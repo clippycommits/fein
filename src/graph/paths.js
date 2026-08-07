@@ -50,12 +50,14 @@ async function loadGraph(db, viewerId) {
     add(hidden, e.a, e.b, meta);
     add(hidden, e.b, e.a, meta);
   }
-  return { adj, hidden };
+  return { adj, hidden, cfg };
 }
 
 /** Dijkstra over (node, hopCount) states so a cheap long path can't shadow a
- * hop-feasible shorter one. `edgesFor` supplies each node's usable neighbours. */
-function search(fromId, toId, maxHops, edgesFor, { fewestHops = false } = {}) {
+ * hop-feasible shorter one. `edgesFor` supplies each node's usable neighbours.
+ * `privatePrior` is the routing strength assumed for a private hop (an edge
+ * with no visible strength): enough to be found, never reported as a number. */
+function search(fromId, toId, maxHops, edgesFor, { fewestHops = false, privatePrior = 0.5 } = {}) {
   const key = (n, h) => `${h}|${n}`;
   const dist = new Map([[key(fromId, 0), 0]]);
   const prev = new Map();
@@ -75,7 +77,8 @@ function search(fromId, toId, maxHops, edgesFor, { fewestHops = false } = {}) {
     if (h >= maxHops) continue;
     for (const edge of edgesFor(node)) {
       const nk = key(edge.to, h + 1);
-      const cost = d + -Math.log(Math.max(edge.strength ?? PRIVATE_PRIOR, 0.01));
+      // The 0.01 floor is log-safety, not a knob: -ln must stay finite.
+      const cost = d + -Math.log(Math.max(edge.strength ?? privatePrior, 0.01));
       if (cost < (dist.get(nk) ?? Infinity)) {
         dist.set(nk, cost);
         prev.set(nk, { node, h, edge });
@@ -101,15 +104,12 @@ function search(fromId, toId, maxHops, edgesFor, { fewestHops = false } = {}) {
   return path;
 }
 
-// A private hop is treated as a mid-strength link for routing purposes only:
-// enough to be found, never reported as a number.
-const PRIVATE_PRIOR = 0.5;
-
 export async function findWarmPath(db, fromId, toId, options = {}) {
   const { viewer = null, maxHops = 4 } = typeof options === "number" ? { maxHops: options } : options;
-  const { adj, hidden } = await loadGraph(db, viewer);
+  const { adj, hidden, cfg } = await loadGraph(db, viewer);
+  const privatePrior = cfg.privateHopStrength;
 
-  const visiblePath = search(fromId, toId, maxHops, (n) => adj.get(n) ?? []);
+  const visiblePath = search(fromId, toId, maxHops, (n) => adj.get(n) ?? [], { privatePrior });
   const result = visiblePath
     ? {
         path: visiblePath,
@@ -123,8 +123,8 @@ export async function findWarmPath(db, fromId, toId, options = {}) {
   // hops. Otherwise a cheap winding visible route both hides real private
   // shortcuts and produces false "ask for an intro" claims.
   const combined = search(fromId, toId, maxHops,
-    (n) => [...(adj.get(n) ?? []), ...(hidden.get(n) ?? [])], { fewestHops: true });
-  const visibleHops = search(fromId, toId, maxHops, (n) => adj.get(n) ?? [], { fewestHops: true });
+    (n) => [...(adj.get(n) ?? []), ...(hidden.get(n) ?? [])], { fewestHops: true, privatePrior });
+  const visibleHops = search(fromId, toId, maxHops, (n) => adj.get(n) ?? [], { fewestHops: true, privatePrior });
   const usesPrivate = combined?.some((s) => s.private);
   if (combined && usesPrivate && (!visibleHops || combined.length < visibleHops.length)) {
     const owners = [...new Set(combined.filter((s) => s.private).map((s) => s.via))];

@@ -22,17 +22,20 @@ function median(sorted) {
 
 // A burst of contact inside one day is not a one-day cadence, and a history
 // that spans a few days can't tell you what "normal" looks like for a pair.
+// These are data-hygiene floors, deliberately not settings; the policy
+// numbers (cold/overdue ratios, dormancy window) live in settings.radar.
 const MIN_CADENCE_DAYS = 1;
 const MIN_SPAN_DAYS = 7;
 
-function classify({ daysSince, cadenceDays, contacts, spanDays }) {
+function classify({ daysSince, cadenceDays, contacts, spanDays }, rc) {
   if (contacts < 2 || cadenceDays === null || spanDays < MIN_SPAN_DAYS) {
     // Not enough history to be late against — but it can still go stale.
-    return daysSince > 180 ? "dormant" : "new";
+    return daysSince > rc.dormantAfterDays ? "dormant" : "new";
   }
   const ratio = daysSince / Math.max(cadenceDays, MIN_CADENCE_DAYS);
-  if (ratio >= 3) return "cold";
-  if (ratio >= 1.5) return "overdue";
+  if (ratio >= rc.coldRatio) return "cold";
+  if (ratio >= rc.overdueRatio) return "overdue";
+  // One full cadence elapsed is definitionally "due" — not a knob.
   if (ratio >= 1) return "due";
   return "active";
 }
@@ -119,7 +122,7 @@ export async function relationshipRadar(db, entityId, { viewer = null, limit = 2
     const trend = recent === 0 && prior === 0 ? null
       : recent > prior ? "warming" : recent < prior ? "cooling" : "steady";
 
-    const status = classify({ daysSince, cadenceDays, contacts: times.length, spanDays });
+    const status = classify({ daysSince, cadenceDays, contacts: times.length, spanDays }, cfg.radar);
     out.push({
       entity: other,
       status,
@@ -197,7 +200,7 @@ export async function radarSummary(db, { viewer = null, limit = 20, now = Date.n
     const rawCadence = gaps.length ? median(gaps.sort((x, y) => x - y)) : null;
     const spanDays = (times[0] - times.at(-1)) / DAY;
     const cadenceDays = rawCadence === null ? null : Math.max(rawCadence, MIN_CADENCE_DAYS);
-    const status = classify({ daysSince, cadenceDays, contacts: times.length, spanDays });
+    const status = classify({ daysSince, cadenceDays, contacts: times.length, spanDays }, cfg.radar);
     counts[status]++;
     items.push({
       a: p.a, b: p.b, status, contacts: times.length,

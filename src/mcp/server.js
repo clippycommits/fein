@@ -188,7 +188,9 @@ export function buildMcpServer(db, { viewer = null, actor = "agent" } = {}) {
 
   server.tool(
     "review_queue",
-    "Pending entity-resolution matches that need human confirmation (score between 0.70 and 0.95).",
+    // Static copy on purpose: buildMcpServer runs per HTTP request and must
+    // stay cheap, so no settings fetch to interpolate live thresholds.
+    "Pending entity-resolution matches that need human confirmation (score between the review floor and the auto-merge threshold — default 0.70–0.95, tunable in Settings).",
     {},
     async () => text(await listReviews(db, { viewer }))
   );

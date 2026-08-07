@@ -15,7 +15,7 @@ const { rebuildEdges, rebuildEdgesFor } = await import(join(root, "src/graph/edg
 const { mergeEntities, unmergeEntity, listMerges } = await import(join(root, "src/resolve/merge.js"));
 const { reresolveAll } = await import(join(root, "src/resolve/reresolve.js"));
 const { searchEntities, entityBrief, counts } = await import(join(root, "src/graph/queries.js"));
-const { listAudit } = await import(join(root, "src/settings.js"));
+const { listAudit, putSettings } = await import(join(root, "src/settings.js"));
 
 let failures = 0;
 const check = (cond, msg, extra) => {
@@ -130,6 +130,41 @@ console.log("[4/4] guard rails");
   threw = null;
   try { await unmergeEntity(db, maya.id); } catch (e) { threw = e.message; }
   check(/not merged/.test(threw ?? ""), "unmerging a live entity is refused", threw);
+}
+
+console.log("[5/5] resolution thresholds are settings, not constants");
+{
+  const maya = (await find("maya"))[0];
+  // With defaults, an exact email match (score 0.98) auto-attaches.
+  await ingestDocs(db, [
+    { source: "gmail", kind: "email", external_id: "th-1", title: "threshold check",
+      occurred_at: "2026-07-05T10:00:00Z",
+      people: [{ name: "Maya Chen", email: "maya@nordwind.vc", role: "from" }] },
+  ]);
+  const attached = await resolveMentions(db);
+  check(attached.attached === 1 && attached.queued === 0,
+    "with default thresholds an exact email match auto-attaches", attached);
+
+  // Raise the bar above 0.98: the SAME evidence now asks a human instead.
+  await putSettings(db, { resolution: { autoMerge: 0.99, review: 0.9 } });
+  await ingestDocs(db, [
+    { source: "gmail", kind: "email", external_id: "th-2", title: "threshold check 2",
+      occurred_at: "2026-07-06T10:00:00Z",
+      people: [{ name: "Maya Chen", email: "maya@nordwind.vc", role: "from" }] },
+  ]);
+  const queued = await resolveMentions(db);
+  check(queued.queued === 1 && queued.attached === 0,
+    "a raised auto-merge bar sends the same match to review", queued);
+  const { rows: pending } = await db.query(
+    `select m.entity_id from mentions m join documents d on d.id = m.document_id
+     where d.external_id = 'th-2'`);
+  check(pending[0].entity_id === null, "the mention stays unattached while the question is pending", pending);
+
+  // Restore defaults and answer the queued question so nothing dangles.
+  await putSettings(db, { resolution: { autoMerge: 0.95, review: 0.7 } });
+  const q = (await listReviews(db)).find((r) => r.mention_email === "maya@nordwind.vc");
+  const resolved = await resolveReview(db, q.id, "accept");
+  check(resolved.entity === maya.id, "accepting attaches to Maya after all", resolved);
 }
 
 await db.close();

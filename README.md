@@ -47,7 +47,7 @@ connecting agents, backups, Postgres mode, upgrades.
 - **Explore** — search, click a node, get a brief: strongest relationships *with the signals behind each score* ("3 meetings, 2 emails, 1 co-authored doc"), recent shared documents, one-click Markdown export.
 - **Radar** — which relationships need attention now, judged against each pair's own learned cadence.
 - **Warm path** — the best route to an introduction, maximizing end-to-end relationship strength, with introducers ranked by their *weaker* leg.
-- **Reviews** — matches scoring 0.70–0.95 wait for a human; the system never merges identities on a guess. Decisions are audited and survive rebuilds.
+- **Reviews** — matches scoring between the review floor and the auto-merge threshold (default 0.70–0.95, tunable in Settings) wait for a human; the system never merges identities on a guess. Decisions are audited and survive rebuilds.
 - **Data** — drag-and-drop ingestion, live connectors, team members and their privacy layers, per-source breakdown, audit trail.
 - **Settings** — what "a strong relationship" means differs by firm: signal weights, recency half-life, and saturation are editable live; saving rebuilds the graph instantly.
 
@@ -242,7 +242,7 @@ the roadmap below.
 
 1. **Everything resolves to two entities: people and organizations.** Deals, funds, docs hang off those two.
 2. **Two-layer data model.** A metadata layer tracks what was ingested and who was mentioned; the knowledge graph holds resolved entities and weighted connections. The graph is a read model — rebuilt deterministically, never hand-edited.
-3. **Four-stage entity resolution:** blocking → candidate generation → probabilistic matching → human review. Deterministic auto-merge at ≥0.95 confidence; 0.70–0.95 queues for a human; conflicting evidence (same name, different work domain) always asks. Without this, one person appears as 100+ duplicates across sources.
+3. **Four-stage entity resolution:** blocking → candidate generation → probabilistic matching → human review. Deterministic auto-merge above a confidence threshold; the band below it queues for a human (defaults 0.95 and 0.70–0.95, tunable in Settings); conflicting evidence (same name, different work domain) always asks. Without this, one person appears as 100+ duplicates across sources.
 4. **Never let an LLM score a relationship.** Connection strength is computed from observable signals — meeting frequency, email reciprocity, co-authorship, recency decay — because models will confidently hallucinate a 3/10 relationship as a 10/10.
 5. **Graph-based retrieval, not pure vector.** "Who can intro me to X?" is a weighted shortest-path query, answered with the evidence behind each hop.
 

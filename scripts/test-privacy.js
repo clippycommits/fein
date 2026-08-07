@@ -124,6 +124,20 @@ console.log("[4/6] warm paths reveal existence, not evidence");
   const introRes = await findIntroducers(db, tomE, priyaE, { viewer: tom.id });
   check(introRes.viaPrivate?.some((v) => v.owner === "Seb Larkin"),
     "introducers surface the colleague to ask", introRes.viaPrivate);
+
+  // The private-hop routing prior is a setting. Its routing effect only shows
+  // as tie-breaks between equal-hop routes, which this fixture graph has none
+  // of — so the honest coverage is validation plus this threading regression:
+  // a tuned prior must neither lose the route nor leak a number through it.
+  const { putSettings } = await import(join(root, "src/settings.js"));
+  await putSettings(db, { privateHopStrength: 0.2 });
+  const tuned = await findWarmPath(db, tomE, priyaE, { viewer: tom.id });
+  check(Boolean(tuned?.privatePath) && tuned.privatePath.path.at(-1).viaStrength === null,
+    "a tuned prior still reports the private route with no strength attached",
+    tuned?.privatePath?.path?.at(-1));
+  check(tuned.privatePath.owners.includes("Seb Larkin"),
+    "and still names the owner to ask", tuned.privatePath.owners);
+  await putSettings(db, { privateHopStrength: 0.5 });
 }
 
 console.log("[5/6] a viewer with no membership sees only the shared layer");

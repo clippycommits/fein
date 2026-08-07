@@ -606,6 +606,9 @@ async function graphPayload(db, viewer = null, { limit = 300, focus = null, radi
   const visibleIds = new Set(people.map((p) => p.id));
   for (const e of foreign) {
     if (!visibleIds.has(e.a) || !visibleIds.has(e.b)) continue;
+    // 0.25 is a cosmetic line weight for the hint — deliberately NOT the
+    // tunable routing prior (settings.privateHopStrength): drawing at the
+    // routing strength would read as evidence.
     links.push({ source: e.a, target: e.b, strength: 0.25, private: true, signals: {} });
     bump(e.a); bump(e.b);
   }
@@ -750,7 +753,7 @@ function withStatus(err, code) {
 function classify(err) {
   const m = err.message ?? "";
   if (/(not found|no entity|no pending review|no member|no live entity)/i.test(m)) return 404;
-  if (/(unknown weight|must be a number|must be accept or reject|unsupported|invalid|decision |cannot merge|needs a name|matches \d+ members|no name or email column|already exists)/i.test(m)) return 400;
+  if (/(unknown (weight|resolution|radar)|must be a number|must be below|must be accept or reject|unsupported|invalid|decision |cannot merge|needs a name|matches \d+ members|no name or email column|already exists)/i.test(m)) return 400;
   return 500;
 }
 

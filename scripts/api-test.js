@@ -205,6 +205,30 @@ console.log("[5/10] settings: customization rebuilds the graph");
   check(invalid.status === 400, "unknown weight is rejected with 400", invalid.status);
   check(/unknown weight/.test(invalid.body?.error ?? ""), "client error message is preserved", invalid.body);
 
+  // Scoring thresholds are settings: partial patches deep-merge, unrelated
+  // saves must not erase them, and inverted bands are refused.
+  const res1 = await send("PUT", "/api/settings", { resolution: { autoMerge: 0.99 } });
+  check(res1.status === 200 && res1.body.settings.resolution.autoMerge === 0.99,
+    "resolution.autoMerge round-trips", res1.body.settings?.resolution);
+  const merged = await get("/api/settings");
+  check(merged.body.resolution.review === 0.7,
+    "a partial resolution patch keeps the sibling default (deep-merge)", merged.body.resolution);
+  await send("PUT", "/api/settings", { weights: { meeting: 10 } });
+  check((await get("/api/settings")).body.resolution.autoMerge === 0.99,
+    "a weights-only save keeps the stored thresholds (field-list trap)");
+  await send("PUT", "/api/settings", { resolution: { autoMerge: 0.95 } });
+  const inverted = await send("PUT", "/api/settings", { resolution: { review: 0.96 } });
+  check(inverted.status === 400 && /must be below/.test(inverted.body?.error ?? ""),
+    "a review floor above auto-merge is a 400 (inverted band)", inverted.body);
+  const radarInverted = await send("PUT", "/api/settings", { radar: { overdueRatio: 5 } });
+  check(radarInverted.status === 400,
+    "an overdue ratio above the cold ratio is a 400 (overdue unreachable)", radarInverted.body);
+  const radarUnknown = await send("PUT", "/api/settings", { radar: { nonsense: 1 } });
+  check(radarUnknown.status === 400 && /unknown radar setting/.test(radarUnknown.body?.error ?? ""),
+    "an unknown radar setting is a 400", radarUnknown.body);
+  const hopRange = await send("PUT", "/api/settings", { privateHopStrength: 7 });
+  check(hopRange.status === 400, "privateHopStrength outside (0,1) is a 400", hopRange.body);
+
   // `?as=` on a write names the audit actor (display name, never an id/email).
   const tom = (await get("/api/members")).body.find((m) => m.name === "Tom Merrill");
   const asTom = await send("PUT", `/api/settings?as=${tom.id}`, { weights: { meeting: 10 } });
@@ -239,6 +263,8 @@ console.log("[6/10] hostile input");
 
   const protoWeight = await send("PUT", "/api/settings", { weights: { toString: 9 } });
   check(protoWeight.status === 400, "prototype-named weight is rejected with 400", protoWeight);
+  const protoRes = await send("PUT", "/api/settings", { resolution: { toString: 9 } });
+  check(protoRes.status === 400, "prototype-named resolution setting is rejected with 400", protoRes);
 
   // Hostile graph bounds clamp, never crash: 0/negative floor at one node,
   // junk falls back to the default (everything, on a sample-sized graph).

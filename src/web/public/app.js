@@ -808,8 +808,21 @@ const WEIGHT_LABELS = {
   mentionedFactor: "Merely-mentioned multiplier",
 };
 
+// Explicitly whitelisted rows, never an iteration over the settings object:
+// non-numeric keys (privateEntityVisibility) must not render as number inputs.
+// Dotted names post as nested groups; flat names keep their special cases.
+const TUNING_ROWS = [
+  ["resolution.autoMerge", "Auto-merge confidence", 'step="0.01" min="0.5" max="1"'],
+  ["resolution.review", "Review-queue floor", 'step="0.01" min="0.1" max="1"'],
+  ["radar.overdueRatio", "Overdue at × cadence", 'step="0.1" min="1" max="100"'],
+  ["radar.coldRatio", "Cold at × cadence", 'step="0.1" min="1" max="100"'],
+  ["radar.dormantAfterDays", "Dormant after (days)", 'step="1" min="1" max="3650"'],
+  ["privateHopStrength", "Private-hop routing strength", 'step="0.05" min="0.01" max="0.99"'],
+];
+
 async function renderSettings() {
   const [s, health] = await Promise.all([api("/api/settings"), api("/api/health")]);
+  const valueOf = (name) => name.split(".").reduce((o, k) => o?.[k], s);
   $("#settings-form").innerHTML =
     Object.entries(s.weights).map(([k, v]) =>
       `<div class="weight-row"><label for="w-${esc(k)}">${esc(WEIGHT_LABELS[k] ?? k)}</label>
@@ -819,7 +832,14 @@ async function renderSettings() {
      <div class="weight-row"><label for="w-saturation">Evidence saturation</label>
        <input id="w-saturation" name="saturation" type="number" step="0.5" min="0.5" max="100" value="${esc(s.saturation)}"></div>
      <div class="weight-row"><label for="w-maxDocParticipants">Participant cap (larger docs build no connections)</label>
-       <input id="w-maxDocParticipants" name="maxDocParticipants" type="number" step="1" min="2" max="10000" value="${esc(s.maxDocParticipants)}"></div>`;
+       <input id="w-maxDocParticipants" name="maxDocParticipants" type="number" step="1" min="2" max="10000" value="${esc(s.maxDocParticipants)}"></div>` +
+    TUNING_ROWS.map(([name, label, attrs]) => {
+      const id = `w-${name.replace(".", "-")}`;
+      return `<div class="weight-row"><label for="${id}">${esc(label)}</label>
+         <input id="${id}" name="${esc(name)}" type="number" ${attrs} value="${esc(valueOf(name))}"></div>`;
+    }).join("") +
+    `<p class="hint">Threshold changes apply to future resolution runs — run
+       <strong>Re-run entity resolution</strong> below to apply them to the whole corpus.</p>`;
   $("#about").textContent = `Fein v${health.version} · up ${Math.floor(health.uptimeSeconds / 60)}m · MIT licensed`;
 }
 
@@ -827,9 +847,14 @@ $("#save-settings").addEventListener("click", async () => {
   const patch = { weights: {} };
   for (const input of document.querySelectorAll("#settings-form input")) {
     const v = Number(input.value);
-    if (input.name === "halfLifeDays") patch.halfLifeDays = v;
+    if (input.name.includes(".")) {
+      const [g, k] = input.name.split(".");
+      (patch[g] ??= {})[k] = v;
+    }
+    else if (input.name === "halfLifeDays") patch.halfLifeDays = v;
     else if (input.name === "saturation") patch.saturation = v;
     else if (input.name === "maxDocParticipants") patch.maxDocParticipants = v;
+    else if (input.name === "privateHopStrength") patch.privateHopStrength = v;
     else patch.weights[input.name] = v;
   }
   const btn = $("#save-settings");

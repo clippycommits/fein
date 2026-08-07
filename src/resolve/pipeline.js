@@ -1,8 +1,7 @@
 import { id } from "../db.js";
+import { getSettings } from "../settings.js";
 import { blockKeys, jaroWinkler, nameSimilarity, normOrgName } from "./normalize.js";
 
-const AUTO_MERGE = 0.95;   // deterministic above this, per the four-stage design
-const REVIEW = 0.7;        // below AUTO_MERGE but above this → human confirms
 const FREEMAIL = new Set([
   "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "yahoo.com",
   "icloud.com", "me.com", "proton.me", "protonmail.com", "aol.com",
@@ -257,14 +256,19 @@ export function mentionIdentity(normName, normEmailValue) {
 
 /**
  * Four stages: blocking -> candidate generation -> probabilistic matching -> review.
- * Deterministic merge at >= 0.95; 0.70-0.95 goes to the review queue; below
- * that a new entity is created. Order is fixed so runs are reproducible.
+ * Deterministic merge at or above the auto-merge threshold; the band between
+ * the review floor and it goes to the review queue; below the floor a new
+ * entity is created (settings.resolution, defaults 0.95 / 0.70). Order is
+ * fixed so runs are reproducible.
  *
  * `defer` holds mention identities carrying a human decision that has not been
  * replayed yet (see reresolve): those must not be finalized as new entities
  * mid-replay, or the decision can never be applied.
  */
 export async function resolveMentions(db, { defer } = {}) {
+  // One settings read per run, never per mention: the bar must not move
+  // mid-run. Needs only db.query, so reresolve's tx wrapper works here too.
+  const { resolution } = await getSettings(db);
   const index = await loadIndex(db);
   const { rows: mentions } = await db.query(
     `select m.*, d.owner as doc_owner from mentions m
@@ -289,16 +293,16 @@ export async function resolveMentions(db, { defer } = {}) {
     // when the display name also matches some other entity. If two entities
     // both hold the email, that is exactly a coin flip — queue it.
     const emailMatches = scored.filter((s) => s.reason === "exact email match").length;
-    const ambiguous = scored.length > 1 && scored[1].score >= AUTO_MERGE &&
+    const ambiguous = scored.length > 1 && scored[1].score >= resolution.autoMerge &&
       (best.reason !== "exact email match" || emailMatches > 1);
 
-    if (best && best.score >= AUTO_MERGE && !ambiguous) {
+    if (best && best.score >= resolution.autoMerge && !ambiguous) {
       await absorb(db, best.entity, m);
       await persistEntity(db, best.entity);
       index.reindex(best.entity);
       await db.query(`update mentions set entity_id = $2 where id = $1`, [m.id, best.entity.id]);
       stats.attached++;
-    } else if (best && (best.score >= REVIEW || ambiguous)) {
+    } else if (best && (best.score >= resolution.review || ambiguous)) {
       // One question per identity, not per mention: skip if an identical
       // pending review (same candidate, same normalized identity) exists.
       const { rows: dupes } = await db.query(

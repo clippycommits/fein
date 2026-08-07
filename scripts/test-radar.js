@@ -88,6 +88,33 @@ check(named["Cold Cassie"].trend === null,
   "no contact in either window reports no trend rather than a false 'steady'", named["Cold Cassie"].trend);
 check(named["Fading Fred"].trend === "cooling", "a real slowdown reads as cooling", named["Fading Fred"]);
 
+console.log("[2b/3] the policy thresholds are settings, read fresh per call");
+{
+  const nameMap = async (rs) => {
+    const out = {};
+    for (const r of rs) {
+      const { rows } = await db.query(`select canonical_name from entities where id = $1`, [r.entity]);
+      out[rows[0].canonical_name] = r;
+    }
+    return out;
+  };
+  // Softer ratios: Oli (daysSince 40 / cadence 7 ≈ 5.7) drops below the new
+  // overdue bar and reads merely "due"; Cassie (≈ 28.6) stays cold.
+  await putSettings(db, { radar: { overdueRatio: 6, coldRatio: 10 } });
+  const soft = await nameMap(await relationshipRadar(db, tomId, { now: NOW }));
+  check(soft["Overdue Oli"].status === "due", "raising the ratios declassifies overdue", soft["Overdue Oli"]);
+  check(soft["Cold Cassie"].status === "cold", "a truly cold pair stays cold", soft["Cold Cassie"]);
+  // A 3-day dormancy window: Nadia's single touch 5 days ago goes stale.
+  await putSettings(db, { radar: { dormantAfterDays: 3, overdueRatio: 1.5, coldRatio: 3 } });
+  const stale = await nameMap(await relationshipRadar(db, tomId, { now: NOW }));
+  check(stale["New Nadia"].status === "dormant", "the dormancy window is tunable", stale["New Nadia"]);
+  // Back to defaults so the later sections judge against stock policy.
+  await putSettings(db, { radar: { dormantAfterDays: 180 } });
+  const restored = await nameMap(await relationshipRadar(db, tomId, { now: NOW }));
+  check(restored["Overdue Oli"].status === "overdue" || restored["Overdue Oli"].status === "cold",
+    "restoring defaults restores the verdicts", restored["Overdue Oli"]);
+}
+
 console.log("[3/4] bursts and thin history don't fake a cadence");
 {
   // Five touches in one day, then silence: a 0-day cadence would make every

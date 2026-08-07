@@ -25,6 +25,28 @@ export const DEFAULT_SETTINGS = {
   // the value applies retroactively on the next edge rebuild. Legitimate large
   // gatherings (a 60-person AGM) are why this is a setting — raise it knowingly.
   maxDocParticipants: 50,
+  // Resolution thresholds: at or above autoMerge identities merge
+  // deterministically; the band between review and autoMerge asks a human;
+  // below review a new entity is created. Changes apply to future resolution
+  // runs — Re-resolve re-judges the whole corpus under the new bar.
+  resolution: {
+    autoMerge: 0.95,
+    review: 0.7,
+  },
+  // Radar policy: how late is late, as multiples of each pair's own learned
+  // cadence, and when a no-cadence relationship stops being "new". The
+  // data-hygiene floors (minimum cadence, minimum history span) stay in code —
+  // they are definitional, not firm policy.
+  radar: {
+    overdueRatio: 1.5,     // daysSince / cadence at which a pair reads overdue
+    coldRatio: 3,          // … and at which it reads cold
+    dormantAfterDays: 180, // silent this long with no cadence → dormant
+  },
+  // Routing strength assumed for another member's private hop when finding
+  // warm paths: enough to be found, never reported as a number. (The
+  // dashboard's fixed 0.25 display strength for private links is cosmetic
+  // and deliberately separate.)
+  privateHopStrength: 0.5,
   // Privacy: may a viewer see that an entity EXISTS when every document
   // mentioning it lives in someone else's private layer?
   //   "hide"   — no. An entity with no visible evidence is invisible. Safest,
@@ -38,6 +60,14 @@ export const DEFAULT_SETTINGS = {
 
 const NUMERIC_LIMITS = { min: 0, max: 100 };
 
+// Per-key ranges for the nested groups. autoMerge below 0.5 would merge on
+// weaker evidence than the review band exists to question; privateHopStrength
+// must stay inside (0, 1) so -ln(strength) path costs remain finite.
+const GROUP_LIMITS = {
+  resolution: { autoMerge: [0.5, 1], review: [0.1, 1] },
+  radar: { overdueRatio: [1, 100], coldRatio: [1, 100], dormantAfterDays: [1, 3650] },
+};
+
 export async function getSettings(db) {
   const { rows } = await db.query(`select value from settings where key = 'scoring'`);
   if (!rows.length) return structuredClone(DEFAULT_SETTINGS);
@@ -46,16 +76,25 @@ export async function getSettings(db) {
     ...structuredClone(DEFAULT_SETTINGS),
     ...stored,
     weights: { ...DEFAULT_SETTINGS.weights, ...(stored.weights ?? {}) },
+    // Deep-merge the nested groups like weights: a stored blob predating a
+    // key must pick up its default, or ratio comparisons go NaN downstream.
+    resolution: { ...DEFAULT_SETTINGS.resolution, ...(stored.resolution ?? {}) },
+    radar: { ...DEFAULT_SETTINGS.radar, ...(stored.radar ?? {}) },
   };
 }
 
 export async function putSettings(db, patch) {
   const current = await getSettings(db);
+  // Every persisted key must appear here: a key missing from this list is
+  // silently dropped on the next unrelated save.
   const next = {
     weights: { ...current.weights },
     halfLifeDays: current.halfLifeDays,
     saturation: current.saturation,
     maxDocParticipants: current.maxDocParticipants,
+    resolution: { ...current.resolution },
+    radar: { ...current.radar },
+    privateHopStrength: current.privateHopStrength,
     privateEntityVisibility: current.privateEntityVisibility,
   };
   for (const [k, v] of Object.entries(patch.weights ?? {})) {
@@ -71,6 +110,25 @@ export async function putSettings(db, patch) {
   if (patch.maxDocParticipants !== undefined) {
     // Min 2: a two-person document is the base case for a pair-edge.
     next.maxDocParticipants = clampNumber(patch.maxDocParticipants, "maxDocParticipants", 2, 10000);
+  }
+  for (const group of ["resolution", "radar"]) {
+    for (const [k, v] of Object.entries(patch[group] ?? {})) {
+      // Own-property check mirrors the weights loop and blocks prototype names.
+      if (!Object.hasOwn(DEFAULT_SETTINGS[group], k)) throw new Error(`unknown ${group} setting "${k}"`);
+      next[group][k] = clampNumber(v, `${group}.${k}`, ...GROUP_LIMITS[group][k]);
+    }
+  }
+  if (patch.privateHopStrength !== undefined) {
+    next.privateHopStrength = clampNumber(patch.privateHopStrength, "privateHopStrength", 0.01, 0.99);
+  }
+  // Cross-field invariants hold on the RESULT, however it was patched: an
+  // inverted resolution band auto-merges everything or reviews everything,
+  // and overdue >= cold makes "overdue" unreachable.
+  if (next.resolution.review >= next.resolution.autoMerge) {
+    throw new Error("resolution.review must be below resolution.autoMerge");
+  }
+  if (next.radar.overdueRatio >= next.radar.coldRatio) {
+    throw new Error("radar.overdueRatio must be below radar.coldRatio");
   }
   if (patch.privateEntityVisibility !== undefined) {
     if (!["hide", "reveal"].includes(patch.privateEntityVisibility)) {
