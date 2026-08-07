@@ -12,8 +12,10 @@ const { getDb } = await import(join(root, "src/db.js"));
 const { ingestDocs } = await import(join(root, "src/ingest/index.js"));
 const { resolveMentions } = await import(join(root, "src/resolve/pipeline.js"));
 const { relationshipRadar, radarSummary } = await import(join(root, "src/graph/radar.js"));
-const { searchEntities } = await import(join(root, "src/graph/queries.js"));
+const { searchEntities, entityBrief } = await import(join(root, "src/graph/queries.js"));
 const { addMember } = await import(join(root, "src/members.js"));
+const { rebuildEdges } = await import(join(root, "src/graph/edges.js"));
+const { getSettings, putSettings } = await import(join(root, "src/settings.js"));
 
 let failures = 0;
 const check = (cond, msg, extra) => {
@@ -172,6 +174,87 @@ const sharedNames = await Promise.all(shared.map(nameOf));
 const sebNames = await Promise.all(sebView.map(nameOf));
 check(!sharedNames.includes("Secret Sasha"), "a private relationship is absent from the shared radar", sharedNames);
 check(sebNames.includes("Secret Sasha"), "its owner sees it on theirs", sebNames);
+
+console.log("[5/5] participant cap: mass mail is not relationship evidence");
+{
+  const baseline = (await rebuildEdges(db)).edges;
+  const baseSummary = await radarSummary(db, { now: NOW });
+
+  // 60 distinct resolved people on one email: Tom plus 59 blast recipients.
+  // Names must be pairwise dissimilar: normalization strips digits (so
+  // "Blast 1"/"Blast 2" would all collapse to "blast" and merge), and the
+  // shared recipient domain blocks everyone against everyone, so similar
+  // names would land in the review band and never resolve. Deterministic
+  // pseudo-random letter tokens keep every pair far apart.
+  const rand = (() => { let s = 42; return () => (s = (s * 48271) % 2147483647) / 2147483647; })();
+  const token = () => Array.from({ length: 6 },
+    () => String.fromCharCode(97 + Math.floor(rand() * 26))).join("");
+  const cap1 = (s) => s[0].toUpperCase() + s.slice(1);
+  const recipients = Array.from({ length: 59 }, (_, i) =>
+    ({ name: `${cap1(token())} ${cap1(token())}`, email: `blast${i}@list.example`, role: "to" }));
+  await ingestDocs(db, [{
+    source: "gmail", kind: "email", external_id: "blast-1", title: "newsletter",
+    occurred_at: daysAgo(5),
+    people: [{ ...me, role: "from" }, ...recipients],
+  }]);
+  await resolveMentions(db);
+  const capped = await rebuildEdges(db);
+  check(capped.edges === baseline, "over the cap, a doc builds no pair-edges", { baseline, edges: capped.edges });
+  check(capped.cappedDocs === 1, "the skipped doc is counted for observability", capped.cappedDocs);
+
+  // Only the fanout is skipped: the document and its mentions are kept.
+  check(await countBlastMentions() === 60, "the blast doc keeps all 60 mentions");
+  const b7 = await entityByName(recipients[7].name);
+  const brief = await entityBrief(db, b7);
+  check(brief.recentDocuments.some((d) => d.title === "newsletter"),
+    "a recipient's brief still lists the blast doc", brief.recentDocuments);
+
+  // Radar tells the same story as the edge graph.
+  const sum50 = await radarSummary(db, { now: NOW });
+  check(sum50.pairs === baseSummary.pairs, "radar ignores pairs that exist only via the blast",
+    { base: baseSummary.pairs, now: sum50.pairs });
+  const r50 = await relationshipRadar(db, b7, { now: NOW, limit: 100 });
+  check(r50.length === 0, "a blast-only person has no radar contacts", r50.length);
+
+  // Raising the cap re-derives the graph — the reason it lives at edge build.
+  await putSettings(db, { maxDocParticipants: 100 });
+  // The drop-trap: putSettings rebuilds its stored object from an explicit
+  // field list, so an unrelated write must not silently erase the cap.
+  await putSettings(db, { saturation: 6 });
+  check((await getSettings(db)).maxDocParticipants === 100,
+    "an unrelated settings write keeps the changed cap", await getSettings(db));
+  const raised = await rebuildEdges(db);
+  check(raised.edges === baseline + 1770, "cap 100 admits all C(60,2) = 1770 pairs",
+    { baseline, edges: raised.edges });
+  check(raised.cappedDocs === 0, "nothing is capped at 100", raised.cappedDocs);
+  const sum100 = await radarSummary(db, { now: NOW });
+  check(sum100.pairs === baseSummary.pairs + 1770, "radar sees the blast pairs at cap 100",
+    { base: baseSummary.pairs, now: sum100.pairs });
+  const r100 = await relationshipRadar(db, b7, { now: NOW, limit: 100 });
+  check(r100.length === 59 && r100.every((r) => r.lastContact !== null),
+    "at cap 100 a recipient has 59 contacts with real history", r100.length);
+
+  await putSettings(db, { maxDocParticipants: 50 });
+  const lowered = await rebuildEdges(db);
+  check(lowered.edges === baseline && lowered.cappedDocs === 1,
+    "lowering the cap prunes the blast edges again (retroactive)", lowered);
+
+  let clamped = false;
+  try { await putSettings(db, { maxDocParticipants: 1 }); } catch { clamped = true; }
+  check(clamped, "a cap below 2 is rejected");
+}
+
+async function countBlastMentions() {
+  const { rows } = await db.query(
+    `select count(*) as n from mentions m join documents d on d.id = m.document_id
+     where d.external_id = 'blast-1'`);
+  return Number(rows[0].n);
+}
+
+async function entityByName(name) {
+  const { rows } = await db.query(`select id from entities where canonical_name = $1`, [name]);
+  return rows[0].id;
+}
 
 await db.close();
 rmSync(dataDir, { recursive: true, force: true });

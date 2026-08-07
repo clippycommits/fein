@@ -1,4 +1,5 @@
 import { visibleLayers } from "../members.js";
+import { getSettings } from "../settings.js";
 
 /**
  * Relationship radar — the timing layer.
@@ -43,24 +44,31 @@ const RANK = { cold: 0, overdue: 1, due: 2, dormant: 3, new: 4, active: 5 };
  * privacy layers. `now` is injectable so results are reproducible in tests.
  */
 export async function relationshipRadar(db, entityId, { viewer = null, limit = 25, now = Date.now(), includeAutomated = false } = {}) {
+  const cfg = await getSettings(db);
   const layers = visibleLayers(viewer);
   const lph = layers.map((_, i) => `$${i + 2}`).join(", ");
   // Robots don't have relationships to be overdue with.
   const humanOnly = includeAutomated ? "" :
     "and not exists (select 1 from entities ae where ae.id = other.entity_id and ae.automated)";
 
-  // Every dated document the pair both appear in, newest first.
+  // Every dated document the pair both appear in, newest first. Documents
+  // over the participant cap are excluded for the same reason they build no
+  // edges: a 500-way CC blast is not contact, and letting it into the
+  // history would let mass mail set the pair's cadence.
   const { rows } = await db.query(
     `select other.entity_id as other, d.id as doc_id, d.occurred_at, d.kind, d.title, d.source
      from mentions me
      join documents d on d.id = me.document_id
      join mentions other on other.document_id = d.id and other.entity_id <> me.entity_id
+     join (select document_id, count(distinct entity_id) as n from mentions
+           where kind = 'person' and entity_id is not null
+           group by document_id) pc on pc.document_id = d.id and pc.n <= $${layers.length + 2}
      where me.entity_id = $1 and me.kind = 'person' and other.kind = 'person'
        and other.entity_id is not null
        and d.occurred_at is not null and d.owner in (${lph})
        ${humanOnly}
      order by other.entity_id, d.occurred_at desc`,
-    [entityId, ...layers]
+    [entityId, ...layers, cfg.maxDocParticipants]
   );
 
   const byOther = new Map();
@@ -139,20 +147,28 @@ export async function relationshipRadar(db, entityId, { viewer = null, limit = 2
  * per-pair cadence maths, aggregated to "which relationships need attention".
  */
 export async function radarSummary(db, { viewer = null, limit = 20, now = Date.now(), includeAutomated = false } = {}) {
+  const cfg = await getSettings(db);
   const layers = visibleLayers(viewer);
   const lph = layers.map((_, i) => `$${i + 1}`).join(", ");
   const humanOnly = includeAutomated ? "" :
     `and not exists (select 1 from entities ae where ae.id in (a.entity_id, b.entity_id) and ae.automated)`;
+  // The participant-cap join does double duty here: it keeps radar telling
+  // the same story as the edge graph, and it is what keeps this self-join
+  // affordable — one 500-recipient blast would otherwise add 124k rows to
+  // every dashboard load.
   const { rows } = await db.query(
     `select a.entity_id as x, b.entity_id as y, d.id as doc_id, d.occurred_at
      from mentions a
      join documents d on d.id = a.document_id
      join mentions b on b.document_id = d.id and b.entity_id > a.entity_id
+     join (select document_id, count(distinct entity_id) as n from mentions
+           where kind = 'person' and entity_id is not null
+           group by document_id) pc on pc.document_id = d.id and pc.n <= $${layers.length + 1}
      where a.kind = 'person' and b.kind = 'person'
        and a.entity_id is not null and b.entity_id is not null
        and d.occurred_at is not null and d.owner in (${lph})
        ${humanOnly}`,
-    layers
+    [...layers, cfg.maxDocParticipants]
   );
 
   const pairs = new Map();

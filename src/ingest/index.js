@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { env } from "../brand.js";
-import { id } from "../db.js";
+import { insertMany, MAX_PARAMS } from "../db.js";
 import { normEmail, normPersonName, normOrgName } from "../resolve/normalize.js";
 import { MIN_BODY_CHARS } from "../extract/prompt.js";
 
@@ -59,37 +59,35 @@ export async function ingestStream(outerDb, source, { batchSize = 2000, onProgre
 }
 
 async function ingestInTx(db, docs, owner = "") {
-  let docCount = 0;
-  let mentionCount = 0;
+  // Body policy: FEIN_NO_BODIES=1 (legacy FUNDGRAPH_NO_BODIES) disables capture for every adapter
+  // AND scrubs previously stored bodies on re-ingest (the flag means "no
+  // bodies, period"). Otherwise: keep a new body when the adapter provides
+  // one (sub-floor bodies aren't worth mining and are dropped), fall back
+  // to the previously stored body when it doesn't — a headers-only re-pass
+  // over the same mbox must not erase what an earlier pass captured.
+  const capture = env("NO_BODIES") !== "1";
+
+  // Phase 1, pure: build every row before touching the database. Duplicate
+  // doc ids are deduped to the LAST occurrence — that is what the sequential
+  // upserts used to converge to, and a multi-row upsert hitting the same id
+  // twice raises "ON CONFLICT DO UPDATE command cannot affect row a second
+  // time". Duplicates are real: external_id-less docs share an id whenever
+  // source/kind/title/date repeat. Keeping the whole per-doc record (mentions
+  // and keep list included) makes the dedupe atomic: a superseded
+  // occurrence's mentions are never written at all.
+  const byId = new Map(); // did -> { docRow, mentionRows, keep }
   for (const doc of docs) {
     const docOwner = doc.owner ?? owner;
     const did = docId(doc, docOwner);
-    // Body policy: FEIN_NO_BODIES=1 (legacy FUNDGRAPH_NO_BODIES) disables capture for every adapter
-    // AND scrubs previously stored bodies on re-ingest (the flag means "no
-    // bodies, period"). Otherwise: keep a new body when the adapter provides
-    // one (sub-floor bodies aren't worth mining and are dropped), fall back
-    // to the previously stored body when it doesn't — a headers-only re-pass
-    // over the same mbox must not erase what an earlier pass captured.
-    const capture = env("NO_BODIES") !== "1";
     const body = capture && typeof doc.body === "string" && doc.body.length >= MIN_BODY_CHARS
       ? doc.body : null;
-    await db.query(
-      `insert into documents (id, source, kind, external_id, title, occurred_at, raw, body, body_sha256, owner)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $11)
-       on conflict (id) do update set title = $5, occurred_at = $6, raw = $7,
-         body = case when $10 then coalesce($8, documents.body) else null end,
-         body_sha256 = case when $10 then coalesce($9, documents.body_sha256) else null end,
-         owner = $11`,
-      [did, doc.source, doc.kind, doc.external_id ?? null, doc.title ?? null,
-       doc.occurred_at ?? null, JSON.stringify(doc.raw ?? {}), body,
-       body ? bodySha256(body) : null, capture, docOwner]
-    );
-    docCount++;
+    const docRow = [did, doc.source, doc.kind, doc.external_id ?? null, doc.title ?? null,
+      doc.occurred_at ?? null, JSON.stringify(doc.raw ?? {}), body,
+      body ? bodySha256(body) : null, docOwner];
 
-    // Upsert with stable ids (never touching entity_id), then delete only
-    // stale rows — a blanket delete would cascade away review-queue history.
     const ordinals = new Map();
     const keep = [];
+    const mentionRows = []; // person and org rows share one column set; org rows null the person-only columns
     for (const p of doc.people ?? []) {
       const nn = normPersonName(p.name);
       const ne = normEmail(p.email);
@@ -99,14 +97,7 @@ async function ingestInTx(db, docs, owner = "") {
       ordinals.set(okey, ordinal + 1);
       const mid = mentionId(did, "person", role, nn, ne, ordinal);
       keep.push(mid);
-      await db.query(
-        `insert into mentions (id, document_id, kind, name, email, org_hint, role, norm_name, norm_email)
-         values ($1, $2, 'person', $3, $4, $5, $6, $7, $8)
-         on conflict (id) do update set name = $3, email = $4, org_hint = $5, role = $6,
-           norm_name = $7, norm_email = $8`,
-        [mid, did, p.name ?? null, p.email ?? null, p.org ?? null, role, nn, ne]
-      );
-      mentionCount++;
+      mentionRows.push([mid, did, "person", p.name ?? null, p.email ?? null, p.org ?? null, role, nn, ne]);
     }
     for (const orgName of doc.orgs ?? []) {
       const nn = normOrgName(orgName);
@@ -115,25 +106,72 @@ async function ingestInTx(db, docs, owner = "") {
       ordinals.set(okey, ordinal + 1);
       const mid = mentionId(did, "org", "mentioned", nn, null, ordinal);
       keep.push(mid);
-      await db.query(
-        `insert into mentions (id, document_id, kind, name, role, norm_name)
-         values ($1, $2, 'org', $3, 'mentioned', $4)
-         on conflict (id) do update set name = $3, norm_name = $4`,
-        [mid, did, orgName, nn]
-      );
-      mentionCount++;
+      mentionRows.push([mid, did, "org", orgName, null, null, "mentioned", nn, null]);
     }
-    // Structured mentions only: extracted mentions belong to the extraction
-    // pipeline, which does its own replace when the body's hash changes.
-    if (keep.length) {
-      const placeholders = keep.map((_, i) => `$${i + 2}`).join(", ");
+    byId.set(did, { docRow, mentionRows, keep });
+  }
+  const perDoc = [...byId.values()];
+
+  // Phase 2: documents. `capture` is code-derived (an env flag, never user
+  // data), inlined as a SQL literal so the excluded.* clause can keep the
+  // scrub/keep-previous-body contract above without a per-row flag param.
+  await insertMany(db, {
+    table: "documents",
+    cols: ["id", "source", "kind", "external_id", "title", "occurred_at", "raw", "body", "body_sha256", "owner"],
+    rows: perDoc.map((d) => d.docRow),
+    conflict: `on conflict (id) do update set title = excluded.title,
+      occurred_at = excluded.occurred_at, raw = excluded.raw,
+      body = case when ${capture} then coalesce(excluded.body, documents.body) else null end,
+      body_sha256 = case when ${capture} then coalesce(excluded.body_sha256, documents.body_sha256) else null end,
+      owner = excluded.owner`,
+  });
+
+  // Phase 3: mentions, upserted with stable ids and entity_id never listed —
+  // review-queue history hangs off these rows by FK cascade.
+  const mentionRows = perDoc.flatMap((d) => d.mentionRows);
+  await insertMany(db, {
+    table: "mentions",
+    cols: ["id", "document_id", "kind", "name", "email", "org_hint", "role", "norm_name", "norm_email"],
+    rows: mentionRows,
+    conflict: `on conflict (id) do update set name = excluded.name, email = excluded.email,
+      org_hint = excluded.org_hint, role = excluded.role,
+      norm_name = excluded.norm_name, norm_email = excluded.norm_email`,
+  });
+
+  // Phase 4: delete stale rows. Structured mentions only: extracted mentions
+  // belong to the extraction pipeline, which does its own replace when the
+  // body's hash changes. Mention ids embed their document id, so a keep list
+  // shared across a chunk of docs cannot shield another doc's rows — but a
+  // doc's own keep ids must travel in ITS chunk, so docs and their keep ids
+  // are chunked together under MAX_PARAMS.
+  let chunk = [];
+  let params = 0;
+  const flush = async () => {
+    if (!chunk.length) return;
+    const dids = chunk.map((d) => d.docRow[0]);
+    const keeps = chunk.flatMap((d) => d.keep);
+    const dph = dids.map((_, i) => `$${i + 1}`).join(", ");
+    if (keeps.length) {
+      const kph = keeps.map((_, i) => `$${dids.length + i + 1}`).join(", ");
       await db.query(
-        `delete from mentions where document_id = $1 and origin = 'structured' and id not in (${placeholders})`,
-        [did, ...keep]
+        `delete from mentions where document_id in (${dph}) and origin = 'structured' and id not in (${kph})`,
+        [...dids, ...keeps]
       );
     } else {
-      await db.query(`delete from mentions where document_id = $1 and origin = 'structured'`, [did]);
+      await db.query(`delete from mentions where document_id in (${dph}) and origin = 'structured'`, dids);
     }
+    chunk = [];
+    params = 0;
+  };
+  for (const d of perDoc) {
+    const cost = 1 + d.keep.length;
+    if (chunk.length && params + cost > MAX_PARAMS) await flush();
+    chunk.push(d);
+    params += cost;
   }
-  return { docCount, mentionCount };
+  await flush();
+
+  // docCount counts input docs (as the sequential loop did); mentionCount is
+  // the rows actually written, after dedupe.
+  return { docCount: docs.length, mentionCount: mentionRows.length };
 }

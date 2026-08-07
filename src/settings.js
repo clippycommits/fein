@@ -18,6 +18,13 @@ export const DEFAULT_SETTINGS = {
   },
   halfLifeDays: 180, // recency decay half-life
   saturation: 6,     // strength = 1 - e^(-W/saturation)
+  // A document with more distinct resolved people than this contributes no
+  // pair-edges: a 500-recipient blast is mass mail, not relationship evidence,
+  // and one email's weight split across its 124,750 pairs is noise that buries
+  // the real graph. The document and its mentions are always kept, so changing
+  // the value applies retroactively on the next edge rebuild. Legitimate large
+  // gatherings (a 60-person AGM) are why this is a setting — raise it knowingly.
+  maxDocParticipants: 50,
   // Privacy: may a viewer see that an entity EXISTS when every document
   // mentioning it lives in someone else's private layer?
   //   "hide"   — no. An entity with no visible evidence is invisible. Safest,
@@ -48,6 +55,7 @@ export async function putSettings(db, patch) {
     weights: { ...current.weights },
     halfLifeDays: current.halfLifeDays,
     saturation: current.saturation,
+    maxDocParticipants: current.maxDocParticipants,
     privateEntityVisibility: current.privateEntityVisibility,
   };
   for (const [k, v] of Object.entries(patch.weights ?? {})) {
@@ -59,6 +67,10 @@ export async function putSettings(db, patch) {
   }
   if (patch.saturation !== undefined) {
     next.saturation = clampNumber(patch.saturation, "saturation", 0.1, 100);
+  }
+  if (patch.maxDocParticipants !== undefined) {
+    // Min 2: a two-person document is the base case for a pair-edge.
+    next.maxDocParticipants = clampNumber(patch.maxDocParticipants, "maxDocParticipants", 2, 10000);
   }
   if (patch.privateEntityVisibility !== undefined) {
     if (!["hide", "reveal"].includes(patch.privateEntityVisibility)) {

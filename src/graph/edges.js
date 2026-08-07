@@ -1,3 +1,4 @@
+import { insertMany } from "../db.js";
 import { getSettings } from "../settings.js";
 
 /**
@@ -52,6 +53,7 @@ export async function rebuildEdges(db, now = Date.now()) {
 
   const ROLE_RANK = { from: 5, to: 4, attendee: 4, author: 3, cc: 2, mentioned: 1 };
   const acc = new Map(); // "owner|a|b" -> {owner, a, b, signals, weight, lastSeen}
+  let capped = 0;
   for (const doc of byDoc.values()) {
     const seen = new Map(); // entity -> strongest role within this doc
     for (const p of doc.people) {
@@ -59,6 +61,11 @@ export async function rebuildEdges(db, now = Date.now()) {
       if (!cur || (ROLE_RANK[p.role] ?? 0) > (ROLE_RANK[cur] ?? 0)) seen.set(p.entity, p.role);
     }
     const people = [...seen.entries()];
+    // Mass mail is not relationship evidence: above the cap (counted on
+    // distinct RESOLVED people, the actual fanout driver), skip the pair
+    // fanout but keep the document and its mentions — edges are rebuilt
+    // wholesale, so a settings change applies or undoes this retroactively.
+    if (people.length > cfg.maxDocParticipants) { capped++; continue; }
     const d = decay(cfg, doc.occurred_at, now);
     for (let i = 0; i < people.length; i++) {
       for (let j = i + 1; j < people.length; j++) {
@@ -78,21 +85,24 @@ export async function rebuildEdges(db, now = Date.now()) {
     }
   }
 
+  // Validate while building rows so a bad edge is caught before any write.
+  const edgeRows = [];
+  for (const rec of acc.values()) {
+    const strength = 1 - Math.exp(-rec.weight / cfg.saturation);
+    if (!Number.isFinite(strength)) throw new Error(`non-finite strength for ${rec.a}|${rec.b}`);
+    edgeRows.push([rec.a, rec.b, rec.owner, JSON.stringify(rec.signals), rec.weight, strength, rec.lastSeen]);
+  }
   // One transaction so readers never observe a half-rebuilt graph.
   await db.tx(async (tx) => {
     await tx.query(`delete from edges`);
-    for (const rec of acc.values()) {
-      const strength = 1 - Math.exp(-rec.weight / cfg.saturation);
-      if (!Number.isFinite(strength)) throw new Error(`non-finite strength for ${rec.a}|${rec.b}`);
-      await tx.query(
-        `insert into edges (a, b, owner, signals, weight, strength, last_seen)
-         values ($1, $2, $3, $4, $5, $6, $7)`,
-        [rec.a, rec.b, rec.owner, JSON.stringify(rec.signals), rec.weight, strength, rec.lastSeen]
-      );
-    }
+    await insertMany(tx, {
+      table: "edges",
+      cols: ["a", "b", "owner", "signals", "weight", "strength", "last_seen"],
+      rows: edgeRows,
+    });
   });
   const layers = new Set([...acc.values()].map((r) => r.owner));
-  return { edges: acc.size, layers: layers.size };
+  return { edges: acc.size, layers: layers.size, cappedDocs: capped };
 }
 
 /** Saturation is applied to summed weight, so callers can combine layers. */

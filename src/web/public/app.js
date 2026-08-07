@@ -782,7 +782,9 @@ async function renderSettings() {
     `<div class="weight-row"><label for="w-halfLifeDays">Recency half-life (days)</label>
        <input id="w-halfLifeDays" name="halfLifeDays" type="number" step="1" min="1" max="3650" value="${esc(s.halfLifeDays)}"></div>
      <div class="weight-row"><label for="w-saturation">Evidence saturation</label>
-       <input id="w-saturation" name="saturation" type="number" step="0.5" min="0.5" max="100" value="${esc(s.saturation)}"></div>`;
+       <input id="w-saturation" name="saturation" type="number" step="0.5" min="0.5" max="100" value="${esc(s.saturation)}"></div>
+     <div class="weight-row"><label for="w-maxDocParticipants">Participant cap (larger docs build no connections)</label>
+       <input id="w-maxDocParticipants" name="maxDocParticipants" type="number" step="1" min="2" max="10000" value="${esc(s.maxDocParticipants)}"></div>`;
   $("#about").textContent = `Fein v${health.version} · up ${Math.floor(health.uptimeSeconds / 60)}m · MIT licensed`;
 }
 
@@ -792,6 +794,7 @@ $("#save-settings").addEventListener("click", async () => {
     const v = Number(input.value);
     if (input.name === "halfLifeDays") patch.halfLifeDays = v;
     else if (input.name === "saturation") patch.saturation = v;
+    else if (input.name === "maxDocParticipants") patch.maxDocParticipants = v;
     else patch.weights[input.name] = v;
   }
   const btn = $("#save-settings");

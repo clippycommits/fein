@@ -132,6 +132,7 @@ console.log("[5/10] settings: customization rebuilds the graph");
 {
   const before = await get("/api/settings");
   check(before.body.weights.meeting === 3 && before.body.halfLifeDays === 180, "default settings served", before.body);
+  check(before.body.maxDocParticipants === 50, "participant cap default is served", before.body.maxDocParticipants);
   const beforeGraph = await get("/api/graph");
   const beforeStrength = Math.max(...beforeGraph.body.links.map((l) => l.strength));
   const res = await send("PUT", "/api/settings", { weights: { meeting: 10 }, saturation: 3 });
@@ -140,6 +141,9 @@ console.log("[5/10] settings: customization rebuilds the graph");
   const afterStrength = Math.max(...afterGraph.body.links.map((l) => l.strength));
   check(afterStrength > beforeStrength, "weight change strengthens edges",
     { before: beforeStrength, after: afterStrength });
+  const cap = await send("PUT", "/api/settings", { maxDocParticipants: 80 });
+  check(cap.status === 200 && cap.body.settings.maxDocParticipants === 80 && cap.body.edges,
+    "participant cap round-trips and rebuilds edges", cap.body.settings);
   const invalid = await send("PUT", "/api/settings", { weights: { nonsense: 5 } });
   check(invalid.status === 400, "unknown weight is rejected with 400", invalid.status);
   check(/unknown weight/.test(invalid.body?.error ?? ""), "client error message is preserved", invalid.body);

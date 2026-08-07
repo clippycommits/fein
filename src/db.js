@@ -106,3 +106,36 @@ async function migrate(db) {
 export function id(prefix) {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
 }
+
+// The Postgres wire protocol caps bind parameters at 65535 (int16); 8000
+// leaves margin and behaves identically on PGlite and a DATABASE_URL pool.
+// Bigger chunks buy nothing — statement parse time grows with the list.
+export const MAX_PARAMS = 8000;
+
+/**
+ * Chunked multi-row insert. `rows` are arrays in `cols` order; `conflict` is
+ * an optional "on conflict ..." clause appended verbatim. Rows are split so
+ * no statement exceeds MAX_PARAMS bind parameters — the point is one
+ * round-trip per ~thousand rows instead of one per row, which is what makes
+ * large ingests and edge rebuilds tolerable on PGlite (every query is a WASM
+ * round-trip). Rows must have unique conflict keys within one call: the same
+ * key twice in one statement raises "cannot affect row a second time".
+ */
+export async function insertMany(db, { table, cols, rows, conflict = "" }) {
+  const perChunk = Math.max(1, Math.floor(MAX_PARAMS / cols.length));
+  for (let at = 0; at < rows.length; at += perChunk) {
+    const chunk = rows.slice(at, at + perChunk);
+    const values = chunk
+      .map((_, r) => `(${cols.map((_, c) => `$${r * cols.length + c + 1}`).join(", ")})`)
+      .join(", ");
+    try {
+      await db.query(`insert into ${table} (${cols.join(", ")}) values ${values} ${conflict}`, chunk.flat());
+    } catch (err) {
+      // One bad row fails its whole chunk — name the chunk so it can be found.
+      const keys = chunk.map((r) => r[0]);
+      err.message += ` (batch insert into ${table}, ${cols[0]}s ${keys.slice(0, 8).join(", ")}` +
+        (keys.length > 8 ? ` … ${keys.length} rows` : "") + `)`;
+      throw err;
+    }
+  }
+}
