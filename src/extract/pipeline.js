@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { env } from "../brand.js";
 import { mentionId } from "../ingest/index.js";
 import { normEmail, normPersonName, normOrgName } from "../resolve/normalize.js";
-import { PROMPT_VERSION, chunkBody, MIN_BODY_CHARS } from "./prompt.js";
-import { extractConfig, generateExtraction, isAuthError } from "./client.js";
+import { PROMPT_VERSION, chunkBody, MIN_BODY_CHARS, MAX_BODY_CHARS, CHUNK_CHARS } from "./prompt.js";
+import { extractConfig, generateExtraction, isAuthError, priceFor } from "./client.js";
 
 const MAX_CONTEXT_CHARS = 240;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -343,7 +343,7 @@ async function sweepBodylessDocs(db) {
  * time — skip decisions run entirely on stored hashes, so a 100k-document
  * corpus never gets materialized in memory.
  */
-export async function extractPending(db, { limit = Infinity, generate = generateExtraction, onProgress } = {}) {
+export async function extractPending(db, { limit = Infinity, generate = generateExtraction, onProgress, shouldStop } = {}) {
   const cfg = extractConfig();
   await backfillBodyHashes(db);
   await sweepBodylessDocs(db);
@@ -362,6 +362,11 @@ export async function extractPending(db, { limit = Infinity, generate = generate
   let processed = 0;
 
   for (const doc of candidates) {
+    // Externally-triggered cancellation, checked between documents before any
+    // token is spent. Cancellation is NOT a failure: everything already
+    // written stays durable and the next run resumes via hashes, exactly like
+    // the consecutive-failure abort below — but through the success path.
+    if (shouldStop?.()) { stats.cancelled = "cancelled by user"; break; }
     const hash = extractionHash(cfg, doc.body_sha256);
     const sameHash = doc.prev_hash === hash;
     if (sameHash && doc.prev_status === "ok") { stats.skipped++; continue; }
@@ -450,4 +455,51 @@ export async function extractionStats(db) {
   const extractedMentions = await one(`select count(*) as n from mentions where origin = 'extracted'`);
   const deals = await one(`select count(*) as n from deals`);
   return { docsWithBody, extracted, failed, exhausted, pending, extractedMentions, deals };
+}
+
+const PROMPT_OVERHEAD_TOKENS = 700; // system prompt + schema + metadata, per request
+const OUTPUT_TOKENS_PER_REQUEST = 300; // grounded JSON is small
+
+/**
+ * Cost/size preview for the next run: how many documents a `limit`-bounded run
+ * would touch, and roughly what it would spend. Shares extractionStats'
+ * pending predicate (and its documented staleness undercount) plus the run's
+ * ordering, so the batch it prices is the batch extractPending would take.
+ * Deliberately approximate — ~4 chars/token on body lengths, chunk counts
+ * ignore paragraph-boundary overlap, list prices only — and every surface
+ * showing these figures labels them approximate. The char sums read bodies
+ * only inside the limited batch; the corpus-wide figure stays a count.
+ */
+export async function estimateExtraction(db, { limit = Infinity } = {}) {
+  const cfg = extractConfig();
+  const pendingFrom = `
+    from documents d
+    where d.body_sha256 is not null
+      and not exists (select 1 from extractions e where e.document_id = d.id
+                      and (e.status = 'ok' or (e.status = 'failed' and e.attempts >= ${MAX_ATTEMPTS})))`;
+  const totalPending = Number((await db.query(`select count(*) as n ${pendingFrom}`)).rows[0].n);
+  const lim = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : null;
+  const { rows: [batch] } = await db.query(
+    `select count(*) as docs,
+            coalesce(sum(least(length(body), ${MAX_BODY_CHARS})), 0) as chars,
+            coalesce(sum(ceil(least(length(body), ${MAX_BODY_CHARS})::numeric / ${CHUNK_CHARS})), 0) as requests
+     from (select d.body ${pendingFrom}
+           order by d.occurred_at desc nulls last, d.id${lim !== null ? ` limit ${lim}` : ""}) as batch`
+  );
+  const requests = Number(batch.requests);
+  const approxInputTokens = Math.ceil(Number(batch.chars) / 4) + requests * PROMPT_OVERHEAD_TOKENS;
+  const approxOutputTokens = requests * OUTPUT_TOKENS_PER_REQUEST;
+  const price = priceFor(cfg.model);
+  return {
+    model: cfg.model,
+    totalPending,
+    docsThisRun: Number(batch.docs),
+    approxInputTokens,
+    approxOutputTokens,
+    approxCostUsd: price
+      ? (approxInputTokens * price.input + approxOutputTokens * price.output) / 1e6
+      : null,
+    priceKnown: !!price,
+    note: "approximate: ~4 chars/token on body lengths, list prices",
+  };
 }

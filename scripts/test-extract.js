@@ -5,7 +5,7 @@
  * boundary itself (src/extract/client.js) is exercised by `fein extract`
  * against real credentials.
  *
- * Sections [8]-[9] are regression tests for the adversarial-review findings:
+ * Sections [11]-[12] are regression tests for the adversarial-review findings:
  * token-recombination and email-truncation grounding bypasses, model-authored
  * review quotes, retry exhaustion, body scrubbing, and stale-mention sweeps.
  */
@@ -29,8 +29,9 @@ const { ingestDocs } = await import(join(root, "src/ingest/index.js"));
 const { resolveMentions } = await import(join(root, "src/resolve/pipeline.js"));
 const { rebuildEdges } = await import(join(root, "src/graph/edges.js"));
 const { searchEntities, counts } = await import(join(root, "src/graph/queries.js"));
-const { extractPending, extractionStats, groundExtraction } =
+const { extractPending, extractionStats, estimateExtraction, groundExtraction } =
   await import(join(root, "src/extract/pipeline.js"));
+const { priceFor } = await import(join(root, "src/extract/client.js"));
 const { chunkBody } = await import(join(root, "src/extract/prompt.js"));
 
 let failures = 0;
@@ -44,7 +45,7 @@ const check = (cond, msg, extra) => {
 
 const db = await getDb();
 
-console.log("[1/10] grounding rules (pure)");
+console.log("[1/13] grounding rules (pure)");
 {
   const doc = {
     body: "Call with Ines Delacroix (ines@foxglove.vc) about the data room. " +
@@ -92,7 +93,7 @@ console.log("[1/10] grounding rules (pure)");
     "known person with a newly-discovered email is kept (enrichment)", g3.people);
 }
 
-console.log("[2/10] chunking");
+console.log("[2/13] chunking");
 {
   const body = Array.from({ length: 3000 }, (_, i) => `line ${i} of a very long board pack`).join("\n");
   const chunks = chunkBody(body);
@@ -103,7 +104,18 @@ console.log("[2/10] chunking");
   check(chunkBody("short").length === 1, "short body stays whole");
 }
 
-console.log("[3/10] pipeline with scripted generator");
+console.log("[3/13] price table (pure)");
+{
+  const opus = priceFor("claude-opus-5");
+  check(opus?.input === 5 && opus?.output === 25, "opus family priced at $5/$25 per MTok", opus);
+  const haiku = priceFor("claude-haiku-4-5");
+  check(haiku?.input === 1 && haiku?.output === 5, "haiku family priced at $1/$5 per MTok", haiku);
+  const fable = priceFor("claude-fable-5");
+  check(fable?.input === 10 && fable?.output === 50, "fable family priced at $10/$50 per MTok", fable);
+  check(priceFor("claude-test-different") === null, "unknown family degrades to null (token-only estimate)");
+}
+
+console.log("[4/13] estimate before any run");
 await ingestDocs(db, [
   ...loadJsonl(join(root, "sample/seed.jsonl")),
   ...loadJsonl(join(root, "sample/fixtures/lp-thread.jsonl")),
@@ -111,6 +123,27 @@ await ingestDocs(db, [
 await resolveMentions(db);
 const before = await counts(db);
 check(before.pendingExtraction > 0, `${before.pendingExtraction} docs pending extraction`, before);
+{
+  const est = await estimateExtraction(db);
+  check(est.docsThisRun === before.pendingExtraction && est.totalPending === before.pendingExtraction,
+    "unlimited estimate covers every pending doc", est);
+  const est2 = await estimateExtraction(db, { limit: 2 });
+  check(est2.docsThisRun === 2 && est2.totalPending === before.pendingExtraction,
+    "a limit bounds the batch, never the pending count", est2);
+  const est1 = await estimateExtraction(db, { limit: 1 });
+  check(est1.approxInputTokens > 0 && est2.approxInputTokens > est1.approxInputTokens,
+    "input estimate grows with body length", { one: est1.approxInputTokens, two: est2.approxInputTokens });
+  check(est.priceKnown === true && est.approxCostUsd > 0,
+    "the default model prices from the local table", { model: est.model, cost: est.approxCostUsd });
+  check(est.approxCostUsd === (est.approxInputTokens * 5 + est.approxOutputTokens * 25) / 1e6,
+    "cost matches hand-computed opus list price", est.approxCostUsd);
+  check(/approximate/.test(est.note), "the estimate labels itself approximate", est.note);
+  process.env.FEIN_EXTRACT_MODEL = "claude-test-different";
+  const estUnknown = await estimateExtraction(db);
+  check(estUnknown.priceKnown === false && estUnknown.approxCostUsd === null,
+    "an unknown model degrades to a token-only estimate", estUnknown);
+  delete process.env.FEIN_EXTRACT_MODEL;
+}
 
 let calls = 0;
 const scripted = async (doc) => {
@@ -133,10 +166,37 @@ const scripted = async (doc) => {
   return { people, orgs, usage: { input: 100, output: 50 } };
 };
 
+console.log("[5/13] cancel between documents (durable, resumable)");
+const cancelState = { flag: false, callsAfter: 0 };
+const cancellable = async (doc) => {
+  if (cancelState.flag) cancelState.callsAfter++;
+  const r = await scripted(doc);
+  cancelState.flag = true; // flips after the first document's call
+  return r;
+};
+const cancelRun = await extractPending(db, {
+  generate: cancellable, shouldStop: () => cancelState.flag,
+});
+check(cancelRun.cancelled === "cancelled by user" && cancelRun.extracted === 1,
+  "the stop flag halts the run after the in-flight document", cancelRun);
+check(cancelState.callsAfter === 0, "no model call happens after the flag", cancelState);
+check(cancelRun.failed === 0 && !cancelRun.aborted,
+  "cancellation is not a failure — no failed/aborted marks", cancelRun);
+{
+  const est = await estimateExtraction(db);
+  check(est.totalPending === before.pendingExtraction - cancelRun.extracted,
+    "estimate's pending count shrank by exactly the extracted docs", est.totalPending);
+}
+
+console.log("[6/13] pipeline with scripted generator (resumes the cancelled backlog)");
+const callsBeforeRun1 = calls;
 const run1 = await extractPending(db, { generate: scripted });
-check(run1.extracted === before.pendingExtraction, "every pending doc extracted", run1);
+check(run1.extracted === before.pendingExtraction - cancelRun.extracted,
+  "a plain re-run extracts exactly the remainder", run1);
+check(run1.skipped >= cancelRun.extracted,
+  "the doc extracted before cancellation skips by hash", run1.skipped);
 check(run1.failed === 0 && !run1.aborted, "no failures", run1);
-check(run1.tokens.input === calls * 100, "token accounting sums per call", run1.tokens);
+check(run1.tokens.input === (calls - callsBeforeRun1) * 100, "token accounting sums per call", run1.tokens);
 
 const { rows: extractedMentions } = await db.query(
   `select name, email, origin, confidence, context from mentions where origin = 'extracted' order by name`
@@ -151,7 +211,7 @@ check(extractedMentions.every((m) => !m.context.includes("model quote")),
 const inesRow = extractedMentions.find((m) => m.name === "Ines Delacroix");
 check(inesRow && /Ines Delacroix/.test(inesRow.context), "context snippet contains the grounded match", inesRow?.context);
 
-console.log("[4/10] idempotency + config staleness");
+console.log("[7/13] idempotency + config staleness");
 const callsBefore = calls;
 const run2 = await extractPending(db, { generate: scripted });
 check(run2.extracted === 0 && run2.skipped === run2.scanned, "second run skips everything (hash match)", run2);
@@ -166,7 +226,7 @@ check(run3b.extracted > 0, "effort change re-extracts (hash includes effort)", r
 delete process.env.FEIN_EXTRACT_EFFORT;
 await extractPending(db, { generate: scripted }); // restore hashes for the default config
 
-console.log("[5/10] resolution + graph integration");
+console.log("[8/13] resolution + graph integration");
 await resolveMentions(db);
 await rebuildEdges(db);
 const [ines] = await searchEntities(db, "ines delacroix");
@@ -178,7 +238,7 @@ check(inesEdges.length > 0, "extracted mentions build edges (damped by mentioned
 const after = await counts(db);
 check(after.pendingExtraction === 0, "nothing pending after full run", after);
 
-console.log("[6/10] re-ingest keeps extracted mentions");
+console.log("[9/13] re-ingest keeps extracted mentions");
 await ingestDocs(db, loadJsonl(join(root, "sample/fixtures/lp-thread.jsonl")));
 const { rows: survivors } = await db.query(`select count(*) as n from mentions where origin = 'extracted'`);
 check(Number(survivors[0].n) >= extractedMentions.length,
@@ -186,7 +246,7 @@ check(Number(survivors[0].n) >= extractedMentions.length,
 const st = await extractionStats(db);
 check(st.extracted > 0 && st.pending === 0, "extraction stats consistent after re-ingest", st);
 
-console.log("[7/10] failure isolation + retry exhaustion");
+console.log("[10/13] failure isolation + retry exhaustion");
 await ingestDocs(db, [
   { source: "local", kind: "note", external_id: "fail-1", title: "boom 1",
     occurred_at: "2026-08-01T00:00:00Z", people: [{ name: "Dana Whitfield", role: "author" }],
@@ -232,7 +292,7 @@ await ingestDocs(db, ["a", "b", "c"].map((x) => ({
 const run6 = await extractPending(db, { generate: flaky });
 check(!!run6.aborted, "three consecutive failures abort the run", run6);
 
-console.log("[8/10] adversarial grounding regressions");
+console.log("[11/13] adversarial grounding regressions");
 {
   const doc = {
     body: "Maya Chen and Daniel Roth joined the call. We also discussed the final model with Sarah. " +
@@ -265,7 +325,7 @@ console.log("[8/10] adversarial grounding regressions");
   check(punct.people.length === 1, "punctuated name forms still ground as written", punct.people);
 }
 
-console.log("[9/10] body lifecycle: NO_BODIES, scrubbing, shrink sweep");
+console.log("[12/13] body lifecycle: NO_BODIES, scrubbing, shrink sweep");
 {
   const probe = [{
     source: "local", kind: "note", external_id: "lifecycle-1", title: "lifecycle probe",
@@ -310,7 +370,7 @@ console.log("[9/10] body lifecycle: NO_BODIES, scrubbing, shrink sweep");
   check(tiny[0].body === null && tiny[0].body_sha256 === null, "sub-floor bodies are not stored", tiny[0]);
 }
 
-console.log("[10/10] fund memory: deals from IC memos");
+console.log("[13/13] fund memory: deals from IC memos");
 {
   const { companyMemory } = await import(join(root, "src/graph/memory.js"));
   await ingestDocs(db, loadJsonl(join(root, "sample/fixtures/ic-memo.jsonl")));

@@ -59,9 +59,30 @@ documents.body ──▶ chunk ──▶ Claude (structured output) ──▶ gr
 |---|---|
 | CLI | `fein extract [--limit N]` — extract, then resolve + rebuild edges |
 | CLI | `fein sync --extract` — extraction as part of a sync |
-| Dashboard | Data tab → **Extract pending documents** |
-| API | `POST /api/extract` (single-flight; 409 if already running), `GET /api/extract/status` |
+| Dashboard | Data tab → **Extract next N of M** — one batch per click, with a cost estimate, live progress, and a Cancel button |
+| API | `POST /api/extract` (single-flight; 409 if already running; an empty body runs one batch), `GET /api/extract/status` (live `progress` while running), `GET /api/extract/estimate`, `POST /api/extract/cancel` |
 | MCP | `graph_stats` reports `pendingExtraction` so agents can see unmined bodies |
+
+### Batches, estimates, cancellation
+
+The dashboard extracts in batches: one click mines at most
+`extraction.batchSize` documents (default 25, tunable in Settings), so a large
+corpus is priced and mined in predictable steps. `GET /api/extract/estimate`
+previews the next batch — document count, approximate tokens (~4 chars/token
+on body lengths plus per-request overhead), and an approximate dollar figure
+from a local table of Anthropic list prices; models not in the table degrade
+to a token-only estimate. Every figure is labeled approximate and should be
+read that way. While a run is in progress `GET /api/extract/status` carries a
+live `progress` snapshot any tab can watch, and `POST /api/extract/cancel`
+stops the run at the next document boundary: everything already extracted
+stays durable, the run returns through the normal success path (partial
+results are resolved and edges rebuilt), and the next run resumes via hashes.
+
+**API behavior change:** `POST /api/extract` with an empty body used to mean
+"extract everything" and now means "one batch". Scripts draining a corpus
+through the API should loop until the estimate's `totalPending` reaches 0, or
+pass an explicit `{"limit": N}` — which still overrides the knob, as does the
+CLI's `--limit` (the CLI itself is unchanged and unbounded by default).
 
 Credentials resolve like any Anthropic SDK app: `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile. `ANTHROPIC_BASE_URL`
@@ -101,7 +122,9 @@ Rough guide at claude-opus-5 pricing ($5/M input, $25/M output): a typical
 1,000-word email body ≈ 1.4k input tokens + ~300 output tokens ≈ **$0.015 per
 document**; the static system prompt is prompt-cached across a run. A 10,000-doc
 backfill ≈ $150 on opus-5, or ~$30 on haiku-4.5. Runs report exact token usage
-(`tokens.input` / `tokens.output`, also stored per document in `extractions`).
+(`tokens.input` / `tokens.output`, also stored per document in `extractions`),
+and the dashboard previews each batch before you click
+(`GET /api/extract/estimate`, sharing the real chunking constants).
 For very large backfills, the Batches API (50% cost) is on the roadmap.
 
 ## Threat model: prompt injection and hallucination

@@ -22,6 +22,21 @@ export function extractConfig() {
   };
 }
 
+// USD per MTok, Anthropic list prices as of 2026-08. Deliberately coarse:
+// family match only, and the dashboard labels every figure "approximate".
+// Unknown families degrade to a token-only estimate rather than a wrong
+// dollar figure.
+const PRICE_PER_MTOK = [
+  [/fable|mythos/i, { input: 10, output: 50 }],
+  [/opus/i,         { input: 5,  output: 25 }],
+  [/sonnet/i,       { input: 3,  output: 15 }],
+  [/haiku/i,        { input: 1,  output: 5  }],
+];
+
+export function priceFor(model) {
+  return PRICE_PER_MTOK.find(([re]) => re.test(model ?? ""))?.[1] ?? null;
+}
+
 let _client = null;
 function client() {
   if (!_client) {

@@ -17,7 +17,7 @@ import { getSettings, putSettings, audit, listAudit } from "../settings.js";
 import { CONNECTOR_PROVIDERS, clampSyncInterval, putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
 import { runConnectorSync, syncingProvider, startScheduler, connectorSyncStatus } from "../sync.js";
 import { listMembers, addMember, removeMember, resolveMember, visibleLayers } from "../members.js";
-import { extractPending, extractionStats } from "../extract/pipeline.js";
+import { extractPending, extractionStats, estimateExtraction } from "../extract/pipeline.js";
 import { extractConfig, isAuthError } from "../extract/client.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { buildMcpServer } from "../mcp/server.js";
@@ -120,6 +120,8 @@ function handleAuth(req, res, url) {
   return true;
 }
 let extracting = false;        // single-flight: extraction holds the API budget, never run two
+let extractProgress = null;    // last onProgress snapshot of the current run; null when idle
+let cancelExtract = false;     // cooperative stop flag, checked between documents
 // The connector sync single-flight lives in ../sync.js (syncingProvider),
 // shared with the scheduler; the provider registry is in ../connectors.js.
 
@@ -248,12 +250,23 @@ async function route(db, req, res, url, port) {
       return json(res, {
         ...(await extractionStats(db)),
         running: extracting,
+        // Progress rides the status endpoint so ANY tab (or agent) can watch
+        // the run — only the tab that POSTed gets the final summary.
+        progress: extracting ? extractProgress : null,
         model: cfg.model,
         // Presence only, never values. "ambient" = the SDK may still find an
         // `ant auth login` profile; running an extraction is the real test.
         credentials: process.env.ANTHROPIC_API_KEY ? "api-key"
           : process.env.ANTHROPIC_AUTH_TOKEN ? "auth-token" : "ambient",
       });
+    }
+    if (path === "/api/extract/estimate") {
+      // Read-only preview of the next batch — no audit, no model call. The
+      // batch size comes from settings; ?limit= overrides for this preview.
+      const batchSize = (await getSettings(db)).extraction.batchSize;
+      return json(res, await estimateExtraction(db, {
+        limit: boundedInt(url, "limit", batchSize, 1, 100000),
+      }));
     }
     if (path === "/api/members") return json(res, await listMembers(db));
     if (path === "/api/radar") {
@@ -372,22 +385,43 @@ async function route(db, req, res, url, port) {
     return json(res, { ...result, stats: await counts(db, { viewer: member?.id ?? null }) });
   }
 
+  if (req.method === "POST" && path === "/api/extract/cancel") {
+    if (!extracting) return json(res, { error: "no extraction run in progress" }, 409);
+    cancelExtract = true; // the run checks between documents; partial work stays durable
+    return json(res, { cancelling: true });
+  }
+
   if (req.method === "POST" && path === "/api/extract") {
     const member = await memberOf(db, url); // before the claim: no await may split check-and-set
     const actor = member?.name ?? "local";
     if (extracting) return json(res, { error: "an extraction run is already in progress" }, 409);
     extracting = true; // claim BEFORE the first await — the check-and-set must be atomic
+    cancelExtract = false; // reset on the same synchronous claim, or a late cancel kills the NEXT run
+    extractProgress = null;
     try {
       const body = parseJson(await readBody(req));
-      const limit = Number.isFinite(Number(body.limit)) && Number(body.limit) > 0 ? Number(body.limit) : Infinity;
-      const extract = await extractPending(db, { limit });
+      // Explicit body.limit (CLI parity, agents) still wins; the no-limit
+      // default is one settings-sized batch, no longer the whole corpus.
+      const limit = Number.isFinite(Number(body.limit)) && Number(body.limit) > 0
+        ? Number(body.limit)
+        : (await getSettings(db)).extraction.batchSize;
+      const planned = (await estimateExtraction(db, { limit })).docsThisRun;
+      const extract = await extractPending(db, {
+        limit,
+        shouldStop: () => cancelExtract,
+        onProgress: (s) => {
+          extractProgress = { done: s.extracted + s.failed, total: planned,
+            extracted: s.extracted, failed: s.failed, tokens: s.tokens };
+        },
+      });
       // Extracted mentions reach the graph through the same pipeline as
-      // structured ones: resolve, then rebuild the read model.
+      // structured ones: resolve, then rebuild the read model. Cancellation
+      // returns through this success path too — partial results still count.
       const resolved = extract.extracted > 0 ? await resolveMentions(db) : null;
       const edges = extract.extracted > 0 ? await rebuildEdges(db) : null;
       await audit(db, "extract", {
         extracted: extract.extracted, failed: extract.failed, mentions: extract.mentions,
-        model: extract.model, tokens: extract.tokens,
+        model: extract.model, tokens: extract.tokens, cancelled: extract.cancelled ?? null,
       }, actor);
       return json(res, { extract, resolved, edges, stats: await counts(db, { viewer: member?.id ?? null }) });
     } catch (err) {
@@ -772,7 +806,7 @@ function withStatus(err, code) {
 function classify(err) {
   const m = err.message ?? "";
   if (/(not found|no entity|no pending review|no member|no live entity)/i.test(m)) return 404;
-  if (/(unknown (weight|resolution|radar)|must be a number|must be below|must be accept or reject|unsupported|invalid|decision |cannot merge|needs a name|matches \d+ members|no name or email column|already exists)/i.test(m)) return 400;
+  if (/(unknown (weight|resolution|radar|extraction)|must be a number|must be below|must be accept or reject|unsupported|invalid|decision |cannot merge|needs a name|matches \d+ members|no name or email column|already exists)/i.test(m)) return 400;
   return 500;
 }
 

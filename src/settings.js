@@ -42,6 +42,12 @@ export const DEFAULT_SETTINGS = {
     coldRatio: 3,          // … and at which it reads cold
     dormantAfterDays: 180, // silent this long with no cadence → dormant
   },
+  // Extraction budget: one dashboard click extracts at most this many
+  // documents, so a large corpus is mined in predictable, priced batches.
+  // An explicit API body.limit and the CLI --limit still override.
+  extraction: {
+    batchSize: 25,
+  },
   // Routing strength assumed for another member's private hop when finding
   // warm paths: enough to be found, never reported as a number. (The
   // dashboard's fixed 0.25 display strength for private links is cosmetic
@@ -66,6 +72,7 @@ const NUMERIC_LIMITS = { min: 0, max: 100 };
 const GROUP_LIMITS = {
   resolution: { autoMerge: [0.5, 1], review: [0.1, 1] },
   radar: { overdueRatio: [1, 100], coldRatio: [1, 100], dormantAfterDays: [1, 3650] },
+  extraction: { batchSize: [1, 100000] },
 };
 
 export async function getSettings(db) {
@@ -80,6 +87,7 @@ export async function getSettings(db) {
     // key must pick up its default, or ratio comparisons go NaN downstream.
     resolution: { ...DEFAULT_SETTINGS.resolution, ...(stored.resolution ?? {}) },
     radar: { ...DEFAULT_SETTINGS.radar, ...(stored.radar ?? {}) },
+    extraction: { ...DEFAULT_SETTINGS.extraction, ...(stored.extraction ?? {}) },
   };
 }
 
@@ -94,6 +102,7 @@ export async function putSettings(db, patch) {
     maxDocParticipants: current.maxDocParticipants,
     resolution: { ...current.resolution },
     radar: { ...current.radar },
+    extraction: { ...current.extraction },
     privateHopStrength: current.privateHopStrength,
     privateEntityVisibility: current.privateEntityVisibility,
   };
@@ -111,7 +120,7 @@ export async function putSettings(db, patch) {
     // Min 2: a two-person document is the base case for a pair-edge.
     next.maxDocParticipants = clampNumber(patch.maxDocParticipants, "maxDocParticipants", 2, 10000);
   }
-  for (const group of ["resolution", "radar"]) {
+  for (const group of ["resolution", "radar", "extraction"]) {
     for (const [k, v] of Object.entries(patch[group] ?? {})) {
       // Own-property check mirrors the weights loop and blocks prototype names.
       if (!Object.hasOwn(DEFAULT_SETTINGS[group], k)) throw new Error(`unknown ${group} setting "${k}"`);

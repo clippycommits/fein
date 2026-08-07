@@ -72,7 +72,7 @@ const send = async (method, path, body, headers = {}) => {
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 
-console.log("[1/10] health, security, empty state");
+console.log("[1/11] health, security, empty state");
 {
   const h = await get("/api/health");
   check(h.status === 200 && h.body.ok === true && h.body.version, "health reports ok + version", h.body);
@@ -86,7 +86,7 @@ console.log("[1/10] health, security, empty state");
   check(missing.status === 404, "unknown API route 404s");
 }
 
-console.log("[2/10] onboarding: load sample dataset");
+console.log("[2/11] onboarding: load sample dataset");
 {
   const res = await send("POST", "/api/sample", {}, { origin: BASE });
   // 16 seed docs + 22 fixtures (incl. the team); Seb's 2 private emails are a
@@ -99,7 +99,7 @@ console.log("[2/10] onboarding: load sample dataset");
   check(res.body.members?.length === 2, "sample seeds the two-member team", res.body.members);
 }
 
-console.log("[3/10] read endpoints");
+console.log("[3/11] read endpoints");
 {
   const graph = await get("/api/graph");
   check(graph.body.nodes.length === 14 && graph.body.links.length > 5, "graph payload has people + links",
@@ -163,7 +163,7 @@ console.log("[3/10] read endpoints");
     "documents breakdown by source, private layer withheld", { total: docs.body.total, withheld: docs.body.withheld });
 }
 
-console.log("[4/10] review flow + audit");
+console.log("[4/11] review flow + audit");
 {
   const reviews = await get("/api/reviews");
   check(reviews.body.length === 1, "one pending review (M. Chen)", reviews.body.length);
@@ -191,7 +191,7 @@ console.log("[4/10] review flow + audit");
     audit.body.map((a) => a.action));
 }
 
-console.log("[5/10] settings: customization rebuilds the graph");
+console.log("[5/11] settings: customization rebuilds the graph");
 {
   const before = await get("/api/settings");
   check(before.body.weights.meeting === 3 && before.body.halfLifeDays === 180, "default settings served", before.body);
@@ -244,7 +244,44 @@ console.log("[5/10] settings: customization rebuilds the graph");
   check(row?.actor === "Tom Merrill", "the ?as viewer is recorded as the audit actor", row);
 }
 
-console.log("[6/10] hostile input");
+console.log("[6/11] extraction estimate + budget knob (no model calls)");
+{
+  // Deliberately no POST /api/extract here: the server path constructs the
+  // real SDK client, and ambient credentials could make it a live call. The
+  // run path (default limit, cancelled stats, audit) is covered at the
+  // pipeline layer in test-extract.js.
+  const status = await get("/api/extract/status");
+  check(status.status === 200 && status.body.progress === null,
+    "status carries progress: null while idle", status.body.progress);
+  const est = await get("/api/extract/estimate");
+  check(est.status === 200 && est.body.docsThisRun === 20 && est.body.totalPending === 20,
+    "estimate batches min(batchSize, pending) — default 25 over 20 pending", est.body);
+  check(est.body.approxInputTokens > 0 && /approximate/.test(est.body.note ?? ""),
+    "estimate reports tokens and labels itself approximate",
+    { tokens: est.body.approxInputTokens, note: est.body.note });
+  const knob = await send("PUT", "/api/settings", { extraction: { batchSize: 3 } });
+  check(knob.status === 200 && knob.body.settings.extraction.batchSize === 3,
+    "extraction.batchSize round-trips", knob.body.settings?.extraction);
+  check((await get("/api/settings")).body.extraction.batchSize === 3, "GET echoes the stored batch size");
+  const est3 = await get("/api/extract/estimate");
+  check(est3.body.docsThisRun === 3 && est3.body.totalPending === 20,
+    "estimate honors the stored batch size", { docs: est3.body.docsThisRun, pending: est3.body.totalPending });
+  const estOverride = await get("/api/extract/estimate?limit=5");
+  check(estOverride.body.docsThisRun === 5, "?limit= overrides the knob", estOverride.body.docsThisRun);
+  const floor = await send("PUT", "/api/settings", { extraction: { batchSize: 0 } });
+  check(floor.status === 400, "a batch size under the floor is a 400", floor.body);
+  const unknown = await send("PUT", "/api/settings", { extraction: { nonsense: 9 } });
+  check(unknown.status === 400 && /unknown extraction setting/.test(unknown.body?.error ?? ""),
+    "an unknown extraction setting is a 400", unknown.body);
+  await send("PUT", "/api/settings", { weights: { meeting: 10 } });
+  check((await get("/api/settings")).body.extraction.batchSize === 3,
+    "an unrelated save keeps the stored batch size (putSettings whitelist)");
+  const cancel = await send("POST", "/api/extract/cancel", {});
+  check(cancel.status === 409 && /no extraction run/.test(cancel.body?.error ?? ""),
+    "cancel with no run in progress is a 409", cancel);
+}
+
+console.log("[7/11] hostile input");
 {
   // Malformed request targets must not crash the process.
   for (const target of ["//%ff", "//[", "//:", "//%c0%ae", "//"]) {
@@ -285,7 +322,7 @@ console.log("[6/10] hostile input");
     "junk limit falls back to the default", { status: junk.status, nodes: junk.body?.nodes?.length });
 }
 
-console.log("[7/10] attio connector (mocked workspace)");
+console.log("[8/11] attio connector (mocked workspace)");
 {
   check((await get("/api/connectors/attio")).body.connected === false, "starts disconnected");
   const probe = await send("POST", "/api/connectors/attio", {});
@@ -351,7 +388,7 @@ console.log("[7/10] attio connector (mocked workspace)");
   check(docs.body.sources.some((s) => s.source === "attio"), "disconnect keeps ingested data");
 }
 
-console.log("[8/10] upload + reresolve");
+console.log("[9/11] upload + reresolve");
 {
   const csv = readFileSync(join(root, "sample/contacts.csv"), "utf8");
   const up = await send("POST", "/api/ingest?name=contacts.csv", csv);
@@ -375,7 +412,7 @@ console.log("[8/10] upload + reresolve");
   check(post.body.length === 0, "no re-asked question after replay", post.body.length);
 }
 
-console.log("[9/10] privacy layers: one-click scene, private upload, scoping");
+console.log("[10/11] privacy layers: one-click scene, private upload, scoping");
 {
   const members = (await get("/api/members")).body;
   const tom = members.find((m) => m.name === "Tom Merrill");
@@ -494,7 +531,7 @@ console.log("[9/10] privacy layers: one-click scene, private upload, scoping");
     rrTom.body.automatedOverrides);
 }
 
-console.log("[10/10] MCP over HTTP: one endpoint, viewer-scoped");
+console.log("[11/11] MCP over HTTP: one endpoint, viewer-scoped");
 {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");

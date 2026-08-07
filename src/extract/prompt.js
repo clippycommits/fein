@@ -31,7 +31,7 @@ If the document contains no extractable entities, return empty arrays.`;
 
 export const MAX_BODY_CHARS = 100_000;   // hard cap read from the DB per doc
 export const MIN_BODY_CHARS = 40;        // floor below which a body isn't worth storing or mining
-const CHUNK_CHARS = 20_000;       // ≈5k tokens per request
+export const CHUNK_CHARS = 20_000;  // ≈5k tokens per request; exported so estimates share it
 const CHUNK_OVERLAP = 1_000;
 
 /** Split an over-long body into overlapping chunks on paragraph boundaries when possible. */

@@ -788,8 +788,14 @@ async function disconnectConnector(provider) {
 }
 
 /* ---------- extraction ---------- */
+const progressLine = (p) =>
+  `<span class="hint">${p.done} / ${p.total} documents · ${(p.tokens.input + p.tokens.output).toLocaleString()} tokens${
+    p.failed ? ` · <span class="err">${p.failed} failed</span>` : ""}</span>`;
+
 async function renderExtractStatus() {
   const el = $("#extract-status");
+  const btn = $("#run-extract");
+  const cancelBtn = $("#cancel-extract");
   try {
     const s = await api("/api/extract/status");
     const creds = s.credentials === "ambient"
@@ -801,12 +807,27 @@ async function renderExtractStatus() {
         ${s.exhausted ? `<span class="err">${s.exhausted} given up after repeated failures</span> · ` : ""}
         <strong>${s.pending} pending</strong><br>
         model <code>${esc(s.model)}</code> · ${creds}</div>`;
-    const btn = $("#run-extract");
     btn.hidden = false;
     btn.disabled = s.running || s.pending === 0;
     btn.textContent = s.running ? "Extraction running…"
       : s.pending === 0 ? "Nothing pending"
       : `Extract ${s.pending} document${s.pending === 1 ? "" : "s"}`;
+    // Cancel is offered wherever the run is visible — including a second tab.
+    cancelBtn.hidden = !s.running;
+    if (!s.running) { cancelBtn.disabled = false; cancelBtn.textContent = "Cancel run"; }
+    if (s.running && s.progress) $("#extract-result").innerHTML = progressLine(s.progress);
+    if (!s.running && s.pending > 0) {
+      try {
+        const est = await api("/api/extract/estimate");
+        btn.textContent = `Extract next ${est.docsThisRun} of ${est.totalPending}`;
+        const cost = est.approxCostUsd == null ? null
+          : est.approxCostUsd < 0.01 ? "&lt;$0.01" : `$${est.approxCostUsd.toFixed(2)}`;
+        el.insertAdjacentHTML("beforeend",
+          `<div class="hint">next batch ≈ ${est.approxInputTokens.toLocaleString()} in + ${est.approxOutputTokens.toLocaleString()} out tokens${
+            est.priceKnown ? ` · ≈ ${cost} (list price, approximate)`
+              : ` · model not in the local price table — token estimate only`}</div>`);
+      } catch { /* the estimate is decorative; the status card already rendered */ }
+    }
   } catch {
     el.innerHTML = `<div class="empty"><p>Extraction status unavailable.</p></div>`;
   }
@@ -814,10 +835,23 @@ async function renderExtractStatus() {
 
 $("#run-extract").addEventListener("click", async () => {
   const btn = $("#run-extract");
+  const cancelBtn = $("#cancel-extract");
   const out = $("#extract-result");
   btn.disabled = true;
   btn.textContent = "Extracting… (this calls the Anthropic API)";
+  cancelBtn.hidden = false;
+  cancelBtn.disabled = false;
   out.innerHTML = "";
+  // Progress rides /api/extract/status, so this poll and any other tab see the
+  // same numbers. Raw fetch, not api(): a transient poll failure must not toast.
+  const poll = setInterval(async () => {
+    try {
+      const r = await fetch("/api/extract/status");
+      if (!r.ok) return;
+      const s = await r.json();
+      if (s.running && s.progress) out.innerHTML = progressLine(s.progress);
+    } catch { /* transient — the run outcome renders below */ }
+  }, 1500);
   try {
     const res = await api(`/api/extract${asParam()}`, {
       method: "POST",
@@ -830,12 +864,33 @@ $("#run-extract").addEventListener("click", async () => {
       ${x.failed ? `<span class="err">${x.failed} failed</span> · ` : ""}
       ${(x.tokens.input + x.tokens.output).toLocaleString()} tokens
       ${res.resolved ? ` · resolved ${res.resolved.attached + res.resolved.created}, queued ${res.resolved.queued} for review` : ""}
+      ${x.cancelled ? `<br><span class="hint">${esc(x.cancelled)} — everything extracted so far is saved; the next run resumes</span>` : ""}
       ${x.aborted ? `<br><span class="err">${esc(x.aborted)}</span>` : ""}`;
-    toast(`Extraction complete: ${x.mentions} mentions from ${x.extracted} docs`, "good");
+    toast(x.cancelled
+      ? `Extraction cancelled after ${x.extracted} docs — progress is saved`
+      : `Extraction complete: ${x.mentions} mentions from ${x.extracted} docs`, "good");
     await Promise.all([renderStats(), renderGraph(), renderExtractStatus(), renderData()]);
   } catch (err) {
     out.innerHTML = `<span class="err">✗ ${esc(err.message)}</span>`;
     await renderExtractStatus();
+  } finally {
+    clearInterval(poll); // a rejected POST must not leak the timer
+    cancelBtn.hidden = true;
+    cancelBtn.textContent = "Cancel run";
+  }
+});
+
+$("#cancel-extract").addEventListener("click", async () => {
+  const cancelBtn = $("#cancel-extract");
+  cancelBtn.disabled = true;
+  cancelBtn.textContent = "Cancelling…";
+  try {
+    await api("/api/extract/cancel", { method: "POST" });
+    // Stays disabled: the run stops at the next document boundary, and the
+    // in-flight POST (or the next status render) resets the card.
+  } catch {
+    cancelBtn.disabled = false;
+    cancelBtn.textContent = "Cancel run";
   }
 });
 
@@ -860,6 +915,7 @@ const TUNING_ROWS = [
   ["radar.overdueRatio", "Overdue at × cadence", 'step="0.1" min="1" max="100"'],
   ["radar.coldRatio", "Cold at × cadence", 'step="0.1" min="1" max="100"'],
   ["radar.dormantAfterDays", "Dormant after (days)", 'step="1" min="1" max="3650"'],
+  ["extraction.batchSize", "Extraction batch size (docs per run)", 'step="1" min="1" max="100000"'],
   ["privateHopStrength", "Private-hop routing strength", 'step="0.05" min="0.01" max="0.99"'],
 ];
 
