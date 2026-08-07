@@ -136,6 +136,13 @@ export async function rebuildEdges(db, now = Date.now()) {
  * only dirty-touching pairs may be swapped. Weights are baselined to `now`
  * like the full rebuild's; the routine full rebuilds on ingest/sync paths
  * keep the baselines from drifting apart.
+ *
+ * One exception forces the full path: the participant cap is a per-DOCUMENT
+ * gate, so a write that moves a doc across it flips the contribution of every
+ * pair in that doc — including pairs between two non-dirty participants,
+ * which the filter could neither rewrite nor delete. Any doc in the subset
+ * sitting at the boundary (the write may have just crossed it) falls back to
+ * a full rebuild rather than diverging from it.
  */
 export async function rebuildEdgesFor(db, entityIds, now = Date.now()) {
   const dirty = [...new Set((entityIds ?? []).filter(Boolean))];
@@ -152,6 +159,10 @@ export async function rebuildEdgesFor(db, entityIds, now = Date.now()) {
   const acc = new Map();
   let capped = 0;
   for (const doc of groupByDoc(rows).values()) {
+    const people = new Set(doc.people.map((p) => p.entity)).size;
+    if (people === cfg.maxDocParticipants || people === cfg.maxDocParticipants + 1) {
+      return { ...(await rebuildEdges(db, now)), mode: "full" };
+    }
     if (accumulateDoc(acc, doc, cfg, now)) capped++;
   }
   const dirtySet = new Set(dirty);

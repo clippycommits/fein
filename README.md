@@ -203,7 +203,9 @@ inside the shared graph:
   second address, an org affiliation, a fuller name) is visible only to that
   mailbox's owner, overlaid at read time. The shared record only learns what a
   shared source has independently witnessed, and display names upgrade only
-  from shared mentions.
+  from shared mentions. Databases written by v0.4.0 or earlier predate this
+  policy — run `fein reresolve` once after upgrading (the server warns on
+  boot until it is done).
 
 ```bash
 fein members add "Seb Larkin" seb@ridgeline.vc

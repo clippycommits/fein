@@ -1,4 +1,5 @@
 import { audit } from "../settings.js";
+import { evidenceAgg } from "./pipeline.js";
 
 /**
  * Automated-sender detection.
@@ -141,8 +142,10 @@ export async function setAutomated(db, entityId, automated, { actor = "local" } 
             automated_reason = $3 where id = $1`,
     [entityId, automated, automated ? "marked automated by a person" : "confirmed human by a person"]
   );
-  await audit(db, "automated_override",
-    { entity: entityId, name: rows[0].canonical_name, automated }, actor);
+  // The audit trail is readable by every viewer, and under "hide" the
+  // canonical name of a private-only entity is exactly the secret the policy
+  // protects — record ids only (review_accept/review_reject's rule).
+  await audit(db, "automated_override", { entity: entityId, automated }, actor);
   return { entityId, name: rows[0].canonical_name, automated };
 }
 
@@ -152,21 +155,27 @@ export async function setAutomated(db, entityId, automated, { actor = "local" } 
  * discards entity ids, and replayed against the rebuilt world afterwards.
  */
 export async function snapshotAutomatedOverrides(db) {
+  // Identity is the UNION of the shared arrays and the entity's private side
+  // rows (reresolve's rule): the absorption policy leaves a privately-
+  // evidenced entity's shared arrays empty, and its override must replay too.
   const { rows } = await db.query(
-    `select canonical_name, emails, aliases, automated_override from entities
-     where automated_override is not null and merged_into is null`
+    `select e.emails || ${evidenceAgg("email")} as emails,
+            e.aliases || ${evidenceAgg("alias")} as aliases,
+            e.automated_override
+     from entities e
+     where e.automated_override is not null and e.merged_into is null`
   );
   const arr = (v) => (typeof v === "string" ? JSON.parse(v) : v ?? []);
   return rows.map((r) => ({
-    name: r.canonical_name,
-    emails: arr(r.emails),
-    aliases: arr(r.aliases),
+    emails: [...new Set(arr(r.emails))],
+    aliases: [...new Set(arr(r.aliases))],
     automated: r.automated_override,
   }));
 }
 
-/** Re-apply snapshotted overrides, matching on email/alias overlap — those
- * arrays only grow, so they contain every earlier form (replayMerges' rule). */
+/** Re-apply snapshotted overrides, matching on email/alias overlap against
+ * the same shared+evidence union the snapshot read — the union only grows,
+ * so it contains every earlier form (replayMerges' rule). */
 export async function replayAutomatedOverrides(db, snapshot, { actor } = {}) {
   let replayed = 0;
   const dropped = [];
@@ -174,19 +183,19 @@ export async function replayAutomatedOverrides(db, snapshot, { actor } = {}) {
     const conds = [];
     const params = [];
     if (o.emails.length) {
-      conds.push(`exists (select 1 from jsonb_array_elements_text(emails) x where x in (${
-        o.emails.map((_, i) => `$${params.length + i + 1}`).join(", ")}))`);
+      conds.push(`exists (select 1 from jsonb_array_elements_text(e.emails || ${evidenceAgg("email")}) x
+        where x in (${o.emails.map((_, i) => `$${params.length + i + 1}`).join(", ")}))`);
       params.push(...o.emails);
     }
     if (o.aliases.length) {
-      conds.push(`exists (select 1 from jsonb_array_elements_text(aliases) y where y in (${
-        o.aliases.map((_, i) => `$${params.length + i + 1}`).join(", ")}))`);
+      conds.push(`exists (select 1 from jsonb_array_elements_text(e.aliases || ${evidenceAgg("alias")}) y
+        where y in (${o.aliases.map((_, i) => `$${params.length + i + 1}`).join(", ")}))`);
       params.push(...o.aliases);
     }
     let matched = null;
     if (conds.length) {
       const { rows } = await db.query(
-        `select id from entities where merged_into is null and (${conds.join(" or ")}) limit 1`,
+        `select e.id from entities e where e.merged_into is null and (${conds.join(" or ")}) limit 1`,
         params
       );
       matched = rows[0]?.id ?? null;
@@ -195,7 +204,9 @@ export async function replayAutomatedOverrides(db, snapshot, { actor } = {}) {
       await setAutomated(db, matched, o.automated, { actor });
       replayed++;
     } else {
-      dropped.push({ name: o.name, reason: "identity not found after rebuild" });
+      // This list lands in the reresolve audit row, a shared surface: the
+      // reason only — an override's identity can be privately witnessed.
+      dropped.push({ reason: "identity not found after rebuild" });
     }
   }
   return { replayed, dropped };

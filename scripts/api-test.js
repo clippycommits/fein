@@ -431,6 +431,20 @@ console.log("[9/10] privacy layers: one-click scene, private upload, scoping");
   check((await get("/api/reviews")).body.length === sharedAfter.pendingReviews &&
         (await get(`/api/reviews?as=${tom.id}`)).body.length === tomAfter.pendingReviews,
     "badge equals queue length for both viewers");
+
+  // Mutation responses hint stats for the SAME viewer the request named —
+  // shared-scoped numbers next to viewer-scoped tiles would contradict the
+  // dashboard on screen.
+  const rrTom = await send("POST", `/api/reresolve?as=${tom.id}`, {});
+  check(rrTom.status === 200 && rrTom.body.stats.documents === tomAfter.documents,
+    "a mutation's stats hint is scoped to the requesting viewer",
+    { got: rrTom.body?.stats?.documents, want: tomAfter.documents });
+  // Zara is witnessed only in Tom's private layer: her confirmed-human
+  // override must replay through the evidence union, not drop.
+  check(rrTom.body.automatedOverrides.replayed === 2 &&
+        rrTom.body.automatedOverrides.dropped.length === 0,
+    "overrides on privately-evidenced entities replay through the rebuild too",
+    rrTom.body.automatedOverrides);
 }
 
 console.log("[10/10] MCP over HTTP: one endpoint, viewer-scoped");

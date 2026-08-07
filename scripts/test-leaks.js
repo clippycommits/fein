@@ -3,6 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 const dataDir = mkdtempSync(join(tmpdir(), "fg-leak-"));
 process.env.FEIN_DATA = dataDir;
+// An ambient DATABASE_URL would aim every marker write at a real database —
+// getDb prefers it over the temp data dir.
+delete process.env.DATABASE_URL;
 // An ambient auth token would 401 every probe and pass this suite vacuously.
 delete process.env.FEIN_AUTH_TOKEN;
 delete process.env.FUNDGRAPH_AUTH_TOKEN;
@@ -59,8 +62,33 @@ await ingestDocs(db, [{
   people: [{ name: "Seb Larkin", email: "seb@ridgeline.vc", role: "from" },
            { name: "Vera Shared", email: "secretevidence@gmail.com", role: "to" }],
 }], { owner: seb.id });
+// The reverse-order trap: the private layer sees Nolan FIRST (priv-4, 07-24),
+// the shared CRM only later (shared-2, 07-28). Resolution processes mentions
+// by occurred_at, so the entity is created private-first and the shared
+// witness attaches second — the moment it becomes visible, the privately-
+// witnessed middle name must not ride along as its canonical name.
+await ingestDocs(db, [{
+  source: "gmail", kind: "email", external_id: "priv-4", title: "Nolan terms",
+  occurred_at: "2026-07-24T10:00:00Z",
+  people: [{ name: "Seb Larkin", email: "seb@ridgeline.vc", role: "from" },
+           { name: "Nolan SECRETMIDDLE Pike", email: "nolan@pike.example", role: "to" }],
+}], { owner: seb.id });
+await ingestDocs(db, [{
+  source: "crm", kind: "record", external_id: "shared-2", title: "Contact: Nolan Pike",
+  occurred_at: "2026-07-28T10:00:00Z",
+  people: [{ name: "Nolan Pike", email: "nolan@pike.example", role: "mentioned" }],
+}]);
 await resolveMentions(db);
 await rebuildEdges(db);
+
+// A human override on a private-only entity writes an audit row, and
+// /api/audit is a global surface — the probes below sweep it for markers.
+{
+  const { setAutomated } = await import(`${ROOT}/src/resolve/automated.js`);
+  const { rows: [secret] } = await db.query(
+    `select id from entities where canonical_name like '%SECRETPERSON%'`);
+  await setAutomated(db, secret.id, true, { actor: "Seb Larkin" });
+}
 
 const MARKERS = ["SECRETTITLE", "SECRETBODY", "SECRETCOMPANY", "SECRETPERSON",
   "SECRETMIDDLE", "secretmiddle", "secretevidence@", "SECRETEVORG", "secretevorg"];
@@ -123,6 +151,35 @@ console.log(leaks ? `\n${leaks} LEAK(S) FOUND` : "  no marker reached a viewer w
     if (dangling.length) { leaks++; console.log(`  LEAK [${label}] /api/graph has ${dangling.length} link(s) to hidden ids`); }
   }
   console.log("  ok  direct-id and graph-link probes done");
+
+  // The leaked-id escalation: a non-owner must not be able to merge a hidden
+  // entity — the 200 body would both mutate across layers and echo the hidden
+  // canonical name.
+  if (secretId) {
+    const vera = (await fetch(`${BASE}/api/search?q=vera`).then((r) => r.json()))[0];
+    for (const [label, qs] of [["tom", `?as=${tom.id}`], ["shared", ""]]) {
+      const res = await fetch(`${BASE}/api/merge${qs}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ keep: vera.id, lose: secretId }),
+      });
+      const text = await res.text();
+      if (res.status !== 404 || MARKERS.some((m) => text.includes(m))) {
+        leaks++; console.log(`  LEAK [${label}] /api/merge accepted a hidden id (${res.status})`);
+      }
+    }
+    console.log("  ok  a hidden id cannot be merged by a non-owner");
+  }
+}
+
+// The private-first ordering case: Nolan's canonical name must be the
+// shared-witnessed form, not the privately-witnessed one it started with.
+{
+  const nolan = (await fetch(`${BASE}/api/search?q=nolan`).then((r) => r.json()))[0];
+  if (!nolan) { leaks++; console.log("  FAIL: shared person Nolan not found"); }
+  else if (nolan.canonical_name !== "Nolan Pike") {
+    leaks++; console.log(`  LEAK private-first canonical name survived the shared witness: ${nolan.canonical_name}`);
+  } else console.log("  ok  private-first name re-derived at the first shared witness");
 }
 
 // The absorption case explicitly: private evidence auto-attached to the

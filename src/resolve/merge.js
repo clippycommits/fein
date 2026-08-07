@@ -1,5 +1,6 @@
 import { normPersonName, normOrgName } from "./normalize.js";
 import { audit } from "../settings.js";
+import { evidenceAgg } from "./pipeline.js";
 
 /**
  * Manual entity merge — the escape hatch for what automatic resolution missed.
@@ -35,14 +36,28 @@ export async function mergeEntities(db, keepId, loseId, { actor = "local" } = {}
     const emails = [...new Set([...keepEmails, ...arr(lose.emails)])];
     const orgs = [...new Set([...keepOrgs, ...arr(lose.orgs)])];
     const norm = keep.kind === "org" ? normOrgName : normPersonName;
+    // An entity whose shared columns are all empty was never witnessed by a
+    // shared source: its display name is private evidence, not shared
+    // identity. Such a name stays out of the survivor's shared aliases and
+    // canonical name — its normalized form already lives in entity_evidence
+    // for the owners who witnessed it (createEntityFromMention wrote it), so
+    // it keeps matching and overlaying for them.
+    const privateOnly = (e) => !arr(e.emails).length && !arr(e.orgs).length && !arr(e.aliases).length;
+    const keepPrivate = privateOnly(keep);
+    const losePrivate = privateOnly(lose);
     const aliases = [...new Set([
       ...arr(keep.aliases), ...arr(lose.aliases),
-      norm(keep.canonical_name), norm(lose.canonical_name),
+      keepPrivate ? null : norm(keep.canonical_name),
+      losePrivate ? null : norm(lose.canonical_name),
     ].filter(Boolean))];
-    // Keep the fuller display name; an email-derived one always loses.
+    // Keep the fuller display name; an email-derived one always loses. When
+    // exactly one side is shared-witnessed, only ITS name may be shown to
+    // every viewer — however plain — never the privately-witnessed one.
     const keepIsEmail = keep.canonical_name.includes("@");
     const loseIsEmail = lose.canonical_name.includes("@");
-    const canonical = keepIsEmail && !loseIsEmail ? lose.canonical_name
+    const canonical = keepPrivate !== losePrivate
+      ? (keepPrivate ? lose.canonical_name : keep.canonical_name)
+      : keepIsEmail && !loseIsEmail ? lose.canonical_name
       : !keepIsEmail && loseIsEmail ? keep.canonical_name
       : lose.canonical_name.length > keep.canonical_name.length ? lose.canonical_name
       : keep.canonical_name;
@@ -72,13 +87,20 @@ export async function mergeEntities(db, keepId, loseId, { actor = "local" } = {}
       [keepId, canonical, JSON.stringify(emails), JSON.stringify(orgs), JSON.stringify(aliases)]
     );
     // A human's robot/human verdict travels with the merge: left on the
-    // tombstone it would be invisible, silently losing human input.
+    // tombstone it would be invisible, silently losing human input. The
+    // keeper's own pre-merge state goes into the delta so unmerge can hand
+    // exactly this back too, like everything else the merge gave.
     if (lose.automated_override != null && keep.automated_override == null) {
       await tx.query(
         `update entities set automated = $2, automated_override = $2, automated_reason = $3
          where id = $1`,
         [keepId, lose.automated_override, lose.automated_reason]
       );
+      delta.automatedTransfer = {
+        automated: keep.automated,
+        automated_override: keep.automated_override,
+        automated_reason: keep.automated_reason,
+      };
     }
     await tx.query(
       `insert into entity_evidence (entity_id, owner, kind, value)
@@ -97,9 +119,9 @@ export async function mergeEntities(db, keepId, loseId, { actor = "local" } = {}
     return { keptId: keepId, mergedId: loseId, canonical_name: canonical, emails, orgs };
   });
 
-  await audit(db, "entity_merge", {
-    kept: result.keptId, merged: result.mergedId, name: result.canonical_name,
-  }, actor);
+  // Ids only: the audit trail is a shared surface and a merged name can be
+  // witnessed solely in a private layer (review_accept/review_reject's rule).
+  await audit(db, "entity_merge", { kept: result.keptId, merged: result.mergedId }, actor);
   return result;
 }
 
@@ -166,11 +188,23 @@ export async function unmergeEntity(db, mergedId, { actor = "local" } = {}) {
            delta.canonical_name ?? keep.canonical_name]
         );
       }
+      // The merge may have copied the loser's robot/human verdict onto the
+      // survivor; the survivor's own pre-merge state comes back with the rest.
+      if (delta.automatedTransfer) {
+        await tx.query(
+          `update entities set automated = $2, automated_override = $3, automated_reason = $4
+           where id = $1`,
+          [lose.merged_into, delta.automatedTransfer.automated,
+           delta.automatedTransfer.automated_override ?? null,
+           delta.automatedTransfer.automated_reason ?? null]
+        );
+      }
     }
     await tx.query(`update entities set merged_into = null, merge_delta = null where id = $1`, [mergedId]);
     return { restored: mergedId, from: lose.merged_into, name: lose.canonical_name };
   });
-  await audit(db, "entity_unmerge", result, actor);
+  // Ids only in the audit detail — the restored name can be private evidence.
+  await audit(db, "entity_unmerge", { restored: result.restored, from: result.from }, actor);
   return result;
 }
 
@@ -189,23 +223,40 @@ export async function listMerges(db) {
 /**
  * Snapshot merges by identity so they survive a full rebuild, which discards
  * entity ids. Same contract as review decisions: human input is not derived
- * state and must not be silently lost.
+ * state and must not be silently lost. Identity is the union of the shared
+ * arrays with what the absorption policy keeps out of them: the keeper's
+ * entity_evidence side rows, and — because the merge itself moved the loser's
+ * side rows to the keeper — the values recorded in merge_delta.evidence for
+ * the loser. The moved values are subtracted from the keeper's identity so
+ * the two lookups cannot claim the same rebuilt entity.
  */
 export async function snapshotMerges(db) {
-  const merges = await listMerges(db);
-  const { rows: keptRows } = await db.query(
-    `select id, emails, aliases from entities where id in (
-       select merged_into from entities where merged_into is not null)`
+  const { rows } = await db.query(
+    `select l.emails as merged_emails, l.aliases as merged_aliases, l.merge_delta,
+            k.emails || ${evidenceAgg("email", "k.id")} as kept_emails,
+            k.aliases || ${evidenceAgg("alias", "k.id")} as kept_aliases
+     from entities l join entities k on k.id = l.merged_into
+     where l.merged_into is not null
+     order by l.created_at desc`
   );
-  const keptById = new Map(keptRows.map((r) => [r.id, { emails: arr(r.emails), aliases: arr(r.aliases) }]));
-  return merges.map((m) => ({
-    loser: { emails: m.merged_emails, aliases: m.merged_aliases, name: m.merged_name },
-    keeper: keptById.get(m.kept_id) ?? { emails: [], aliases: [] },
-    keeperName: m.kept_name,
-  }));
+  return rows.map((r) => {
+    const delta = typeof r.merge_delta === "string" ? JSON.parse(r.merge_delta) : r.merge_delta;
+    const ev = (kind) => (delta?.evidence ?? []).filter((x) => x.kind === kind).map((x) => x.value);
+    return {
+      loser: {
+        emails: [...new Set([...arr(r.merged_emails), ...ev("email")])],
+        aliases: [...new Set([...arr(r.merged_aliases), ...ev("alias")])],
+      },
+      keeper: {
+        emails: [...new Set(arr(r.kept_emails))].filter((x) => !ev("email").includes(x)),
+        aliases: [...new Set(arr(r.kept_aliases))].filter((x) => !ev("alias").includes(x)),
+      },
+    };
+  });
 }
 
-/** Re-apply snapshotted merges after a rebuild, matching on stable identity. */
+/** Re-apply snapshotted merges after a rebuild, matching on stable identity —
+ * the same shared+evidence union the snapshot read. */
 export async function replayMerges(db, snapshot, { actor } = {}) {
   let replayed = 0;
   const dropped = [];
@@ -214,18 +265,18 @@ export async function replayMerges(db, snapshot, { actor } = {}) {
       const conds = [];
       const params = [];
       if (ident.emails?.length) {
-        conds.push(`exists (select 1 from jsonb_array_elements_text(emails) x where x in (${
-          ident.emails.map((_, i) => `$${params.length + i + 1}`).join(", ")}))`);
+        conds.push(`exists (select 1 from jsonb_array_elements_text(e.emails || ${evidenceAgg("email")}) x
+          where x in (${ident.emails.map((_, i) => `$${params.length + i + 1}`).join(", ")}))`);
         params.push(...ident.emails);
       }
       if (ident.aliases?.length) {
-        conds.push(`exists (select 1 from jsonb_array_elements_text(aliases) y where y in (${
-          ident.aliases.map((_, i) => `$${params.length + i + 1}`).join(", ")}))`);
+        conds.push(`exists (select 1 from jsonb_array_elements_text(e.aliases || ${evidenceAgg("alias")}) y
+          where y in (${ident.aliases.map((_, i) => `$${params.length + i + 1}`).join(", ")}))`);
         params.push(...ident.aliases);
       }
       if (!conds.length) return null;
       const { rows } = await db.query(
-        `select id from entities where merged_into is null and (${conds.join(" or ")}) limit 1`, params
+        `select e.id from entities e where e.merged_into is null and (${conds.join(" or ")}) limit 1`, params
       );
       return rows[0]?.id ?? null;
     };
@@ -235,7 +286,9 @@ export async function replayMerges(db, snapshot, { actor } = {}) {
       await mergeEntities(db, keeper, loser, { actor });
       replayed++;
     } else if (!keeper || !loser) {
-      dropped.push({ keeper: m.keeperName, loser: m.loser.name, reason: "identity not found after rebuild" });
+      // Reason only: this list lands in the reresolve audit row, a shared
+      // surface, and a merged identity can be privately witnessed.
+      dropped.push({ reason: "identity not found after rebuild" });
     }
     // keeper === loser means resolution already merged them: nothing to do.
   }

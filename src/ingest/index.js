@@ -71,10 +71,14 @@ async function ingestInTx(db, docs, owner = "") {
   // doc ids are deduped to the LAST occurrence — that is what the sequential
   // upserts used to converge to, and a multi-row upsert hitting the same id
   // twice raises "ON CONFLICT DO UPDATE command cannot affect row a second
-  // time". Duplicates are real: external_id-less docs share an id whenever
-  // source/kind/title/date repeat. Keeping the whole per-doc record (mentions
-  // and keep list included) makes the dedupe atomic: a superseded
-  // occurrence's mentions are never written at all.
+  // time". One carve-out keeps the equivalence exact: the old per-row upsert
+  // COALESCEd body/body_sha256, converging to the last NON-NULL body — so a
+  // later headers-only occurrence (a Sent/All-Mail copy of the same message)
+  // must not erase an earlier occurrence's body within the batch. Duplicates
+  // are real: external_id-less docs share an id whenever source/kind/title/
+  // date repeat. Keeping the whole per-doc record (mentions and keep list
+  // included) makes the dedupe atomic: a superseded occurrence's mentions are
+  // never written at all.
   const byId = new Map(); // did -> { docRow, mentionRows, keep }
   for (const doc of docs) {
     const docOwner = doc.owner ?? owner;
@@ -107,6 +111,11 @@ async function ingestInTx(db, docs, owner = "") {
       const mid = mentionId(did, "org", "mentioned", nn, null, ordinal);
       keep.push(mid);
       mentionRows.push([mid, did, "org", orgName, null, null, "mentioned", nn, null]);
+    }
+    const prev = byId.get(did);
+    if (prev && docRow[7] == null && prev.docRow[7] != null) {
+      docRow[7] = prev.docRow[7]; // body — keep the earlier occurrence's
+      docRow[8] = prev.docRow[8]; // body_sha256 travels with it
     }
     byId.set(did, { docRow, mentionRows, keep });
   }

@@ -49,6 +49,20 @@ console.log("[1/6] duplicate doc ids in one batch: last occurrence wins");
   const { rows: men } = await db.query(
     `select m.name from mentions m join documents d on d.id = m.document_id where d.external_id = 'dup-1'`);
   check(men.length === 1 && men[0].name === "Bob Beta", "only the last occurrence's mention survives", men);
+
+  // The one carve-out from last-wins: the old per-row upserts COALESCEd body,
+  // so a later headers-only duplicate (a Sent/All-Mail copy of the same
+  // message) must not cost the batch its only captured body.
+  const BODY = "This duplicate's body is long enough to clear the capture floor easily.";
+  const withBody = { source: "gmail", kind: "email", external_id: "dup-body-1", title: "with body",
+    occurred_at: "2026-08-02T00:00:00Z", body: BODY };
+  const headersOnly = { ...withBody, title: "headers only" };
+  delete headersOnly.body;
+  await ingestDocs(db, [withBody, headersOnly]);
+  const { rows: [bd] } = await db.query(
+    `select title, body, body_sha256 from documents where external_id = 'dup-body-1'`);
+  check(bd.title === "headers only" && bd.body === BODY && bd.body_sha256 !== null,
+    "an in-batch headers-only duplicate keeps the earlier body, everything else stays last-wins", bd);
 }
 
 console.log("[2/6] a batch that crosses chunk boundaries lands exactly");

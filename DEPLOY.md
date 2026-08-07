@@ -112,6 +112,12 @@ git pull && docker compose build && docker compose up -d
 The database schema is created/upgraded on boot; review decisions, merges,
 and settings survive.
 
+**Upgrading a multi-member install from v0.4.0 or earlier:** run
+`fein reresolve` once after the upgrade. Older versions folded privately-
+witnessed addresses, orgs, aliases, and display names into the shared entity
+records; the reresolve re-derives them into per-owner overlays. The server
+prints a warning on every boot until this is done.
+
 ## Bare metal (no Docker)
 
 ```bash

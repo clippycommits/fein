@@ -365,20 +365,24 @@ async function route(db, req, res, url, port) {
 
   if (req.method === "POST" && path === "/api/sample") {
     const { loadSampleDataset } = await import("../ingest/sample.js");
+    const member = await memberOf(db, url);
     const result = await loadSampleDataset(db);
     await audit(db, "ingest", { file: "bundled sample dataset", ...result.ingested },
-      await actorOf(db, url));
-    return json(res, { ...result, stats: await counts(db) });
+      member?.name ?? "local");
+    // Stats hints on mutations answer for the requesting viewer, like /api/stats.
+    return json(res, { ...result, stats: await counts(db, { viewer: member?.id ?? null }) });
   }
 
   if (req.method === "POST" && path === "/api/reresolve") {
     const { reresolveAll } = await import("../resolve/reresolve.js");
-    const result = await reresolveAll(db, { actor: await actorOf(db, url) });
-    return json(res, { ...result, stats: await counts(db) });
+    const member = await memberOf(db, url);
+    const result = await reresolveAll(db, { actor: member?.name ?? "local" });
+    return json(res, { ...result, stats: await counts(db, { viewer: member?.id ?? null }) });
   }
 
   if (req.method === "POST" && path === "/api/extract") {
-    const actor = await actorOf(db, url); // before the claim: no await may split check-and-set
+    const member = await memberOf(db, url); // before the claim: no await may split check-and-set
+    const actor = member?.name ?? "local";
     if (extracting) return json(res, { error: "an extraction run is already in progress" }, 409);
     extracting = true; // claim BEFORE the first await — the check-and-set must be atomic
     try {
@@ -393,7 +397,7 @@ async function route(db, req, res, url, port) {
         extracted: extract.extracted, failed: extract.failed, mentions: extract.mentions,
         model: extract.model, tokens: extract.tokens,
       }, actor);
-      return json(res, { extract, resolved, edges, stats: await counts(db) });
+      return json(res, { extract, resolved, edges, stats: await counts(db, { viewer: member?.id ?? null }) });
     } catch (err) {
       // Even an aborted run may have spent tokens — always leave an audit row.
       const spent = err.stats?.tokens ?? null;
@@ -411,18 +415,33 @@ async function route(db, req, res, url, port) {
     const body = parseJson(await readBody(req));
     const { mergeEntities } = await import("../resolve/merge.js");
     if (!body.keep || !body.lose) throw withStatus(new Error("keep and lose entity ids are required"), 400);
-    const result = await mergeEntities(db, body.keep, body.lose, { actor: await actorOf(db, url) });
+    const member = await memberOf(db, url);
+    // Same gate as entityBrief: a guessed or leaked private id must not become
+    // a cross-layer mutation — or an echo of the hidden canonical name in the
+    // 200 body.
+    for (const ref of [body.keep, body.lose]) {
+      if (!(await entityVisible(db, ref, member?.id ?? null))) return json(res, { error: "not found" }, 404);
+    }
+    const result = await mergeEntities(db, body.keep, body.lose, { actor: member?.name ?? "local" });
     await rebuildEdgesFor(db, [body.keep, body.lose]);
-    return json(res, { ...result, stats: await counts(db) });
+    return json(res, { ...result, stats: await counts(db, { viewer: member?.id ?? null }) });
   }
 
   if (req.method === "POST" && path === "/api/unmerge") {
     const body = parseJson(await readBody(req));
     const { unmergeEntity } = await import("../resolve/merge.js");
     if (!body.entity) throw withStatus(new Error("entity id is required"), 400);
-    const result = await unmergeEntity(db, body.entity, { actor: await actorOf(db, url) });
+    const member = await memberOf(db, url);
+    // A tombstone has no mentions of its own (the merge moved them), so the
+    // visibility gate rides on the survivor it merged into.
+    const { rows: tomb } = await db.query(`select merged_into from entities where id = $1`, [body.entity]);
+    if (tomb[0]?.merged_into &&
+        !(await entityVisible(db, tomb[0].merged_into, member?.id ?? null))) {
+      return json(res, { error: "not found" }, 404);
+    }
+    const result = await unmergeEntity(db, body.entity, { actor: member?.name ?? "local" });
     await rebuildEdgesFor(db, [result.restored, result.from]);
-    return json(res, { ...result, stats: await counts(db) });
+    return json(res, { ...result, stats: await counts(db, { viewer: member?.id ?? null }) });
   }
 
   // Human override on the automated-sender flag — the dashboard toggle. Only
@@ -491,6 +510,7 @@ async function route(db, req, res, url, port) {
     if (syncingConnector) return json(res, { error: `a ${CONNECTOR_PROVIDERS[syncingConnector].label} sync is already running` }, 409);
     syncingConnector = provider; // claim BEFORE the first await — the check-and-set must be atomic
     try {
+      const member = await memberOf(db, url);
       const { key, config } = await resolveConnectorKey(db, provider, envVar);
       if (!key) throw withStatus(new Error(`connect an ${label} API key first`), 400);
       const docs = await CONNECTOR_PROVIDERS[provider].fetch({ key, includeNotes: config.includeNotes !== false });
@@ -498,8 +518,9 @@ async function route(db, req, res, url, port) {
       const resolved = await resolveMentions(db);
       const edges = await rebuildEdges(db);
       await putConnector(db, provider, { lastSyncAt: new Date().toISOString(), lastDocCount: ingested.docCount });
-      await audit(db, "ingest", { file: `${provider} workspace`, ...ingested }, await actorOf(db, url));
-      return json(res, { ingested, resolved, edges, stats: await counts(db), ...(await connectorStatus(db, provider)) });
+      await audit(db, "ingest", { file: `${provider} workspace`, ...ingested }, member?.name ?? "local");
+      return json(res, { ingested, resolved, edges, stats: await counts(db, { viewer: member?.id ?? null }),
+        ...(await connectorStatus(db, provider)) });
     } catch (err) {
       throw withStatus(new Error(err.message), 400);
     } finally {

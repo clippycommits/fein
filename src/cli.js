@@ -94,8 +94,10 @@ async function takeAs(db, args) {
   return { member, rest: [...args.slice(0, i), ...args.slice(i + 2)] };
 }
 
-async function refOrDie(db, r) {
-  const res = await resolveRef(db, r);
+/** Resolve an entity ref through the viewer's layers: with `--as`, a person
+ * witnessed only in that member's private layer is nameable too. */
+async function refOrDie(db, r, viewer = null) {
+  const res = await resolveRef(db, r, { viewer });
   if (res.error) {
     console.error(res.error);
     if (res.candidates) console.error(JSON.stringify(res.candidates, null, 2));
@@ -242,7 +244,7 @@ async function main() {
       out(await searchEntities(db, args.join(" ") || ""));
       break;
     case "brief": {
-      const e = await refOrDie(db, args.join(" "));
+      const e = await refOrDie(db, args.join(" "), viewer);
       out(await entityBrief(db, e.id, { viewer }));
       break;
     }
@@ -255,8 +257,8 @@ async function main() {
     case "path":
     case "intros": {
       if (args.length < 2) throw new Error(`usage: fein ${cmd} <from> <to>`);
-      const a = await refOrDie(db, args[0]);
-      const b = await refOrDie(db, args[1]);
+      const a = await refOrDie(db, args[0], viewer);
+      const b = await refOrDie(db, args[1], viewer);
       const name = async (steps) => {
         for (const s of steps ?? []) s.name = (await getEntity(db, s.entity))?.canonical_name;
       };
@@ -276,8 +278,8 @@ async function main() {
     case "merge": {
       if (args.length < 2) throw new Error("usage: fein merge <keep> <lose>");
       const { mergeEntities } = await import("./resolve/merge.js");
-      const keep = await refOrDie(db, args[0]);
-      const lose = await refOrDie(db, args[1]);
+      const keep = await refOrDie(db, args[0], viewer);
+      const lose = await refOrDie(db, args[1], viewer);
       const r = await mergeEntities(db, keep.id, lose.id, { actor });
       await rebuildEdgesFor(db, [keep.id, lose.id]);
       out(r);
@@ -306,7 +308,7 @@ async function main() {
       const sub = args[0];
       if (sub === "mark" || sub === "unmark") {
         if (!args[1]) throw new Error(`usage: fein automated ${sub} <entity>`);
-        const e = await refOrDie(db, args.slice(1).join(" "));
+        const e = await refOrDie(db, args.slice(1).join(" "), viewer);
         out(await setAutomated(db, e.id, sub === "mark", { actor }));
       } else if (args.includes("--list")) {
         const { rows } = await db.query(
@@ -320,7 +322,7 @@ async function main() {
     case "radar": {
       const { relationshipRadar, radarSummary } = await import("./graph/radar.js");
       if (args.length) {
-        const e = await refOrDie(db, args.join(" "));
+        const e = await refOrDie(db, args.join(" "), viewer);
         const items = await relationshipRadar(db, e.id, { viewer });
         for (const i of items) i.name = (await getEntity(db, i.entity))?.canonical_name;
         out({ entity: e.canonical_name, radar: items });

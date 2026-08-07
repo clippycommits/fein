@@ -56,11 +56,17 @@ export async function resolveReview(db, reviewId, decision, { actor = "local" } 
     const aliases = typeof e.aliases === "string" ? JSON.parse(e.aliases) : e.aliases;
     const mOrg = normOrgName(mention.org_hint);
     if (owner === "") {
+      // First shared witness of a previously private-only candidate: the name
+      // on its row was witnessed only privately and is about to become visible
+      // to everyone — re-derive it from the shared mention (absorb()'s rule).
+      const firstSharedWitness = !emails.length && !orgs.length && !aliases.length;
+      const canonical = firstSharedWitness && (mention.name || mention.email)
+        ? mention.name ?? mention.email : e.canonical_name;
       if (mention.norm_email && !emails.includes(mention.norm_email)) emails.push(mention.norm_email);
       if (mOrg && !orgs.includes(mOrg)) orgs.push(mOrg);
       if (mention.norm_name && !aliases.includes(mention.norm_name)) aliases.push(mention.norm_name);
-      await db.query(`update entities set emails = $2, orgs = $3, aliases = $4 where id = $1`,
-        [e.id, JSON.stringify(emails), JSON.stringify(orgs), JSON.stringify(aliases)]);
+      await db.query(`update entities set emails = $2, orgs = $3, aliases = $4, canonical_name = $5 where id = $1`,
+        [e.id, JSON.stringify(emails), JSON.stringify(orgs), JSON.stringify(aliases), canonical]);
       await db.query(`update mentions set entity_id = $2 where id = $1`, [mention.id, e.id]);
       await promoteEvidence(db, e.id,
         [["email", mention.norm_email], ["org", mOrg], ["alias", mention.norm_name]]);

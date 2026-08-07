@@ -52,13 +52,38 @@ export async function removeMember(db, memberId, { reassign = null } = {}) {
     documents = Number(rows[0].n);
     if (reassign === "shared") {
       await tx.query(`update documents set owner = '' where owner = $1`, [memberId]);
+      // Their documents are shared now, so every value witnessed only by them
+      // is shared-witnessed by definition: promote the overlay into the shared
+      // columns before it is deleted below. Nothing else re-derives it — the
+      // moved mentions keep their entity_id, so resolution never revisits them.
+      const { rows: ev } = await tx.query(
+        `select entity_id, kind, value from entity_evidence where owner = $1`, [memberId]);
+      const cols = { email: "emails", org: "orgs", alias: "aliases" };
+      const byEntity = new Map();
+      for (const r of ev) {
+        if (!byEntity.has(r.entity_id)) byEntity.set(r.entity_id, []);
+        byEntity.get(r.entity_id).push(r);
+      }
+      const arr = (v) => (typeof v === "string" ? JSON.parse(v) : v ?? []);
+      for (const [entityId, vals] of byEntity) {
+        const { rows: ents } = await tx.query(
+          `select emails, orgs, aliases from entities where id = $1`, [entityId]);
+        if (!ents.length) continue;
+        const next = { emails: arr(ents[0].emails), orgs: arr(ents[0].orgs), aliases: arr(ents[0].aliases) };
+        for (const { kind, value } of vals) {
+          const col = cols[kind];
+          if (col && !next[col].includes(value)) next[col].push(value);
+        }
+        await tx.query(`update entities set emails = $2, orgs = $3, aliases = $4 where id = $1`,
+          [entityId, JSON.stringify(next.emails), JSON.stringify(next.orgs), JSON.stringify(next.aliases)]);
+      }
     } else {
       await tx.query(`delete from documents where owner = $1`, [memberId]); // cascades to mentions
     }
     await tx.query(`delete from edges where owner = $1`, [memberId]);
-    // Their overlay evidence goes with the layer either way: the rows are
-    // keyed to a member id that stops resolving, and after a reassign the
-    // next reresolve re-derives the values as shared from the moved documents.
+    // Their overlay evidence goes with the layer either way: promoted into the
+    // shared columns on a reassign (above), deleted with the documents
+    // otherwise — the rows are keyed to a member id that stops resolving.
     await tx.query(`delete from entity_evidence where owner = $1`, [memberId]);
     await tx.query(`delete from members where id = $1`, [memberId]);
   });

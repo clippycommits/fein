@@ -151,6 +151,18 @@ async function persistEntity(db, e) {
   );
 }
 
+/**
+ * SQL fragment: an entity's entity_evidence values of `kind` as a jsonb array
+ * ('[]' when none). Snapshot/replay identity is the UNION of the shared
+ * columns and these side rows — a privately-evidenced entity's shared arrays
+ * are empty by the absorption policy, and human input recorded against it
+ * (review decisions, merges, automated overrides) must still match after a
+ * rebuild.
+ */
+export const evidenceAgg = (kind, entityId = "e.id") =>
+  `coalesce((select jsonb_agg(v.value) from entity_evidence v
+             where v.entity_id = ${entityId} and v.kind = '${kind}'), '[]'::jsonb)`;
+
 /** Record a privately-witnessed value against its owner's overlay. */
 export async function addEvidence(db, entityId, owner, kind, value) {
   await db.query(
@@ -188,6 +200,17 @@ async function absorb(db, entity, mention) {
   if (mention.norm_name) entity.normNames.add(mention.norm_name);
 
   if (owner === "") {
+    // The first shared witness of a previously private-only entity makes it
+    // visible to everyone — but the name sitting on its row was witnessed
+    // only in a private layer ("existence, not evidence" held while it was
+    // hidden). Re-derive the display name from the shared witness; the
+    // private form already lives in entity_evidence as its owners' alias
+    // overlay, so they lose nothing.
+    const firstSharedWitness = !entity.sharedEmails.length &&
+      !entity.sharedOrgs.length && !entity.sharedAliases.length;
+    if (firstSharedWitness && (mention.name || mention.email)) {
+      entity.canonical_name = mention.name ?? mention.email;
+    }
     if (mention.norm_email && !entity.sharedEmails.includes(mention.norm_email)) {
       entity.sharedEmails.push(mention.norm_email);
     }

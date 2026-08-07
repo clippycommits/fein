@@ -101,6 +101,33 @@ async function migrate(db) {
   for (const stmt of schema.split(/;\s*\n/).map((s) => s.trim()).filter(Boolean)) {
     await db.query(stmt);
   }
+  if (await staleAbsorptionState(db)) {
+    console.warn(
+      "WARNING: this database was written before the private-evidence absorption policy:\n" +
+      "privately-witnessed addresses, orgs, aliases, and display names may sit in the SHARED\n" +
+      "entity records, visible to every viewer. Run `fein reresolve` once to re-derive them\n" +
+      "into per-owner overlays. This warning repeats on every boot until that is done."
+    );
+  }
+}
+
+/**
+ * Detect a database written before the absorption policy (≤ v0.4.0): back
+ * then, resolution folded privately-witnessed values straight into the shared
+ * entity columns, and nothing recorded which values those were — so the only
+ * remedy is a full re-derive (`fein reresolve`). The tell: private-layer
+ * mentions have been resolved, entities carry values in the shared columns,
+ * yet the entity_evidence overlay the policy writes is completely empty.
+ */
+export async function staleAbsorptionState(db) {
+  const any = async (sql) => (await db.query(sql)).rows.length > 0;
+  if (await any(`select 1 from entity_evidence limit 1`)) return false;
+  if (!(await any(
+    `select 1 from mentions m join documents d on d.id = m.document_id
+     where d.owner <> '' and m.entity_id is not null limit 1`))) return false;
+  return any(
+    `select 1 from entities
+     where emails <> '[]'::jsonb or orgs <> '[]'::jsonb or aliases <> '[]'::jsonb limit 1`);
 }
 
 export function id(prefix) {

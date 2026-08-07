@@ -295,7 +295,7 @@ $("#search").addEventListener("input", (ev) => {
   const q = ev.target.value.trim();
   if (!q) { $("#search-results").innerHTML = ""; return; }
   searchTimer = setTimeout(async () => {
-    const results = await api(`/api/search?q=${encodeURIComponent(q)}`);
+    const results = await api(`/api/search?q=${encodeURIComponent(q)}${asParam("&")}`);
     $("#search-results").innerHTML = results.length ? results.map((r) =>
       `<div class="result-row" data-id="${esc(r.id)}">
          <div>${esc(r.canonical_name)} ${r.kind === "org" ? "· <span class='sub'>org</span>" : ""}</div>
@@ -381,7 +381,7 @@ async function startMerge(keeper) {
     `Type the duplicate's name or email. Its documents, relationships and addresses ` +
     `move to ${keeper.canonical_name}; the merge is reversible and survives rebuilds.`);
   if (!q?.trim()) return;
-  const matches = (await api(`/api/search?q=${encodeURIComponent(q.trim())}`))
+  const matches = (await api(`/api/search?q=${encodeURIComponent(q.trim())}${asParam("&")}`))
     .filter((m) => m.id !== keeper.id && m.kind === keeper.kind);
   if (!matches.length) { toast(`No other ${keeper.kind} matching "${q.trim()}"`, "err"); return; }
   const pick = matches.length === 1 ? matches[0] : matches[

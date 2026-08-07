@@ -133,6 +133,48 @@ console.log("[5/5] overrides survive a full rebuild");
     "un-overridden robots are re-flagged by the rebuild itself", host[0]);
 }
 
+console.log("[6/6] overrides on privately-evidenced entities survive too");
+{
+  const { addMember } = await import(join(root, "src/members.js"));
+  const { reresolveAll } = await import(join(root, "src/resolve/reresolve.js"));
+  const alice = await addMember(db, { name: "Alice Quorn", email: "alice@ridgeline.vc" });
+  // A broadcaster witnessed ONLY in Alice's private layer: the absorption
+  // policy leaves its shared columns empty and its identity in entity_evidence
+  // — exactly the entity the snapshot/replay union exists for.
+  const privDocs = [];
+  for (let i = 0; i < 6; i++) {
+    privDocs.push(email(`priv-r${i}`,
+      { name: "Deal Room", email: "updates@dealroom.example" },
+      { name: "Alice Quorn", email: "alice@ridgeline.vc" }, 40 + i));
+  }
+  await ingestDocs(db, privDocs, { owner: alice.id });
+  await resolveMentions(db);
+  const dr = (await searchEntities(db, "dealroom", 10, { viewer: alice.id }))[0];
+  check(Boolean(dr), "the private-layer broadcaster resolves for its owner");
+  const { rows: [cols] } = await db.query(`select emails, aliases from entities where id = $1`, [dr.id]);
+  const arr = (v) => (typeof v === "string" ? JSON.parse(v) : v ?? []);
+  check(arr(cols.emails).length === 0 && arr(cols.aliases).length === 0,
+    "its shared columns are empty (absorption policy)", cols);
+  await detectAutomated(db);
+  const { rows: [flagged] } = await db.query(`select automated from entities where id = $1`, [dr.id]);
+  check(flagged.automated === true, "the behavioural pass flags it across layers", flagged);
+  await setAutomated(db, dr.id, false, { actor: "Alice Quorn" }); // human: definitely a person
+  const rr = await reresolveAll(db);
+  check(rr.automatedOverrides.dropped.length === 0 && rr.automatedOverrides.replayed === 2,
+    "overrides on privately-evidenced entities replay instead of dropping", rr.automatedOverrides);
+  const dr2 = (await searchEntities(db, "dealroom", 10, { viewer: alice.id }))[0];
+  const { rows: [after] } = await db.query(
+    `select automated, automated_override from entities where id = $1`, [dr2.id]);
+  check(after.automated === false && after.automated_override === false,
+    "the confirmed-human verdict survives the rebuild and re-detection", after);
+  // The audit trail is a shared surface and this entity's name is the secret:
+  // override rows must record ids only.
+  const { rows: audits } = await db.query(`select detail from audit_log where action = 'automated_override'`);
+  const details = audits.map((r) => (typeof r.detail === "string" ? JSON.parse(r.detail) : r.detail));
+  check(details.length > 0 && details.every((d) => !("name" in d) && d.entity),
+    "override audit rows record ids only, never names", details.slice(0, 3));
+}
+
 await db.close();
 rmSync(dataDir, { recursive: true, force: true });
 if (failures) {

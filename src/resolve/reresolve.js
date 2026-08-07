@@ -1,4 +1,4 @@
-import { mentionIdentity, resolveMentions } from "./pipeline.js";
+import { evidenceAgg, mentionIdentity, resolveMentions } from "./pipeline.js";
 import { resolveReview } from "./review.js";
 import { rebuildEdges } from "../graph/edges.js";
 import { audit } from "../settings.js";
@@ -28,12 +28,11 @@ export async function reresolveAll(db, { actor = "local" } = {}) {
   const overrideSnapshot = await snapshotAutomatedOverrides(db);
   const outcome = await db.tx(async (tx) => {
     // Candidate identity is the UNION of the shared arrays and the private
-    // side rows: a decision made against a privately-evidenced candidate must
-    // still replay, and the "emails/aliases only grow" matching invariant
-    // holds for the union just as it did for the arrays alone.
-    const evAgg = (kind) =>
-      `coalesce((select jsonb_agg(v.value) from entity_evidence v
-                 where v.entity_id = e.id and v.kind = '${kind}'), '[]'::jsonb)`;
+    // side rows (pipeline.evidenceAgg): a decision made against a privately-
+    // evidenced candidate must still replay, and the "emails/aliases only
+    // grow" matching invariant holds for the union just as it did for the
+    // arrays alone.
+    const evAgg = evidenceAgg;
     const { rows: decided } = await tx.query(
       `select r.status, m.norm_name, m.norm_email, e.canonical_name as cand_name,
               e.emails || ${evAgg("email")} as cand_emails,

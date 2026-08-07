@@ -140,6 +140,43 @@ console.log("[4/6] warm paths reveal existence, not evidence");
   await putSettings(db, { privateHopStrength: 0.5 });
 }
 
+console.log("[4b/6] the private-hop routing prior is a real routing input");
+{
+  const { putSettings } = await import(join(root, "src/settings.js"));
+  const kay = await addMember(db, { name: "Kay Zhou", email: "kay@ridgeline.vc" });
+  // Kay's private layer builds an ALL-private 2-hop route Tom → Kay → Priya
+  // competing with the half-visible Tom → Seb → Priya at the same hop count.
+  // Cost(via Seb) = −ln s − ln prior, cost(via Kay) = −2 ln prior, so the
+  // route flips exactly where the prior crosses the visible Tom–Seb strength
+  // s — the one observable place the setting steers routing.
+  await ingestDocs(db, [
+    { source: "gmail", kind: "email", external_id: "kp-1", title: "Kay x Tom",
+      occurred_at: "2026-07-22T10:00:00Z",
+      people: [person("Kay Zhou", "kay@ridgeline.vc", "from"),
+               person("Tom Merrill", "tom@ridgeline.vc", "to")] },
+    { source: "gmail", kind: "email", external_id: "kp-2", title: "Kay x Priya",
+      occurred_at: "2026-07-23T10:00:00Z",
+      people: [person("Kay Zhou", "kay@ridgeline.vc", "from"),
+               person("Priya Nair", "priya.nair@meridianwealth.co.uk", "to")] },
+  ], { owner: kay.id });
+  await resolveMentions(db);
+  // Pin the decay baseline: s(Tom–Seb) ≈ 0.27 here, safely between the priors.
+  await rebuildEdges(db, Date.parse("2026-08-04T00:00:00Z"));
+  const kayE = await id("Kay Zhou", kay.id);
+  const via = async (prior) => {
+    await putSettings(db, { privateHopStrength: prior });
+    const p = await findWarmPath(db, tomE, priyaE, { viewer: tom.id });
+    return p?.privatePath?.path?.[1]?.entity;
+  };
+  const viaLow = await via(0.05);
+  const viaHigh = await via(0.9);
+  check(viaLow === sebE, "a weak prior routes through the half-visible hop (via Seb)", { viaLow, sebE });
+  check(viaHigh === kayE, "a strong prior prefers the all-private shortcut (via Kay)", { viaHigh, kayE });
+  await putSettings(db, { privateHopStrength: 0.5 });
+  await removeMember(db, kay.id); // Kay and her layer leave; later sections assume two members
+  await rebuildEdges(db);
+}
+
 console.log("[5/6] a viewer with no membership sees only the shared layer");
 {
   const anon = await findWarmPath(db, tomE, priyaE, {});
@@ -276,10 +313,89 @@ console.log("[5d/6] absorbed private evidence never reaches the shared record");
     "the survivor keeps none of it");
 }
 
+console.log("[5e/6] a private-first name is re-derived at the first shared witness");
+{
+  const { mergeEntities } = await import(join(root, "src/resolve/merge.js"));
+  // Reverse of [5d]: Seb's private mail knows Wren FIRST; the firm's shared
+  // CRM learns of her later. When the shared witness lands, the entity turns
+  // visible to everyone — the privately-witnessed middle name must not ride
+  // along as its canonical name.
+  await ingestDocs(db, [
+    { source: "gmail", kind: "email", external_id: "sp-7", title: "Wren intro",
+      occurred_at: "2026-07-24T10:00:00Z",
+      people: [person("Seb Larkin", "seb@ridgeline.vc", "from"),
+               person("Wren SECRETMIDDLE Callow", "wren@callow.example", "to")] },
+  ], { owner: seb.id });
+  await resolveMentions(db);
+  check((await searchEntities(db, "wren", 10, { viewer: tom.id })).length === 0,
+    "before any shared witness the person is hidden");
+  await ingestDocs(db, [
+    { source: "crm", kind: "record", external_id: "sh-6", title: "Contact: Wren Callow",
+      occurred_at: "2026-07-31T10:00:00Z",
+      people: [person("Wren Callow", "wren@callow.example", "mentioned")] },
+  ]);
+  await resolveMentions(db);
+  const wren = (await searchEntities(db, "wren", 10, { viewer: tom.id }))[0];
+  check(wren?.canonical_name === "Wren Callow",
+    "the first shared witness re-derives the display name", wren?.canonical_name);
+  check(!JSON.stringify(wren).toLowerCase().includes("secretmiddle"),
+    "no private name form reaches another member", wren);
+  const sebWren = (await searchEntities(db, "wren", 10, { viewer: seb.id }))[0];
+  check(sebWren.aliases.includes("wren secretmiddle callow"),
+    "the private form survives as its owner's alias overlay", sebWren.aliases);
+
+  // Manual merges obey the same rule, in both directions. A private-only
+  // LOSER: its name may not surface on the shared survivor.
+  await ingestDocs(db, [
+    { source: "crm", kind: "record", external_id: "sh-7", title: "Contact: Xan Vole",
+      occurred_at: "2026-07-05T10:00:00Z",
+      people: [person("Xan Vole", "xan@vole.example", "mentioned")] },
+    { source: "crm", kind: "record", external_id: "sh-8", title: "Contact: Rex Tan",
+      occurred_at: "2026-07-06T10:00:00Z",
+      people: [person("Rex Tan", "rex@tan.example", "mentioned")] },
+  ]);
+  await ingestDocs(db, [
+    { source: "gmail", kind: "email", external_id: "sp-8", title: "quiet intro",
+      occurred_at: "2026-07-26T10:00:00Z",
+      people: [person("Seb Larkin", "seb@ridgeline.vc", "from"),
+               person("Q. SECRETX Nym", "qnym@nymco.example", "to")] },
+    { source: "gmail", kind: "email", external_id: "sp-9", title: "quieter intro",
+      occurred_at: "2026-07-27T10:00:00Z",
+      people: [person("Seb Larkin", "seb@ridgeline.vc", "from"),
+               person("SECRETY Held", "held@heldco.example", "to")] },
+  ], { owner: seb.id });
+  await resolveMentions(db);
+  const xan = (await searchEntities(db, "xan@vole.example", 10))[0];
+  const qnym = (await searchEntities(db, "qnym", 10, { viewer: seb.id }))[0];
+  await mergeEntities(db, xan.id, qnym.id);
+  const { rows: [xRow] } = await db.query(
+    `select canonical_name, emails, orgs, aliases from entities where id = $1`, [xan.id]);
+  check(xRow.canonical_name === "Xan Vole" &&
+        !JSON.stringify(xRow).toLowerCase().includes("secretx") &&
+        !JSON.stringify(xRow).includes("qnym"),
+    "merging a private-only duplicate lifts nothing into the shared record", xRow);
+  check((await searchEntities(db, "qnym", 10, { viewer: tom.id })).length === 0,
+    "the merged private address stays invisible to others");
+  check((await searchEntities(db, "qnym", 10, { viewer: seb.id }))[0]?.id === xan.id,
+    "while the owner's overlay finds it on the survivor");
+
+  // And a private-only KEEPER absorbing a shared duplicate adopts the
+  // shared-witnessed name — never the other way round.
+  const rex = (await searchEntities(db, "rex@tan.example", 10))[0];
+  const held = (await searchEntities(db, "held@heldco", 10, { viewer: seb.id }))[0];
+  await mergeEntities(db, held.id, rex.id);
+  const { rows: [hRow] } = await db.query(
+    `select canonical_name, aliases from entities where id = $1`, [held.id]);
+  check(hRow.canonical_name === "Rex Tan" &&
+        !JSON.stringify(hRow).toLowerCase().includes("secrety"),
+    "a private-only keeper adopts the shared-witnessed name", hRow);
+}
+
 console.log("[6/6] removing a member disposes of their layer");
 {
   const gone = await removeMember(db, seb.id);
-  check(gone.documents === 6, "their private documents are deleted with them", gone);
+  // sp-1 … sp-6 plus [5e]'s sp-7/sp-8/sp-9.
+  check(gone.documents === 9, "their private documents are deleted with them", gone);
   await rebuildEdges(db);
   const after = await findWarmPath(db, tomE, priyaE, { viewer: tom.id });
   check(!after?.path && !after?.privatePath, "the private route disappears too", after);
@@ -298,6 +414,14 @@ console.log("[6/6] removing a member disposes of their layer");
   const irisId = await id("Iris Kwan");
   const sharedConns = await strongestConnections(db, irisId, {});
   check(sharedConns.length === 1, "reassigned evidence is now visible to everyone", sharedConns);
+  // The layer's overlay values are shared-witnessed by definition once its
+  // documents move: they are promoted into the shared columns, not dropped —
+  // nothing else would ever re-derive them (the moved mentions stay resolved).
+  const promoted = await searchEntities(db, "iris@example.com", 10);
+  check(promoted.length === 1 && promoted[0].emails.includes("iris@example.com"),
+    "values the departed layer witnessed are shared-searchable after reassign", promoted);
+  check((await db.query(`select 1 from entity_evidence where owner = $1`, [t2.id])).rows.length === 0,
+    "no orphaned overlay rows remain");
 }
 
 console.log("[6b/6] ambiguous member refs fail loudly, naming the candidates");
@@ -313,6 +437,60 @@ console.log("[6b/6] ambiguous member refs fail loudly, naming the candidates");
     "the error lists both candidates", err?.message);
   await removeMember(db, alex.id);
   await removeMember(db, alexa.id);
+}
+
+console.log("[7/7] pre-absorption databases are detected on boot");
+{
+  const { staleAbsorptionState } = await import(join(root, "src/db.js"));
+  check((await staleAbsorptionState(db)) === false, "a policy-clean database raises no warning");
+  // Seed the exact shape v0.4.0 wrote: a resolved private-layer mention whose
+  // values sit in the shared columns with no overlay row.
+  const ghost = await addMember(db, { name: "Ghost Member" });
+  await ingestDocs(db, [{ source: "gmail", kind: "email", external_id: "old-1", title: "legacy",
+    occurred_at: "2026-07-01T10:00:00Z",
+    people: [person("Old Contact", "old@legacy.example", "from")] }], { owner: ghost.id });
+  await resolveMentions(db);
+  await db.query(`delete from entity_evidence`);
+  await db.query(`update entities set emails = '["old@legacy.example"]'
+                  where canonical_name = 'Old Contact'`);
+  check((await staleAbsorptionState(db)) === true, "the legacy shape is detected");
+  // The documented remedy: a reresolve re-derives the overlay and clears it.
+  const { reresolveAll } = await import(join(root, "src/resolve/reresolve.js"));
+  await reresolveAll(db);
+  check((await staleAbsorptionState(db)) === false, "a reresolve heals it");
+}
+
+console.log("[8/8] the CLI resolves private-layer refs under --as");
+{
+  const { spawnSync } = await import("node:child_process");
+  const { writeFileSync } = await import("node:fs");
+  const cliDir = mkdtempSync(join(tmpdir(), "fein-privacy-cli-"));
+  const run = (...cliArgs) => spawnSync(process.execPath, [join(root, "src/cli.js"), ...cliArgs], {
+    env: { ...process.env, FEIN_DATA: cliDir },
+    encoding: "utf8",
+  });
+  check(run("members", "add", "Alice Voss", "alicev@example.com").status === 0, "member added via CLI");
+  const jsonl = join(cliDir, "priv.jsonl");
+  writeFileSync(jsonl, JSON.stringify({
+    source: "gmail", kind: "email", external_id: "cli-1", title: "digest",
+    occurred_at: "2026-07-01T10:00:00Z",
+    people: [{ name: "Robo Digest", email: "digest@robomail.example", role: "from" },
+             { name: "Alice Voss", email: "alicev@example.com", role: "to" }],
+  }) + "\n");
+  check(run("ingest", jsonl, "--as", "Alice Voss").status === 0, "private ingest via CLI");
+  check(run("resolve").status === 0, "resolve via CLI");
+  // The flagged entity is witnessed only in Alice's private layer: with --as
+  // her CLI can name it; without, the "hide" policy keeps it unresolvable.
+  const marked = run("automated", "mark", "digest@robomail.example", "--as", "Alice Voss");
+  check(marked.status === 0 && /"automated": true/.test(marked.stdout),
+    "a private-layer entity is reachable by ref under --as", marked.stderr || marked.stdout);
+  const unmarked = run("automated", "unmark", "digest@robomail.example", "--as", "Alice Voss");
+  check(unmarked.status === 0 && /"automated": false/.test(unmarked.stdout),
+    "and unmark works the same way", unmarked.stderr || unmarked.stdout);
+  const blocked = run("automated", "mark", "digest@robomail.example");
+  check(blocked.status === 1 && /no entity matching/.test(blocked.stderr),
+    "without --as the hide policy still applies", blocked.stderr);
+  rmSync(cliDir, { recursive: true, force: true });
 }
 
 await db.close();

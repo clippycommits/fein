@@ -181,6 +181,43 @@ console.log("[5/5] empty and unknown dirty sets are no-ops");
   sameGraph("the table is untouched throughout", await snapshot(), before);
 }
 
+console.log("[6/6] docs crossing the participant cap force the safe path");
+{
+  const { putSettings } = await import(join(root, "src/settings.js"));
+  await putSettings(db, { maxDocParticipants: 3 });
+  // A 4-person doc: over the cap, so it contributes no pairs at all.
+  await ingestDocs(db, [
+    { source: "calendar", kind: "event", external_id: "cap-1", title: "roundtable",
+      occurred_at: "2026-07-18T10:00:00Z",
+      people: [person("Ava Stone", "ava@stonebridge.vc", "attendee"),
+               person("Ben Okafor", "ben@okafor.capital", "attendee"),
+               person("Cleo Marsh", "cleo@marshlane.co", "attendee"),
+               person("Dana Frost", "dana@frostworks.io", "attendee")] },
+  ]);
+  await resolveMentions(db);
+  await rebuildEdges(db, NOW);
+  // Merging Dana into Cleo drops the doc to 3 distinct people — at the cap it
+  // becomes eligible, changing pairs between entities the merge never touched
+  // (Ava–Ben). The incremental path must detect the boundary and fall back to
+  // the full rebuild instead of leaving those pairs missing.
+  await mergeEntities(db, cleo, dana, { actor: "Tom Merrill" });
+  const res = await rebuildEdgesFor(db, [cleo, dana], NOW);
+  check(res.mode === "full", "a cap-boundary doc falls back to the full rebuild", res);
+  const incr = await snapshot();
+  await rebuildEdges(db, NOW);
+  sameGraph("after a merge across the cap, the result matches the full rebuild", incr, await snapshot());
+
+  // The mirror: unmerge pushes the doc back over the cap, and the pairs it no
+  // longer justifies must disappear rather than going stale.
+  const un = await unmergeEntity(db, dana, { actor: "Tom Merrill" });
+  const res2 = await rebuildEdgesFor(db, [un.restored, un.from], NOW);
+  check(res2.mode === "full", "crossing back over the cap is caught too", res2);
+  const incrUn = await snapshot();
+  await rebuildEdges(db, NOW);
+  sameGraph("and matches the full rebuild again", incrUn, await snapshot());
+  await putSettings(db, { maxDocParticipants: 50 });
+}
+
 await db.close();
 rmSync(dataDir, { recursive: true, force: true });
 if (failures) {

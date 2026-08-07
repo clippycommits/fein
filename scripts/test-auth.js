@@ -10,6 +10,9 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 
 const dataDir = mkdtempSync(join(tmpdir(), "fein-auth-test-"));
+// The spawned servers inherit process.env: an ambient DATABASE_URL would aim
+// them at a real database instead of the temp data dir.
+delete process.env.DATABASE_URL;
 const PORT = 4521;
 const TOKEN = "test-token-correct-horse";
 let failures = 0;
