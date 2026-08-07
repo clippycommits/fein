@@ -12,7 +12,7 @@ import { resolveMentions } from "../resolve/pipeline.js";
 import { listReviews, resolveReview } from "../resolve/review.js";
 import { rebuildEdges, rebuildEdgesFor, strengthOf } from "../graph/edges.js";
 import { findWarmPath, findIntroducers } from "../graph/paths.js";
-import { searchEntities, entityBrief, counts, getEntity, nameSteps } from "../graph/queries.js";
+import { searchEntities, entityBrief, counts, getEntity, entityVisible, nameSteps } from "../graph/queries.js";
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
 import { putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
 import { listMembers, addMember, removeMember, resolveMember, visibleLayers } from "../members.js";
@@ -286,7 +286,13 @@ async function route(db, req, res, url, port) {
     }
     const conn = /^\/api\/connectors\/([a-z]+)$/.exec(path);
     if (conn && CONNECTOR_PROVIDERS[conn[1]]) return json(res, await connectorStatus(db, conn[1]));
-    if (path === "/api/graph") return json(res, await graphPayload(db, await viewerOf(db, url)));
+    if (path === "/api/graph") {
+      return json(res, await graphPayload(db, await viewerOf(db, url), {
+        limit: boundedInt(url, "limit", 300, 1, 5000),
+        focus: url.searchParams.get("focus"),
+        radius: boundedInt(url, "radius", 2, 1, 4),
+      }));
+    }
     if (path === "/api/documents") return json(res, await documentsPayload(db, await viewerOf(db, url)));
     if (path === "/api/search") {
       return json(res, await searchEntities(db, String(url.searchParams.get("q") ?? "").slice(0, 200), 12,
@@ -533,7 +539,7 @@ async function connectorStatus(db, provider) {
 
 /* ---------- payload builders ---------- */
 
-async function graphPayload(db, viewer = null) {
+async function graphPayload(db, viewer = null, { limit = 300, focus = null, radius = 2 } = {}) {
   const cfg = await getSettings(db);
   const layers = visibleLayers(viewer);
   const lph = layers.map((_, i) => `$${i + 1}`).join(", ");
@@ -586,14 +592,65 @@ async function graphPayload(db, viewer = null) {
     bump(e.a); bump(e.b);
   }
 
+  // Bound AFTER assembly: the privacy queries above and the both-endpoints
+  // filter stay untouched, so pruning inherits their guarantees. `degree`
+  // stays pre-prune so the tooltip's "N connections" remains truthful.
+  const totalNodes = people.length;
+  const totalLinks = links.length;
+
+  let candidates = people;
+  if (focus) {
+    const f = await getEntity(db, focus);
+    // Same gate as entityBrief: a guessed private id must not resolve.
+    if (!f || !(await entityVisible(db, f.id, viewer))) {
+      throw withStatus(new Error(`no entity ${focus}`), 404);
+    }
+    // Ego set by BFS over the drawn links — private 0.25 links included:
+    // they are drawn, so they are navigable.
+    const adj = new Map();
+    const arc = (x, y) => { if (!adj.has(x)) adj.set(x, []); adj.get(x).push(y); };
+    for (const l of links) { arc(l.source, l.target); arc(l.target, l.source); }
+    const ego = new Set([f.id]);
+    let frontier = [f.id];
+    for (let hop = 0; hop < radius && frontier.length; hop++) {
+      const next = [];
+      for (const id of frontier) {
+        for (const n of adj.get(id) ?? []) if (!ego.has(n)) { ego.add(n); next.push(n); }
+      }
+      frontier = next;
+    }
+    candidates = people.filter((p) => ego.has(p.id));
+  }
+
+  // Strongest connections first: summed incident strength, name as the
+  // deterministic tie-break, the focus (when set) pinned in front.
+  const score = new Map();
+  for (const l of links) {
+    score.set(l.source, (score.get(l.source) ?? 0) + l.strength);
+    score.set(l.target, (score.get(l.target) ?? 0) + l.strength);
+  }
+  candidates = [...candidates].sort((a, b) =>
+    (score.get(b.id) ?? 0) - (score.get(a.id) ?? 0) ||
+    (a.canonical_name < b.canonical_name ? -1 : a.canonical_name > b.canonical_name ? 1 : 0));
+  if (focus) {
+    const i = candidates.findIndex((p) => p.id === focus);
+    if (i > 0) candidates.unshift(...candidates.splice(i, 1));
+  }
+  const kept = candidates.slice(0, limit);
+  const keptIds = new Set(kept.map((p) => p.id));
+
   return {
-    nodes: people.map((p) => ({
+    nodes: kept.map((p) => ({
       id: p.id,
       name: p.canonical_name,
       orgs: typeof p.orgs === "string" ? JSON.parse(p.orgs) : p.orgs,
       degree: degree.get(p.id) ?? 0,
     })),
-    links,
+    // Both endpoints must survive the prune — a dangling id crashes d3.forceLink.
+    links: links.filter((l) => keptIds.has(l.source) && keptIds.has(l.target)),
+    totalNodes,
+    totalLinks,
+    truncated: kept.length < totalNodes,
   };
 }
 

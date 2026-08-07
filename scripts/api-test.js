@@ -98,8 +98,32 @@ console.log("[3/10] read endpoints");
   const graph = await get("/api/graph");
   check(graph.body.nodes.length === 14 && graph.body.links.length > 5, "graph payload has people + links",
     { nodes: graph.body.nodes.length, links: graph.body.links.length });
+  check(graph.body.totalNodes === 14 && graph.body.truncated === false,
+    "a graph under the default limit reports totals, not truncation",
+    { totalNodes: graph.body.totalNodes, truncated: graph.body.truncated });
+  const bounded = await get("/api/graph?limit=5");
+  check(bounded.body.nodes.length === 5 && bounded.body.totalNodes === 14 && bounded.body.truncated === true,
+    "limit bounds the payload and reports the full size",
+    { nodes: bounded.body.nodes.length, totalNodes: bounded.body.totalNodes, truncated: bounded.body.truncated });
+  const boundedIds = new Set(bounded.body.nodes.map((n) => n.id));
+  check(bounded.body.links.every((l) => boundedIds.has(l.source) && boundedIds.has(l.target)),
+    "every link in a pruned payload keeps both endpoints (d3.forceLink crashes on dangling ids)",
+    bounded.body.links.filter((l) => !boundedIds.has(l.source) || !boundedIds.has(l.target)));
   const search = await get("/api/search?q=maya");
   check(search.body.length >= 1 && search.body[0].canonical_name === "Maya Chen", "search finds Maya", search.body);
+  const mayaEgo = new Set([search.body[0].id]);
+  for (const l of graph.body.links) {
+    if (l.source === search.body[0].id) mayaEgo.add(l.target);
+    if (l.target === search.body[0].id) mayaEgo.add(l.source);
+  }
+  const focused = await get(`/api/graph?focus=${search.body[0].id}&radius=1`);
+  check(focused.body.nodes.some((n) => n.id === search.body[0].id) &&
+        focused.body.nodes.length === mayaEgo.size &&
+        focused.body.nodes.every((n) => mayaEgo.has(n.id)),
+    "focus+radius=1 returns Maya and exactly her direct connections",
+    { got: focused.body.nodes.length, expected: mayaEgo.size });
+  const noFocus = await get("/api/graph?focus=does-not-exist");
+  check(noFocus.status === 404, "unknown focus entity 404s", noFocus.status);
   const brief = await get(`/api/entity/${search.body[0].id}`);
   check(brief.body.entity && brief.body.connections.length > 0, "entity brief has connections");
   const dana = (await get("/api/search?q=dana")).body[0];
@@ -197,6 +221,18 @@ console.log("[6/10] hostile input");
 
   const protoWeight = await send("PUT", "/api/settings", { weights: { toString: 9 } });
   check(protoWeight.status === 400, "prototype-named weight is rejected with 400", protoWeight);
+
+  // Hostile graph bounds clamp, never crash: 0/negative floor at one node,
+  // junk falls back to the default (everything, on a sample-sized graph).
+  const zero = await get("/api/graph?limit=0");
+  check(zero.status === 200 && zero.body.nodes.length === 1 && zero.body.truncated === true,
+    "limit=0 clamps to one node", { status: zero.status, nodes: zero.body?.nodes?.length });
+  const negative = await get("/api/graph?limit=-3");
+  check(negative.status === 200 && negative.body.nodes.length === 1,
+    "negative limit clamps to one node", { status: negative.status, nodes: negative.body?.nodes?.length });
+  const junk = await get("/api/graph?limit=junk");
+  check(junk.status === 200 && junk.body.nodes.length === junk.body.totalNodes && junk.body.truncated === false,
+    "junk limit falls back to the default", { status: junk.status, nodes: junk.body?.nodes?.length });
 }
 
 console.log("[7/10] attio connector (mocked workspace)");
@@ -298,6 +334,16 @@ console.log("[9/10] privacy layers: one-click scene, private upload, scoping");
     "a private-only person is hidden from the shared graph");
   const tomGraph = await get(`/api/graph?as=${tom.id}`);
   check(tomGraph.body.nodes.some((n) => n.name === "Zara Quist"), "her owner sees her");
+
+  // A guessed private id must not resolve as a graph focus — the same gate
+  // entityBrief enforces. Her owner, of course, can focus on her.
+  const zara = (await get(`/api/search?q=zara&as=${tom.id}`)).body
+    .find((e) => e.canonical_name === "Zara Quist");
+  const sharedFocus = await get(`/api/graph?focus=${zara.id}`);
+  check(sharedFocus.status === 404, "a private-only person cannot be a shared-view focus", sharedFocus.status);
+  const tomFocus = await get(`/api/graph?as=${tom.id}&focus=${zara.id}`);
+  check(tomFocus.status === 200 && tomFocus.body.nodes.some((n) => n.name === "Zara Quist"),
+    "her owner can focus the graph on her", tomFocus.status);
 
   // Stats are viewer-scoped like every other read: Tom's private upload and
   // its private-only person count for Tom alone.

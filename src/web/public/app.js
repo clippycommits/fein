@@ -135,6 +135,11 @@ async function renderGraph() {
   } finally {
     $("#graph-loading").hidden = true;
   }
+  const meta = $("#graph-meta");
+  meta.hidden = !graphData.truncated;
+  if (graphData.truncated) {
+    meta.textContent = `showing ${graphData.nodes.length} of ${graphData.totalNodes} people — strongest connections first`;
+  }
   nameToId.clear();
   const list = $("#people-list");
   list.innerHTML = "";
@@ -402,9 +407,21 @@ async function copyBrief() {
 }
 
 /* ---------- warm path ---------- */
+// A person pruned from the bounded graph payload can still be a path
+// endpoint: when the datalist misses a typed name, ask search for an exact
+// (case-insensitive) match before giving up.
+async function pathEndpointId(raw) {
+  const name = raw.trim();
+  if (!name) return null;
+  const hit = nameToId.get(name.toLowerCase());
+  if (hit) return hit;
+  const results = await api(`/api/search?q=${encodeURIComponent(name)}${asParam("&")}`);
+  return results.find((r) => r.canonical_name.toLowerCase() === name.toLowerCase())?.id ?? null;
+}
+
 $("#find-path").addEventListener("click", async () => {
-  const from = nameToId.get($("#path-from").value.trim().toLowerCase());
-  const to = nameToId.get($("#path-to").value.trim().toLowerCase());
+  const from = await pathEndpointId($("#path-from").value);
+  const to = await pathEndpointId($("#path-to").value);
   const out = $("#path-result");
   if (!from || !to) { out.innerHTML = `<div class="empty"><p>Pick two people from the suggestions.</p></div>`; return; }
   const { path, introducers, viaPrivate } =
