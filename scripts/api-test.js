@@ -83,9 +83,11 @@ console.log("[1/10] health, security, empty state");
 console.log("[2/10] onboarding: load sample dataset");
 {
   const res = await send("POST", "/api/sample", {}, { origin: BASE });
-  // 16 seed docs + 22 fixtures (incl. the team) + Seb's 2 private emails.
+  // 16 seed docs + 22 fixtures (incl. the team); Seb's 2 private emails are a
+  // withheld count only — stats are scoped to the viewer like every other read.
   // sample.mbox / sample.ics / contacts.csv stay OUT — they're the live-drag demo.
-  check(res.status === 200 && res.body.stats.documents === 40, "sample dataset loads (40 docs)", res.body.stats);
+  check(res.status === 200 && res.body.stats.documents === 38, "sample dataset loads (38 shared docs)", res.body.stats);
+  check(res.body.stats.withheldDocuments === 2, "private docs surface only as a withheld count", res.body.stats);
   check(res.body.stats.entities === 26, "sample resolves to 26 entities", res.body.stats);
   check(res.body.stats.pendingExtraction === 20, "fixture bodies are pending extraction", res.body.stats);
   check(res.body.members?.length === 2, "sample seeds the two-member team", res.body.members);
@@ -277,6 +279,35 @@ console.log("[9/10] privacy layers: one-click scene, private upload, scoping");
     "a private-only person is hidden from the shared graph");
   const tomGraph = await get(`/api/graph?as=${tom.id}`);
   check(tomGraph.body.nodes.some((n) => n.name === "Zara Quist"), "her owner sees her");
+
+  // Stats are viewer-scoped like every other read: Tom's private upload and
+  // its private-only person count for Tom alone.
+  const sharedStats = (await get("/api/stats")).body;
+  const tomStats = (await get(`/api/stats?as=${tom.id}`)).body;
+  check(tomStats.documents === sharedStats.documents + 1, "a private upload counts only for its owner",
+    { shared: sharedStats.documents, tom: tomStats.documents });
+  check(tomStats.entities > sharedStats.entities, "private-only Zara is not in the shared entity count",
+    { shared: sharedStats.entities, tom: tomStats.entities });
+
+  // A fuzzy match rooted in Tom's private mail: name-variant of a shared
+  // person plus a new freemail address scores in the 0.70–0.95 review band
+  // (mirroring the M. Chen seed fixture), so the badge must agree with the
+  // queue for every viewer — a review card quotes the private document.
+  const fuzzy = JSON.stringify({
+    source: "local", kind: "email", external_id: "priv-tom-2", title: "intro thread",
+    occurred_at: "2026-08-03T00:00:00Z",
+    people: [{ name: "D. Whitfield", email: "dwhitfield@gmail.com", role: "from" }],
+  });
+  const fUp = await send("POST", `/api/ingest?name=fuzzy.jsonl&as=${tom.id}`, fuzzy);
+  check(fUp.status === 200 && fUp.body.resolved.queued === 1, "private fuzzy mention queues for review", fUp.body.resolved);
+  const sharedAfter = (await get("/api/stats")).body;
+  const tomAfter = (await get(`/api/stats?as=${tom.id}`)).body;
+  check(sharedAfter.pendingReviews === 0 && tomAfter.pendingReviews === 1,
+    "the reviews badge counts only reviews the viewer may see",
+    { shared: sharedAfter.pendingReviews, tom: tomAfter.pendingReviews });
+  check((await get("/api/reviews")).body.length === sharedAfter.pendingReviews &&
+        (await get(`/api/reviews?as=${tom.id}`)).body.length === tomAfter.pendingReviews,
+    "badge equals queue length for both viewers");
 }
 
 console.log("[10/10] MCP over HTTP: one endpoint, viewer-scoped");
@@ -306,6 +337,10 @@ console.log("[10/10] MCP over HTTP: one endpoint, viewer-scoped");
   const own = asText(await sebClient.callTool({ name: "entity_brief", arguments: { entity: "Priya Nair" } }));
   check(JSON.stringify(own).includes("Fund II allocation — timing question"),
     "?as=Seb binds the agent to Seb's private layer");
+  const sebStats = asText(await sebClient.callTool({ name: "graph_stats", arguments: {} }));
+  check(sebStats.documents === stats.documents + 2,
+    "graph_stats honors the bound viewer (Seb's 2 private docs)",
+    { shared: stats.documents, seb: sebStats.documents });
 
   // An agent's decision is audited as agent:<member>. Exact name + conflicting
   // non-freemail domain scores 0.90 — deterministically in the review band.

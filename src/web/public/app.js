@@ -104,7 +104,7 @@ $("#viewer").addEventListener("change", async (ev) => {
 let onboardingDismissed = false;
 
 async function renderStats() {
-  const s = await api("/api/stats");
+  const s = await api(`/api/stats${asParam()}`);
   const tiles = [
     ["Documents", s.documents],
     ["People & orgs", s.entities],

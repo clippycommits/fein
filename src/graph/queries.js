@@ -144,16 +144,39 @@ export async function entityBrief(db, entityId, { viewer = null } = {}) {
   };
 }
 
-export async function counts(db) {
-  const one = (sql) => db.query(sql).then((r) => Number(r.rows[0].n));
-  const [documents, mentions, unresolvedMentions, entities, pendingReviews, edges] =
+/**
+ * Stat counts, scoped to the viewer's layers like every other read: a null
+ * viewer means the shared layer only, never global totals. withheldDocuments
+ * hints at hidden volume without leaking it (documentsPayload's pattern).
+ */
+export async function counts(db, { viewer = null } = {}) {
+  const { privateEntityVisibility } = await getSettings(db);
+  const layers = visibleLayers(viewer);
+  const lph = layers.map((_, i) => `$${i + 1}`).join(", ");
+  const one = (sql, params = []) => db.query(sql, params).then((r) => Number(r.rows[0].n));
+  const [documents, mentions, unresolvedMentions, entities, pendingReviews, edges, withheldDocuments] =
     await Promise.all([
-      one(`select count(*) as n from documents`),
-      one(`select count(*) as n from mentions`),
-      one(`select count(*) as n from mentions where entity_id is null`),
-      one(`select count(*) as n from entities where merged_into is null`),
-      one(`select count(*) as n from review_queue where status = 'pending'`),
-      one(`select count(*) as n from edges`),
+      one(`select count(*) as n from documents where owner in (${lph})`, layers),
+      one(`select count(*) as n from mentions m join documents d on d.id = m.document_id
+           where d.owner in (${lph})`, layers),
+      one(`select count(*) as n from mentions m join documents d on d.id = m.document_id
+           where m.entity_id is null and d.owner in (${lph})`, layers),
+      // Same gate as searchEntities: under "hide", an entity mentioned only in
+      // layers the viewer can't see doesn't exist for them — even as a number.
+      privateEntityVisibility === "reveal"
+        ? one(`select count(*) as n from entities where merged_into is null`)
+        : one(`select count(*) as n from entities
+               where merged_into is null
+                 and exists (select 1 from mentions mm join documents dd on dd.id = mm.document_id
+                             where mm.entity_id = entities.id and dd.owner in (${lph}))`, layers),
+      // The COUNT twin of listReviews, so badge === queue length by construction.
+      one(`select count(*) as n from review_queue r
+           join mentions m on m.id = r.mention_id
+           join documents d on d.id = m.document_id
+           where r.status = 'pending' and d.owner in (${lph})`, layers),
+      // Distinct visible pairs — how every reader collapses per-owner rows.
+      one(`select count(*) as n from (select 1 from edges where owner in (${lph}) group by a, b) t`, layers),
+      one(`select count(*) as n from documents where owner <> '' and owner not in (${lph})`, layers),
     ]);
   return {
     documents,
@@ -162,14 +185,19 @@ export async function counts(db) {
     entities,
     pendingReviews,
     edges,
+    ...(withheldDocuments ? { withheldDocuments } : {}),
     // Bodies nobody has mined yet — agents see this via graph_stats and can
-    // suggest running extraction. Same definition as extractionStats().pending:
-    // hash column only (no body detoast), exhausted failures excluded.
+    // suggest running extraction. Same predicate as extractionStats().pending
+    // (hash column only, no body detoast, exhausted failures excluded) but
+    // scoped to the viewer's layers, so the Data tab's global extraction
+    // panel may legitimately show more.
     pendingExtraction: await one(
       `select count(*) as n from documents d
-       where d.body_sha256 is not null
+       where d.owner in (${lph})
+         and d.body_sha256 is not null
          and not exists (select 1 from extractions e where e.document_id = d.id
-                         and (e.status = 'ok' or (e.status = 'failed' and e.attempts >= 3)))`
+                         and (e.status = 'ok' or (e.status = 'failed' and e.attempts >= 3)))`,
+      layers
     ),
   };
 }

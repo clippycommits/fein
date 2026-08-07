@@ -247,7 +247,7 @@ async function route(db, req, res, url, port) {
     if (path === "/api/health") {
       return json(res, { ok: true, version: VERSION, uptimeSeconds: Math.round((Date.now() - STARTED) / 1000) });
     }
-    if (path === "/api/stats") return json(res, await counts(db));
+    if (path === "/api/stats") return json(res, await counts(db, { viewer: await viewerOf(db, url) }));
     if (path === "/api/settings") return json(res, await getSettings(db));
     if (path === "/api/audit") return json(res, await listAudit(db, boundedInt(url, "limit", 50, 1, 500)));
     if (path === "/api/reviews") return json(res, await listReviews(db, { viewer: await viewerOf(db, url) }));
@@ -351,7 +351,9 @@ async function route(db, req, res, url, port) {
     await audit(db, "ingest", member
       ? { file: "(private upload)", layer: member.name, ...ingested }
       : { file: name, ...ingested }, member?.name ?? "local");
-    return json(res, { ingested, resolved, edges, layer: member?.name ?? null, stats: await counts(db) });
+    // The stats hint reflects the uploader's own layers, like the upload did.
+    return json(res, { ingested, resolved, edges, layer: member?.name ?? null,
+      stats: await counts(db, { viewer: member?.id ?? null }) });
   }
 
   if (req.method === "POST" && path === "/api/sample") {

@@ -13,7 +13,7 @@ const { ingestDocs } = await import(join(root, "src/ingest/index.js"));
 const { resolveMentions } = await import(join(root, "src/resolve/pipeline.js"));
 const { rebuildEdges } = await import(join(root, "src/graph/edges.js"));
 const { findWarmPath, findIntroducers, strongestConnections } = await import(join(root, "src/graph/paths.js"));
-const { entityBrief, searchEntities } = await import(join(root, "src/graph/queries.js"));
+const { entityBrief, searchEntities, counts } = await import(join(root, "src/graph/queries.js"));
 const { addMember, listMembers, removeMember, resolveMember } = await import(join(root, "src/members.js"));
 
 let failures = 0;
@@ -74,6 +74,20 @@ console.log("[2/6] evidence is scoped to the viewer");
   check(tomConns.length === 0, "Tom sees no strength for a connection he doesn't own", tomConns);
   const shared = await strongestConnections(db, priyaE, {});
   check(shared.length === 0, "the shared layer alone has no Priya evidence", shared);
+}
+
+console.log("[2b/6] stat counts are scoped like every other read");
+{
+  const shared = await counts(db);
+  const sebC = await counts(db, { viewer: seb.id });
+  check(shared.documents === 3 && sebC.documents === 5,
+    "documents count only the visible layers", { shared: shared.documents, seb: sebC.documents });
+  check(sebC.mentions === shared.mentions + 4,
+    "private mentions count only for their owner", { shared: shared.mentions, seb: sebC.mentions });
+  check(shared.edges === 2 && sebC.edges === 3,
+    "edges count distinct visible pairs", { shared: shared.edges, seb: sebC.edges });
+  check(shared.withheldDocuments === 2 && !sebC.withheldDocuments,
+    "hidden volume is a count for others, absent for the owner", shared.withheldDocuments);
 }
 
 console.log("[3/6] documents never leak, only their count");

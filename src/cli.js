@@ -234,7 +234,7 @@ async function main() {
       out(await rebuildEdges(db));
       break;
     case "stats":
-      out(await counts(db));
+      out(await counts(db, { viewer }));
       break;
     case "entities":
       out(await searchEntities(db, args.join(" ") || ""));

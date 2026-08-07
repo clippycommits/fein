@@ -180,9 +180,9 @@ export function buildMcpServer(db, { viewer = null, actor = "agent" } = {}) {
 
   server.tool(
     "graph_stats",
-    "Counts of documents, mentions, entities, pending reviews, and edges.",
+    "Counts of documents, mentions, entities, pending reviews, and edges — scoped to the layers this connection may see.",
     {},
-    async () => text(await counts(db))
+    async () => text(await counts(db, { viewer }))
   );
 
   server.tool(
