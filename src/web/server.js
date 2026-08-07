@@ -425,6 +425,24 @@ async function route(db, req, res, url, port) {
     return json(res, { ...result, stats: await counts(db) });
   }
 
+  // Human override on the automated-sender flag — the dashboard toggle. Only
+  // the radar filters on it, so no edge rebuild is needed.
+  if (req.method === "POST" && /^\/api\/entity\/[^/]+\/automated$/.test(path)) {
+    const entityId = decodeURIComponent(path.split("/")[3]);
+    const body = parseJson(await readBody(req));
+    if (typeof body.automated !== "boolean") {
+      throw withStatus(new Error("automated must be true or false"), 400);
+    }
+    const member = await memberOf(db, url);
+    // Same gate as entityBrief: a guessed id must not become a write-side
+    // probe around the "hide" policy.
+    if (!(await entityVisible(db, entityId, member?.id ?? null))) {
+      return json(res, { error: "not found" }, 404);
+    }
+    const { setAutomated } = await import("../resolve/automated.js");
+    return json(res, await setAutomated(db, entityId, body.automated, { actor: member?.name ?? "local" }));
+  }
+
   if (req.method === "POST" && path === "/api/members") {
     const body = parseJson(await readBody(req));
     const member = await addMember(db, { name: body.name, email: body.email });

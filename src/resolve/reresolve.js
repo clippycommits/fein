@@ -3,6 +3,7 @@ import { resolveReview } from "./review.js";
 import { rebuildEdges } from "../graph/edges.js";
 import { audit } from "../settings.js";
 import { snapshotMerges, replayMerges } from "./merge.js";
+import { snapshotAutomatedOverrides, replayAutomatedOverrides, detectAutomated } from "./automated.js";
 
 /**
  * Wipe derived state and re-run resolution from raw mentions. Human review
@@ -21,8 +22,10 @@ import { snapshotMerges, replayMerges } from "./merge.js";
  * the database wiped with every human decision lost.
  */
 export async function reresolveAll(db, { actor = "local" } = {}) {
-  // Manual merges are human input too: snapshot by identity before the wipe.
+  // Manual merges and robot/human verdicts are human input too: snapshot both
+  // by identity before the wipe.
   const mergeSnapshot = await snapshotMerges(db);
+  const overrideSnapshot = await snapshotAutomatedOverrides(db);
   const outcome = await db.tx(async (tx) => {
     // Candidate identity is the UNION of the shared arrays and the private
     // side rows: a decision made against a privately-evidenced candidate must
@@ -120,15 +123,26 @@ export async function reresolveAll(db, { actor = "local" } = {}) {
     console.warn(`reresolve: ${merges.dropped.length} manual merge(s) could not be replayed:`,
       JSON.stringify(merges.dropped));
   }
+  // After the merges, so consolidated identities get their override back once.
+  const automatedOverrides = await replayAutomatedOverrides(db, overrideSnapshot, { actor });
+  if (automatedOverrides.dropped.length) {
+    console.warn(`reresolve: ${automatedOverrides.dropped.length} automated override(s) could not be replayed:`,
+      JSON.stringify(automatedOverrides.dropped));
+  }
+  // The wipe cleared every automated flag and nothing re-runs detection until
+  // the next sync — re-detect here so the radar comes back filtered. Runs
+  // after the override replay, which detection respects.
+  const automated = await detectAutomated(db);
   const edges = await rebuildEdges(db);
   await audit(db, "reresolve", {
     decisions: outcome.decisions,
     replayed: outcome.replayed,
     dropped: outcome.dropped,
     merges,
+    automatedOverrides,
   }, actor);
   return {
     resolved: outcome.resolved, replayed: outcome.replayed, dropped: outcome.dropped,
-    merges, edges,
+    merges, automatedOverrides, automated, edges,
   };
 }

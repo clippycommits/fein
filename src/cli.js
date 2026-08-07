@@ -48,6 +48,8 @@ const USAGE = `fein — open-source agentic data layer for investment teams
   fein merges                  list merges (they survive reresolve)
   fein automated [--list]      re-detect automated senders (robots, notification services);
                                     --list shows what is currently flagged and why
+  fein automated mark <entity>   override: definitely a robot — survives re-detection
+  fein automated unmark <entity> override: definitely a person — never auto-flagged again
   fein radar [person]          relationships needing attention, by their own cadence
                                     (a person = their radar; no arg = the whole graph)
   fein review                  list pending resolution reviews
@@ -300,8 +302,13 @@ async function main() {
       break;
     }
     case "automated": {
-      const { detectAutomated } = await import("./resolve/automated.js");
-      if (args.includes("--list")) {
+      const { detectAutomated, setAutomated } = await import("./resolve/automated.js");
+      const sub = args[0];
+      if (sub === "mark" || sub === "unmark") {
+        if (!args[1]) throw new Error(`usage: fein automated ${sub} <entity>`);
+        const e = await refOrDie(db, args.slice(1).join(" "));
+        out(await setAutomated(db, e.id, sub === "mark", { actor }));
+      } else if (args.includes("--list")) {
         const { rows } = await db.query(
           `select canonical_name, automated_reason, automated_override from entities
            where automated order by canonical_name`

@@ -1,3 +1,5 @@
+import { audit } from "../settings.js";
+
 /**
  * Automated-sender detection.
  *
@@ -129,11 +131,72 @@ export async function detectAutomated(db) {
 }
 
 /** Explicit human override: true = definitely automated, false = definitely a person. */
-export async function setAutomated(db, entityId, automated) {
+export async function setAutomated(db, entityId, automated, { actor = "local" } = {}) {
+  const { rows } = await db.query(
+    `select canonical_name from entities where id = $1 and merged_into is null`, [entityId]
+  );
+  if (!rows.length) throw new Error(`no live entity ${entityId}`);
   await db.query(
     `update entities set automated = $2, automated_override = $2,
             automated_reason = $3 where id = $1`,
     [entityId, automated, automated ? "marked automated by a person" : "confirmed human by a person"]
   );
-  return { entityId, automated };
+  await audit(db, "automated_override",
+    { entity: entityId, name: rows[0].canonical_name, automated }, actor);
+  return { entityId, name: rows[0].canonical_name, automated };
+}
+
+/**
+ * Overrides are human input, not derived state: like review decisions and
+ * manual merges, they are snapshotted by stable identity before a rebuild
+ * discards entity ids, and replayed against the rebuilt world afterwards.
+ */
+export async function snapshotAutomatedOverrides(db) {
+  const { rows } = await db.query(
+    `select canonical_name, emails, aliases, automated_override from entities
+     where automated_override is not null and merged_into is null`
+  );
+  const arr = (v) => (typeof v === "string" ? JSON.parse(v) : v ?? []);
+  return rows.map((r) => ({
+    name: r.canonical_name,
+    emails: arr(r.emails),
+    aliases: arr(r.aliases),
+    automated: r.automated_override,
+  }));
+}
+
+/** Re-apply snapshotted overrides, matching on email/alias overlap — those
+ * arrays only grow, so they contain every earlier form (replayMerges' rule). */
+export async function replayAutomatedOverrides(db, snapshot, { actor } = {}) {
+  let replayed = 0;
+  const dropped = [];
+  for (const o of snapshot) {
+    const conds = [];
+    const params = [];
+    if (o.emails.length) {
+      conds.push(`exists (select 1 from jsonb_array_elements_text(emails) x where x in (${
+        o.emails.map((_, i) => `$${params.length + i + 1}`).join(", ")}))`);
+      params.push(...o.emails);
+    }
+    if (o.aliases.length) {
+      conds.push(`exists (select 1 from jsonb_array_elements_text(aliases) y where y in (${
+        o.aliases.map((_, i) => `$${params.length + i + 1}`).join(", ")}))`);
+      params.push(...o.aliases);
+    }
+    let matched = null;
+    if (conds.length) {
+      const { rows } = await db.query(
+        `select id from entities where merged_into is null and (${conds.join(" or ")}) limit 1`,
+        params
+      );
+      matched = rows[0]?.id ?? null;
+    }
+    if (matched) {
+      await setAutomated(db, matched, o.automated, { actor });
+      replayed++;
+    } else {
+      dropped.push({ name: o.name, reason: "identity not found after rebuild" });
+    }
+  }
+  return { replayed, dropped };
 }

@@ -24,7 +24,7 @@ const check = (cond, msg, extra) => {
   }
 };
 
-console.log("[1/4] address tiers");
+console.log("[1/5] address tiers");
 check(classifyAddress("no-reply@apple.com").automated, "no-reply is a machine on sight");
 check(classifyAddress("mailer-daemon@x.com").automated, "mailer-daemon is a machine on sight");
 check(classifyAddress("notifications@github.com").automated, "notifications@ is a machine on sight");
@@ -67,7 +67,7 @@ const flaggedNames = new Set(res.examples.map((e) => e.name));
 const { rows: all } = await db.query(`select canonical_name, automated, automated_reason from entities where kind = 'person'`);
 const byName = Object.fromEntries(all.map((r) => [r.canonical_name, r]));
 
-console.log("[2/4] behaviour decides the ambiguous cases");
+console.log("[2/5] behaviour decides the ambiguous cases");
 check(byName["Apple"]?.automated, "the no-reply robot is flagged", byName["Apple"]);
 check(byName["Hostinger"]?.automated, "a role address that only broadcasts is flagged", byName["Hostinger"]);
 check(/broadcasting only/.test(byName["Hostinger"]?.automated_reason ?? ""),
@@ -77,20 +77,29 @@ check(!byName["Will Hartley"]?.automated,
 check(!byName["Maya Chen"]?.automated, "an ordinary correspondent stays human", byName["Maya Chen"]);
 check(!byName["Alex Rivera"]?.automated, "the account owner stays human", byName["Alex Rivera"]);
 
-console.log("[3/4] flags are advisory, never destructive");
+console.log("[3/5] flags are advisory, never destructive");
 {
   const before = (await db.query(`select count(*) as n from documents`)).rows[0].n;
   const appleId = (await searchEntities(db, "Apple"))[0].id;
-  await setAutomated(db, appleId, false); // a human says: actually, keep it
+  const set = await setAutomated(db, appleId, false); // a human says: actually, keep it
+  check(set.name === "Apple", "the setter returns what it changed", set);
   await detectAutomated(db);              // re-detection must not undo that
   const after = await db.query(`select automated from entities where id = $1`, [appleId]);
   check(after.rows[0].automated === false, "an explicit human override survives re-detection", after.rows[0]);
   check((await db.query(`select count(*) as n from documents`)).rows[0].n === before,
     "nothing was deleted");
+  let threw = null;
+  try { await setAutomated(db, "ent_nope", true); } catch (e) { threw = e.message; }
+  check(/no live entity/.test(threw ?? ""), "a bogus id is refused, not a silent no-op", threw);
+  const { rows: audits } = await db.query(
+    `select detail from audit_log where action = 'automated_override'`);
+  const details = audits.map((r) => (typeof r.detail === "string" ? JSON.parse(r.detail) : r.detail));
+  check(details.some((d) => d.entity === appleId && d.automated === false),
+    "the override leaves an audit trail", details);
   await setAutomated(db, appleId, true); // put it back
 }
 
-console.log("[4/4] radar ignores robots by default");
+console.log("[4/5] radar ignores robots by default");
 {
   const meId = (await searchEntities(db, "Alex Rivera"))[0].id;
   const names = async (opts) => {
@@ -103,6 +112,25 @@ console.log("[4/4] radar ignores robots by default");
   check(human.includes("Maya Chen") && human.includes("Will Hartley"), "people are still on it", human);
   const withBots = await names({ includeAutomated: true });
   check(withBots.includes("Apple"), "…but they're one flag away when you want them", withBots);
+}
+
+console.log("[5/5] overrides survive a full rebuild");
+{
+  const { reresolveAll } = await import(join(root, "src/resolve/reresolve.js"));
+  const appleId = (await searchEntities(db, "Apple"))[0].id;
+  await setAutomated(db, appleId, false); // a human says: Apple is a person
+  const rr = await reresolveAll(db);
+  check(rr.automatedOverrides.replayed === 1 && rr.automatedOverrides.dropped.length === 0,
+    "reresolve reports the replayed override", rr.automatedOverrides);
+  const rebuiltId = (await searchEntities(db, "Apple"))[0].id;
+  const { rows } = await db.query(
+    `select automated, automated_override from entities where id = $1`, [rebuiltId]);
+  check(rows[0].automated_override === false && rows[0].automated === false,
+    "the unmark survives: still human, never auto-flagged again", rows[0]);
+  const { rows: host } = await db.query(
+    `select automated from entities where canonical_name = 'Hostinger'`);
+  check(host[0].automated === true,
+    "un-overridden robots are re-flagged by the rebuild itself", host[0]);
 }
 
 await db.close();

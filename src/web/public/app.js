@@ -318,9 +318,16 @@ async function showBrief(id) {
   $("#brief").innerHTML =
     `<h2>${esc(e.canonical_name)}</h2>
      <div class="sub">${esc([...e.orgs, ...e.emails].join(" · "))}</div>
+     ${e.automated
+       ? `<p class="hint">🤖 Automated sender — hidden from the radar${
+           e.automated_reason ? `: ${esc(e.automated_reason)}` : ""}${
+           e.automated_override != null ? " · set by a person" : ""}</p>`
+       : ""}
      <div class="brief-actions">
        <button class="small" id="copy-brief">Copy brief as Markdown</button>
        <button class="small" id="merge-into">Merge a duplicate…</button>
+       <button class="small" id="toggle-automated">${
+         e.automated ? "Not a robot — mark human" : "Mark as automated sender"}</button>
      </div>
      <h3 class="section-title">Strongest connections</h3>` +
     (b.connections.length ? b.connections.map((c) =>
@@ -351,6 +358,17 @@ async function showBrief(id) {
   }
   $("#copy-brief").addEventListener("click", copyBrief);
   $("#merge-into").addEventListener("click", () => startMerge(e));
+  $("#toggle-automated").addEventListener("click", async () => {
+    await api(`/api/entity/${encodeURIComponent(e.id)}/automated${asParam()}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ automated: !e.automated }),
+    });
+    toast(e.automated
+      ? `${e.canonical_name} confirmed human`
+      : `${e.canonical_name} marked as automated sender`, "good");
+    await showBrief(e.id);
+  });
   document.querySelector('[data-tab="explore"]').click();
 }
 

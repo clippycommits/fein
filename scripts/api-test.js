@@ -126,6 +126,24 @@ console.log("[3/10] read endpoints");
   check(noFocus.status === 404, "unknown focus entity 404s", noFocus.status);
   const brief = await get(`/api/entity/${search.body[0].id}`);
   check(brief.body.entity && brief.body.connections.length > 0, "entity brief has connections");
+  // Human override on the automated flag — the dashboard toggle's endpoint.
+  const mark = await send("POST", `/api/entity/${search.body[0].id}/automated`, { automated: true });
+  check(mark.status === 200 && mark.body.automated === true && mark.body.name === "Maya Chen",
+    "marking an entity automated returns the decision", mark.body);
+  const marked = await get(`/api/entity/${search.body[0].id}`);
+  check(marked.body.entity.automated === true && marked.body.entity.automated_override === true,
+    "the brief reflects the override",
+    { automated: marked.body.entity.automated, override: marked.body.entity.automated_override });
+  const badFlag = await send("POST", `/api/entity/${search.body[0].id}/automated`, { automated: "yes" });
+  check(badFlag.status === 400, "a non-boolean flag 400s", badFlag.status);
+  const noEnt = await send("POST", "/api/entity/ent_nope/automated", { automated: true });
+  check(noEnt.status === 404, "marking an unknown entity 404s", noEnt.status);
+  const unmark = await send("POST", `/api/entity/${search.body[0].id}/automated`, { automated: false });
+  check(unmark.status === 200 && unmark.body.automated === false, "unmarking works the same way", unmark.body);
+  const unmarked = await get(`/api/entity/${search.body[0].id}`);
+  check(unmarked.body.entity.automated === false && unmarked.body.entity.automated_override === false,
+    "unmark is a durable human decision (confirmed human), not a reset",
+    { automated: unmarked.body.entity.automated, override: unmarked.body.entity.automated_override });
   const dana = (await get("/api/search?q=dana")).body[0];
   const priya = (await get("/api/search?q=priya")).body[0];
   const path = await get(`/api/path?from=${dana.id}&to=${priya.id}`);
@@ -271,9 +289,15 @@ console.log("[8/10] upload + reresolve");
   check(rr.status === 200, "reresolve succeeds", rr.status);
   check(rr.body.replayed === 1 && (rr.body.dropped ?? []).length === 0,
     "the accepted review decision is replayed, not lost", { replayed: rr.body.replayed, dropped: rr.body.dropped });
+  check(rr.body.automatedOverrides?.replayed === 1 && rr.body.automatedOverrides.dropped.length === 0,
+    "the automated override survives the rebuild too", rr.body.automatedOverrides);
   const maya = (await get("/api/search?q=maya")).body[0];
   check(maya.emails.includes("mchen@gmail.com"),
     "replayed accept restores the merged gmail alias", maya.emails);
+  const mayaBrief = await get(`/api/entity/${maya.id}`);
+  check(mayaBrief.body.entity.automated_override === false && mayaBrief.body.entity.automated === false,
+    "the replayed override still says confirmed-human", {
+      automated: mayaBrief.body.entity.automated, override: mayaBrief.body.entity.automated_override });
   const post = await get("/api/reviews");
   check(post.body.length === 0, "no re-asked question after replay", post.body.length);
 }
@@ -344,6 +368,14 @@ console.log("[9/10] privacy layers: one-click scene, private upload, scoping");
   const tomFocus = await get(`/api/graph?as=${tom.id}&focus=${zara.id}`);
   check(tomFocus.status === 200 && tomFocus.body.nodes.some((n) => n.name === "Zara Quist"),
     "her owner can focus the graph on her", tomFocus.status);
+
+  // The automated toggle honors the same gate: a guessed private id must not
+  // become a write-side probe around the "hide" policy.
+  const zMark = await send("POST", `/api/entity/${zara.id}/automated`, { automated: true });
+  check(zMark.status === 404, "a private-only entity cannot be marked from the shared view", zMark.status);
+  const zOwn = await send("POST", `/api/entity/${zara.id}/automated?as=${tom.id}`, { automated: true });
+  check(zOwn.status === 200 && zOwn.body.automated === true, "her owner can mark her", zOwn.body);
+  await send("POST", `/api/entity/${zara.id}/automated?as=${tom.id}`, { automated: false });
 
   // Stats are viewer-scoped like every other read: Tom's private upload and
   // its private-only person count for Tom alone.

@@ -71,6 +71,15 @@ export async function mergeEntities(db, keepId, loseId, { actor = "local" } = {}
       `update entities set canonical_name = $2, emails = $3, orgs = $4, aliases = $5 where id = $1`,
       [keepId, canonical, JSON.stringify(emails), JSON.stringify(orgs), JSON.stringify(aliases)]
     );
+    // A human's robot/human verdict travels with the merge: left on the
+    // tombstone it would be invisible, silently losing human input.
+    if (lose.automated_override != null && keep.automated_override == null) {
+      await tx.query(
+        `update entities set automated = $2, automated_override = $2, automated_reason = $3
+         where id = $1`,
+        [keepId, lose.automated_override, lose.automated_reason]
+      );
+    }
     await tx.query(
       `insert into entity_evidence (entity_id, owner, kind, value)
        select $1::text, owner, kind, value from entity_evidence where entity_id = $2
