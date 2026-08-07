@@ -10,6 +10,42 @@
 
 const KEY_PREFIX = "connector:";
 
+// Adding a CRM connector = one entry here (+ a card in app.js). Each module
+// exposes verify(key) -> {workspace} and fetch({key, includeNotes}) -> docs.
+// Everything registered here is a true API re-pull with idempotent ingest, so
+// the scheduler may run it unattended. gog / Granola / Google stay CLI-only:
+// they depend on local binaries, OAuth credential files, or OS cache paths the
+// web server generally lacks — registering them needs a no-op verify plus a
+// "binary/cache present" configured-check first.
+export const CONNECTOR_PROVIDERS = {
+  attio: {
+    label: "Attio",
+    envVar: "ATTIO_API_KEY",
+    verify: async (key) => (await import("./ingest/attio.js")).verifyAttioKey(key),
+    fetch: async ({ key, includeNotes }) => (await import("./ingest/attio.js")).fetchAttio({ key, includeNotes }),
+  },
+  affinity: {
+    label: "Affinity",
+    envVar: "AFFINITY_API_KEY",
+    verify: async (key) => (await import("./ingest/affinity.js")).verifyAffinityKey(key),
+    fetch: async ({ key, includeNotes }) => (await import("./ingest/affinity.js")).fetchAffinity({ key, includeNotes }),
+  },
+};
+
+/**
+ * Per-connector auto-sync interval, minutes. 0 = off (the default); anything
+ * else must land between 5 minutes and 7 days — the scheduler ticks once a
+ * minute, so a 5-minute floor keeps the granularity exact.
+ */
+export function clampSyncInterval(v) {
+  const n = Number(v);
+  if (n === 0) return 0;
+  if (!Number.isFinite(n) || n < 5 || n > 10080) {
+    throw new Error("syncIntervalMinutes must be 0 (off) or a number of minutes between 5 and 10080");
+  }
+  return n;
+}
+
 export async function getConnector(db, name) {
   const { rows } = await db.query(`select value from settings where key = $1`, [KEY_PREFIX + name]);
   if (!rows.length) return null;

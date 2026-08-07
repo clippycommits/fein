@@ -14,7 +14,8 @@ import { rebuildEdges, rebuildEdgesFor, strengthOf } from "../graph/edges.js";
 import { findWarmPath, findIntroducers } from "../graph/paths.js";
 import { searchEntities, entityBrief, counts, getEntity, entityVisible, nameSteps } from "../graph/queries.js";
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
-import { putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
+import { CONNECTOR_PROVIDERS, clampSyncInterval, putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
+import { runConnectorSync, syncingProvider, startScheduler, connectorSyncStatus } from "../sync.js";
 import { listMembers, addMember, removeMember, resolveMember, visibleLayers } from "../members.js";
 import { extractPending, extractionStats } from "../extract/pipeline.js";
 import { extractConfig, isAuthError } from "../extract/client.js";
@@ -119,24 +120,8 @@ function handleAuth(req, res, url) {
   return true;
 }
 let extracting = false;        // single-flight: extraction holds the API budget, never run two
-let syncingConnector = null;   // provider name — one sync at a time, they share resolve + edge rebuilds
-
-// Adding a CRM connector = one entry here (+ a card in app.js). Each module
-// exposes verify(key) -> {workspace} and fetch({key, includeNotes}) -> docs.
-const CONNECTOR_PROVIDERS = {
-  attio: {
-    label: "Attio",
-    envVar: "ATTIO_API_KEY",
-    verify: async (key) => (await import("../ingest/attio.js")).verifyAttioKey(key),
-    fetch: async ({ key, includeNotes }) => (await import("../ingest/attio.js")).fetchAttio({ key, includeNotes }),
-  },
-  affinity: {
-    label: "Affinity",
-    envVar: "AFFINITY_API_KEY",
-    verify: async (key) => (await import("../ingest/affinity.js")).verifyAffinityKey(key),
-    fetch: async ({ key, includeNotes }) => (await import("../ingest/affinity.js")).fetchAffinity({ key, includeNotes }),
-  },
-};
+// The connector sync single-flight lives in ../sync.js (syncingProvider),
+// shared with the scheduler; the provider registry is in ../connectors.js.
 
 export async function startWebServer(port = 4321) {
   const db = await getDb();
@@ -180,12 +165,19 @@ export async function startWebServer(port = 4321) {
   await new Promise((resolve) => server.listen(port, host, resolve));
   console.log(`fein ${VERSION} — http://${loopback ? "localhost" : host}:${port}${AUTH_TOKEN ? " (token auth on)" : ""}`);
 
+  // Scheduled connector syncs share this process and database. Ticks are
+  // no-ops until a connector sets syncIntervalMinutes > 0.
+  const stopScheduler = startScheduler(db);
+
   // A single bad request must never take the server down.
   process.on("unhandledRejection", (err) => console.error("unhandled rejection:", err));
   process.on("uncaughtException", (err) => console.error("uncaught exception:", err));
 
   const shutdown = async () => {
     console.log("shutting down…");
+    // Stop NEW scheduled runs; never await an in-flight one (a hung provider
+    // API would block shutdown — ingest transactions keep the DB consistent).
+    stopScheduler();
     server.close();
     try { await db.close(); } catch {}
     process.exit(0);
@@ -488,7 +480,28 @@ async function route(db, req, res, url, port) {
   if (req.method === "POST" && provider && !connWrite[2]) {
     const body = parseJson(await readBody(req));
     const apiKey = String(body.apiKey ?? "").trim();
-    if (!apiKey) throw withStatus(new Error(`paste an ${label} API key`), 400);
+    let interval;
+    if (body.syncIntervalMinutes !== undefined) {
+      try {
+        interval = clampSyncInterval(body.syncIntervalMinutes);
+      } catch (err) {
+        throw withStatus(err, 400);
+      }
+    }
+    if (!apiKey) {
+      // No key in the body but one already resolves (stored or env): a
+      // config-only patch — the interval knob must not demand re-pasting a
+      // key, and an env key cannot be re-pasted at all.
+      const { key } = await resolveConnectorKey(db, provider, envVar);
+      if (!key) throw withStatus(new Error(`paste an ${label} API key`), 400);
+      const patch = {
+        ...(interval !== undefined ? { syncIntervalMinutes: interval } : {}),
+        ...(body.includeNotes !== undefined ? { includeNotes: body.includeNotes !== false } : {}),
+      };
+      await putConnector(db, provider, patch);
+      await audit(db, "connector_config", { connector: provider, ...patch }, await actorOf(db, url));
+      return json(res, await connectorStatus(db, provider));
+    }
     let info;
     try {
       info = await CONNECTOR_PROVIDERS[provider].verify(apiKey);
@@ -498,6 +511,7 @@ async function route(db, req, res, url, port) {
     await putConnector(db, provider, {
       apiKey,
       includeNotes: body.includeNotes !== false,
+      ...(interval !== undefined ? { syncIntervalMinutes: interval } : {}),
       workspace: info.workspace,
       connectedAt: new Date().toISOString(),
     });
@@ -507,25 +521,18 @@ async function route(db, req, res, url, port) {
   }
 
   if (req.method === "POST" && provider && connWrite[2]) {
-    if (syncingConnector) return json(res, { error: `a ${CONNECTOR_PROVIDERS[syncingConnector].label} sync is already running` }, 409);
-    syncingConnector = provider; // claim BEFORE the first await — the check-and-set must be atomic
+    const member = await memberOf(db, url);
+    let result;
     try {
-      const member = await memberOf(db, url);
-      const { key, config } = await resolveConnectorKey(db, provider, envVar);
-      if (!key) throw withStatus(new Error(`connect an ${label} API key first`), 400);
-      const docs = await CONNECTOR_PROVIDERS[provider].fetch({ key, includeNotes: config.includeNotes !== false });
-      const ingested = await ingestDocs(db, docs);
-      const resolved = await resolveMentions(db);
-      const edges = await rebuildEdges(db);
-      await putConnector(db, provider, { lastSyncAt: new Date().toISOString(), lastDocCount: ingested.docCount });
-      await audit(db, "ingest", { file: `${provider} workspace`, ...ingested }, member?.name ?? "local");
-      return json(res, { ingested, resolved, edges, stats: await counts(db, { viewer: member?.id ?? null }),
-        ...(await connectorStatus(db, provider)) });
+      result = await runConnectorSync(db, provider, { actor: member?.name ?? "local", trigger: "manual" });
     } catch (err) {
-      throw withStatus(new Error(err.message), 400);
-    } finally {
-      syncingConnector = null;
+      // Guard statuses pass through (400 not-configured, 409 busy); a failed
+      // workspace pull stays the caller's 400 — runConnectorSync already
+      // persisted and audited the failure.
+      throw withStatus(err, err.statusCode ?? 400);
     }
+    return json(res, { ...result, stats: await counts(db, { viewer: member?.id ?? null }),
+      ...(await connectorStatus(db, provider)) });
   }
 
   if (req.method === "DELETE" && provider) {
@@ -559,20 +566,11 @@ const actorOf = async (db, url) => (await memberOf(db, url))?.name ?? "local";
 
 /** Presence and a masked hint only — the stored key never leaves the server. */
 async function connectorStatus(db, provider) {
-  const { label, envVar } = CONNECTOR_PROVIDERS[provider];
-  const { key, origin, config } = await resolveConnectorKey(db, provider, envVar);
+  const { key } = await resolveConnectorKey(db, provider, CONNECTOR_PROVIDERS[provider].envVar);
   return {
-    provider,
-    label,
-    envVar,
-    connected: Boolean(key),
-    origin,                       // "stored" (pasted here) | "env" (the provider's env var) | null
+    ...(await connectorSyncStatus(db, provider)),
     keyHint: key ? maskKey(key) : null,
-    workspace: config.workspace ?? null,
-    includeNotes: config.includeNotes !== false,
-    lastSyncAt: config.lastSyncAt ?? null,
-    lastDocCount: config.lastDocCount ?? null,
-    syncing: syncingConnector === provider,
+    syncing: syncingProvider() === provider,
   };
 }
 

@@ -154,7 +154,8 @@ function clampNumber(v, name, min = NUMERIC_LIMITS.min, max = NUMERIC_LIMITS.max
 
 /** Append-only audit trail: who did what to the graph, when. The actor is a
  * member's display NAME (never an email), "agent"/"agent:<name>" for MCP
- * callers, or "local" — names stay readable after the member row is removed. */
+ * callers, "scheduler" for scheduled connector syncs, or "local" — names stay
+ * readable after the member row is removed. */
 export async function audit(db, action, detail = {}, actor = "local") {
   await db.query(
     `insert into audit_log (id, actor, action, detail) values ($1, $2, $3, $4)`,

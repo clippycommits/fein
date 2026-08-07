@@ -28,6 +28,11 @@ const USAGE = `fein — open-source agentic data layer for investment teams
   fein ingest-affinity         pull people, organizations + notes from an Affinity CRM
                                     (needs AFFINITY_API_KEY; pass --no-notes to skip notes)
   fein sync [--extract]        resolve + rebuild edges (add --extract to mine bodies first)
+  fein sync attio|affinity     pull the workspace, then resolve + rebuild edges — the
+                                    status-recording variant of the raw ingest-attio/-affinity pulls
+  fein sync --status           per-connector sync status: schedule, last run, next due
+                                    (embedded installs: while the web server runs, its Data tab
+                                     is the live status surface — the database is single-process)
   fein extract [--limit N]     LLM mention extraction over unprocessed document bodies
                                     (Anthropic API: set ANTHROPIC_API_KEY or use \`ant auth login\`;
                                      FEIN_EXTRACT_MODEL overrides the model, default claude-opus-5)
@@ -201,6 +206,23 @@ async function main() {
       break;
     }
     case "sync": {
+      const { CONNECTOR_PROVIDERS } = await import("./connectors.js");
+      if (args.includes("--status")) {
+        const { connectorSyncStatus } = await import("./sync.js");
+        const status = [];
+        for (const provider of Object.keys(CONNECTOR_PROVIDERS)) {
+          status.push(await connectorSyncStatus(db, provider));
+        }
+        out(status);
+        break;
+      }
+      const provider = args.find((a) => Object.hasOwn(CONNECTOR_PROVIDERS, a));
+      if (provider) {
+        const { runConnectorSync } = await import("./sync.js");
+        const r = await runConnectorSync(db, provider, { actor, trigger: "manual" });
+        out({ ...r, stats: await counts(db, { viewer }) });
+        break;
+      }
       let extract = null;
       if (args.includes("--extract")) {
         const { extractPending } = await import("./extract/pipeline.js");

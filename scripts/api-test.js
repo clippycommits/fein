@@ -19,12 +19,18 @@ const attioJson = (data) => ({ ok: true, status: 200, json: async () => ({ data 
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
   if (!u.startsWith("https://api.attio.com")) return realFetch(url, opts);
-  if (!(opts.headers?.authorization ?? "").includes("good-key")) {
+  const auth = opts.headers?.authorization ?? "";
+  // "flaky-key" verifies fine but 500s on record queries — a workspace whose
+  // pulls fail after a successful connect.
+  if (!/good-key|flaky-key/.test(auth)) {
     return { ok: false, status: 401, text: async () => "invalid token", json: async () => ({}) };
   }
   const b = opts.body ? JSON.parse(opts.body) : {};
   if (u.endsWith("/self")) {
     return { ok: true, status: 200, json: async () => ({ data: { workspace_name: "Test Workspace" } }), text: async () => "" };
+  }
+  if (auth.includes("flaky-key")) {
+    return { ok: false, status: 500, text: async () => "workspace exploded", json: async () => ({}) };
   }
   if (u.includes("companies")) {
     return b.offset ? attioJson([]) : attioJson([{ id: { record_id: "co-1" }, values: { name: [{ value: "Nordwind Ventures" }] } }]);
@@ -282,6 +288,9 @@ console.log("[6/10] hostile input");
 console.log("[7/10] attio connector (mocked workspace)");
 {
   check((await get("/api/connectors/attio")).body.connected === false, "starts disconnected");
+  const probe = await send("POST", "/api/connectors/attio", {});
+  check(probe.status === 400 && /paste an Attio API key/.test(probe.body.error),
+    "a keyless POST while disconnected keeps the exact 400", probe.body);
   const bad = await send("POST", "/api/connectors/attio", { apiKey: "wrong" });
   check(bad.status === 400 && /rejected/i.test(bad.body.error), "bad key rejected with a useful message", bad.body);
   check((await get("/api/connectors/attio")).body.connected === false, "a failed connect stores nothing");
@@ -295,6 +304,44 @@ console.log("[7/10] attio connector (mocked workspace)");
   check(sync.status === 200 && sync.body.ingested.docCount === 3, "sync ingests people, companies and notes", sync.body.ingested);
   const maya = (await get("/api/search?q=maya")).body[0];
   check(maya?.emails.includes("maya@nordwind.vc"), "Attio contact merges with the existing person", maya?.emails);
+
+  const st1 = (await get("/api/connectors/attio")).body;
+  check(st1.lastRun?.ok === true && st1.lastRun.trigger === "manual" && st1.lastRun.docCount === 3,
+    "a manual sync records its run", st1.lastRun);
+
+  // Config-only patch: once a key resolves, the knobs need no re-paste.
+  const patch = await send("POST", "/api/connectors/attio", { syncIntervalMinutes: 60 });
+  check(patch.status === 200 && patch.body.syncIntervalMinutes === 60,
+    "a keyless POST patches config once connected", patch.body);
+  const st2 = (await get("/api/connectors/attio")).body;
+  check(st2.syncIntervalMinutes === 60 && st2.nextSyncAt !== null,
+    "status echoes the interval and a next due time",
+    { interval: st2.syncIntervalMinutes, next: st2.nextSyncAt });
+  const badInterval = await send("POST", "/api/connectors/attio", { syncIntervalMinutes: 3 });
+  check(badInterval.status === 400, "an interval under the 5-minute floor 400s", badInterval.body);
+  // Disarm, so the server's real 60s scheduler can never fire mid-suite.
+  const off = await send("POST", "/api/connectors/attio", { syncIntervalMinutes: 0 });
+  check(off.status === 200 && off.body.syncIntervalMinutes === 0 && off.body.nextSyncAt === null,
+    "interval 0 disarms auto-sync", off.body);
+  const cfgRow = (await get("/api/audit")).body.find((a) => a.action === "connector_config");
+  check(cfgRow?.actor === "local" && cfgRow.detail?.connector === "attio",
+    "the config patch is audited as local", cfgRow);
+
+  // A failed pull persists its outcome; success bookkeeping stays intact.
+  const flaky = await send("POST", "/api/connectors/attio", { apiKey: "flaky-key-9999xyzw" });
+  check(flaky.status === 200 && flaky.body.connected, "a key can be swapped in place", flaky.body);
+  const failed = await send("POST", "/api/connectors/attio/sync");
+  check(failed.status === 400, "a failed workspace pull is the caller's 400", failed);
+  const st3 = (await get("/api/connectors/attio")).body;
+  check(st3.lastRun?.ok === false && /500/.test(st3.lastRun.error ?? ""),
+    "the failure is persisted in lastRun", st3.lastRun);
+  check(st3.lastSyncAt === st1.lastSyncAt && st3.lastDocCount === 3 && st3.consecutiveFailures === 1,
+    "lastSyncAt/lastDocCount still mean the last success",
+    { was: st1.lastSyncAt, now: st3.lastSyncAt });
+  const failRows = (await get("/api/audit")).body;
+  check(failRows.some((a) => a.action === "sync_failed" && a.detail?.connector === "attio"),
+    "sync_failed reaches the audit trail");
+  check(!JSON.stringify(failRows).includes("flaky-key"), "the flaky key never reaches the audit log");
 
   const audit = await get("/api/audit");
   check(!JSON.stringify(audit.body).includes("good-key"), "the key never reaches the audit log");

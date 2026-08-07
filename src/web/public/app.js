@@ -656,6 +656,25 @@ const CONNECTOR_HELP = {
      participants. Generate one in Affinity under <em>Settings → API</em>.`,
 };
 
+const ago = (iso) => {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+};
+const countdown = (iso) => {
+  const s = (new Date(iso).getTime() - Date.now()) / 1000;
+  if (s <= 90) return "soon";
+  if (s < 3600) return `in ${Math.round(s / 60)} min`;
+  if (s < 86400) return `in ${Math.round(s / 3600)} h`;
+  return `in ${Math.round(s / 86400)} d`;
+};
+
+// Presets stay hourly-or-slower biased: every sync is a full workspace pull
+// plus an edge rebuild.
+const SYNC_INTERVALS = [[0, "Off"], [30, "Every 30 min"], [60, "Hourly"], [360, "Every 6 h"], [1440, "Daily"]];
+
 async function renderConnector(provider) {
   const panel = $(`#${provider}-panel`);
   let s;
@@ -682,22 +701,46 @@ async function renderConnector(provider) {
   }
 
   const where = s.origin === "env" ? `from ${s.envVar}` : `key ${s.keyHint}`;
+  const lastAt = s.lastRun?.at ?? s.lastSyncAt;
+  const interval = s.syncIntervalMinutes ?? 0;
+  // A non-preset interval (set via the API) still needs a selected option.
+  const intervals = SYNC_INTERVALS.some(([v]) => v === interval)
+    ? SYNC_INTERVALS : [...SYNC_INTERVALS, [interval, `Every ${interval} min`]];
   panel.innerHTML =
     `<div class="connector">
        <div class="status"><span class="dot on"></span>
          <strong>Connected</strong>${s.workspace ? ` · ${esc(s.workspace)}` : ""}</div>
        <div class="meta">${esc(where)}${s.includeNotes ? " · notes included" : " · notes skipped"}<br>
-         ${s.lastSyncAt
-            ? `last sync ${esc(String(s.lastSyncAt).slice(0, 16).replace("T", " "))}${
-                s.lastDocCount != null ? ` · ${s.lastDocCount} records` : ""}`
-            : "not synced yet"}</div>
+         ${lastAt
+            ? `last synced ${esc(ago(lastAt))}${s.lastDocCount != null ? ` — ${s.lastDocCount} documents` : ""}`
+            : "not synced yet"}${
+         s.lastRun && !s.lastRun.ok
+            ? `<br><span class="err">last attempt failed: ${esc(s.lastRun.error ?? "")}</span>` : ""}${
+         s.nextSyncAt
+            ? `<br>auto-sync every ${interval}m · next ${esc(countdown(s.nextSyncAt))}` : ""}</div>
        <div class="row">
          <button id="${provider}-sync" class="primary">${s.lastSyncAt ? "Sync now" : "Sync workspace"}</button>
+         <label class="check">Auto-sync
+           <select id="${provider}-interval">${intervals.map(([v, l]) =>
+             `<option value="${v}"${v === interval ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>
+         </label>
          ${s.origin === "stored" ? `<button id="${provider}-disconnect" class="small">Disconnect</button>` : ""}
        </div>
        <div id="${provider}-result"></div>
      </div>`;
   $(`#${provider}-sync`).addEventListener("click", () => syncConnector(provider));
+  $(`#${provider}-interval`).addEventListener("change", async (ev) => {
+    const minutes = Number(ev.target.value);
+    try {
+      await api(`/api/connectors/${provider}${asParam()}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ syncIntervalMinutes: minutes }),
+      });
+      toast(minutes ? `${label} auto-sync every ${minutes} min` : `${label} auto-sync off`, "good");
+    } catch { /* api() already toasted */ }
+    await renderConnector(provider);
+  });
   $(`#${provider}-disconnect`)?.addEventListener("click", () => disconnectConnector(provider));
 }
 
