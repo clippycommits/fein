@@ -28,6 +28,20 @@ graph stops doing O(everything) work on every click.
   review floor 0.70), radar overdue/cold ratios and dormancy window, the
   private-hop routing prior, and the participant cap are per-firm knobs
   now, editable from the dashboard.
+- **Scheduled connector sync**: each connector card gets an auto-sync
+  interval (off by default); the dashboard server re-pulls on schedule with
+  failure backoff, records per-connector last-run status ("last synced 12
+  minutes ago — 12 documents"), audits runs as actor `scheduler`, and
+  shares one single-flight pipeline claim with extraction and manual syncs
+  so runs never interleave. CLI: `fein sync <provider>` and
+  `fein sync --status`.
+- **Extraction budget, progress, and cancel**: "Extract" now runs one
+  settings-sized batch (`extraction.batchSize`, default 25) instead of the
+  whole corpus, shows an upfront approximate token/cost estimate
+  (`GET /api/extract/estimate`), reports live progress while running, and
+  can be cancelled between documents — partial results are kept, resolved,
+  and audited with who cancelled. Explicit `limit` and CLI `--limit` still
+  override the batch size.
 
 ### Changed
 - **One viewer resolver**: every `?as=` (API reads, uploads, `/mcp`, stats)
@@ -52,9 +66,10 @@ graph stops doing O(everything) work on every click.
   multi-row statements now.
 
 ### Fixed
-24 findings from a four-lens adversarial review (privacy, correctness,
-integration, test honesty) of this release's own changes — the most
-serious, all pinned by tests:
+33 findings across two adversarial review passes over this release's own
+changes (privacy, correctness, integration, and test-honesty lenses; every
+finding independently verified before fixing) — the most serious, all
+pinned by tests:
 - A manual merge could lift a private-only entity's display name into the
   shared canonical name, and audit rows for overrides/merges echoed private
   names into the shared audit trail (ids only now).
@@ -70,6 +85,10 @@ serious, all pinned by tests:
   full rebuild there).
 - The dashboard's Explore search and merge picker never sent `?as=`, so
   private-layer people were unfindable exactly for their owner.
+- Scheduled syncs could interleave with a running extraction (duplicate
+  entities from concurrent resolution) — one shared pipeline claim now;
+  re-pasting a fresh API key resets a connector's failure backoff; the
+  extraction estimate accounts for stale documents a run will re-extract.
 
 ### Upgrading
 Existing databases carry evidence absorbed under the old policy in their

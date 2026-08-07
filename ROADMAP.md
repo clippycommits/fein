@@ -6,14 +6,11 @@ need. The 2026-08 hardening pass (v0.5.0) shipped the data-layer items:
 audit actors, the one viewer resolver, viewer-scoped stats, scale guards
 (participant cap, batched inserts, incremental rebuilds, bounded graph
 payloads), the private-evidence absorption policy, automated-sender
-overrides, and scoring constants in Settings.
+overrides, scoring constants in Settings, scheduled connector sync, and
+extraction budget/progress/cancel.
 
 ## Deployment hardening (near term)
 
-- **Extraction budget + progress** — the dashboard's "Extract N documents"
-  button currently runs unbounded with no cost estimate, no progress, and no
-  cancel. Default batch size, an upfront token/cost estimate, and a
-  poll/stream progress UI.
 - **Backup automation** — DEPLOY.md documents manual snapshots; ship a
   scheduled backup + a restore check.
 - **Graph autocomplete at scale** — the warm-path datalist only suggests
@@ -24,8 +21,6 @@ overrides, and scoring constants in Settings.
 
 - **Bodies from live pulls** — file exports capture bodies today; the
   Granola/gog/Google/Attio/Affinity live pulls are still metadata-only.
-- **Scheduled sync** — periodic re-pull per connector (the ingest path is
-  idempotent, so this is a scheduler + status surface).
 - **Microsoft 365 / Outlook** — mail + calendar; the biggest unlock for
   non-Google funds.
 - **HubSpot** — third CRM; the connector layer is table-driven now, so this
