@@ -20,7 +20,7 @@ import { snapshotMerges, replayMerges } from "./merge.js";
  * lives only in process memory, so a crash mid-rebuild would otherwise leave
  * the database wiped with every human decision lost.
  */
-export async function reresolveAll(db) {
+export async function reresolveAll(db, { actor = "local" } = {}) {
   // Manual merges are human input too: snapshot by identity before the wipe.
   const mergeSnapshot = await snapshotMerges(db);
   const outcome = await db.tx(async (tx) => {
@@ -74,7 +74,10 @@ export async function reresolveAll(db) {
           arr(r.aliases).some((a) => snapAliases.has(a))
         );
         if (match) {
-          await resolveReview(tx, match.id, d.status === "accepted" ? "accept" : "reject");
+          // Replays re-audit each replayed decision under the replaying actor;
+          // the original decision's row survives (append-only), so one logical
+          // decision shows two actors. Acceptable: both facts are true.
+          await resolveReview(tx, match.id, d.status === "accepted" ? "accept" : "reject", { actor });
           replayed++;
           progress = true;
         } else {
@@ -102,7 +105,7 @@ export async function reresolveAll(db) {
       JSON.stringify(outcome.dropped)
     );
   }
-  const merges = await replayMerges(db, mergeSnapshot);
+  const merges = await replayMerges(db, mergeSnapshot, { actor });
   if (merges.dropped.length) {
     console.warn(`reresolve: ${merges.dropped.length} manual merge(s) could not be replayed:`,
       JSON.stringify(merges.dropped));
@@ -113,7 +116,7 @@ export async function reresolveAll(db) {
     replayed: outcome.replayed,
     dropped: outcome.dropped,
     merges,
-  });
+  }, actor);
   return {
     resolved: outcome.resolved, replayed: outcome.replayed, dropped: outcome.dropped,
     merges, edges,

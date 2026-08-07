@@ -29,11 +29,14 @@ async function ref(db, r, viewer) {
 export async function startMcpServer() {
   const db = await getDb();
   let viewer = null;
+  let actor = "agent";
   if (env("VIEWER")) {
     const { resolveMember } = await import("../members.js");
-    viewer = (await resolveMember(db, env("VIEWER"))).id;
+    const member = await resolveMember(db, env("VIEWER"));
+    viewer = member.id;
+    actor = `agent:${member.name}`;
   }
-  const server = buildMcpServer(db, { viewer });
+  const server = buildMcpServer(db, { viewer, actor });
   await server.connect(new StdioServerTransport());
   return server;
 }
@@ -43,7 +46,7 @@ export async function startMcpServer() {
  * server builds one of these per HTTP request (stateless Streamable HTTP),
  * so construction must stay cheap — it only registers handlers.
  */
-export function buildMcpServer(db, { viewer = null } = {}) {
+export function buildMcpServer(db, { viewer = null, actor = "agent" } = {}) {
   const server = new McpServer({ name: SLUG, version: VERSION });
 
   server.tool(
@@ -185,7 +188,7 @@ export function buildMcpServer(db, { viewer = null } = {}) {
     "review_resolve",
     "Confirm or reject a pending entity match. accept = same person, reject = different person.",
     { review_id: z.string(), decision: z.enum(["accept", "reject"]) },
-    async ({ review_id, decision }) => text(await resolveReview(db, review_id, decision))
+    async ({ review_id, decision }) => text(await resolveReview(db, review_id, decision, { actor }))
   );
 
   return server;

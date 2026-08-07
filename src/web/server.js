@@ -226,10 +226,10 @@ async function route(db, req, res, url, port) {
         id: null,
       }, 405);
     }
-    let viewer = null;
+    let member = null;
     if (url.searchParams.get("as")) {
       try {
-        viewer = (await resolveMember(db, url.searchParams.get("as"))).id;
+        member = await resolveMember(db, url.searchParams.get("as"));
       } catch (err) {
         throw withStatus(new Error(err.message), 400);
       }
@@ -239,7 +239,10 @@ async function route(db, req, res, url, port) {
       sessionIdGenerator: undefined, // stateless
       enableJsonResponse: true,
     });
-    const mcp = buildMcpServer(db, { viewer });
+    const mcp = buildMcpServer(db, {
+      viewer: member?.id ?? null,
+      actor: member ? `agent:${member.name}` : "agent",
+    });
     res.on("close", () => { transport.close(); mcp.close(); });
     await mcp.connect(transport);
     await transport.handleRequest(req, res, body);
@@ -326,7 +329,8 @@ async function route(db, req, res, url, port) {
     if (body.decision !== "accept" && body.decision !== "reject") {
       return json(res, { error: "decision must be accept or reject" }, 400);
     }
-    const result = await resolveReview(db, path.slice("/api/reviews/".length), body.decision);
+    const result = await resolveReview(db, path.slice("/api/reviews/".length), body.decision,
+      { actor: await actorOf(db, url) });
     await rebuildEdges(db); // graph is a read model; refresh after human input
     return json(res, result);
   }
@@ -335,7 +339,7 @@ async function route(db, req, res, url, port) {
     const patch = parseJson(await readBody(req));
     const settings = await putSettings(db, patch);
     const edges = await rebuildEdges(db);
-    await audit(db, "settings_update", { patch });
+    await audit(db, "settings_update", { patch }, await actorOf(db, url));
     return json(res, { settings, edges });
   }
 
@@ -360,24 +364,26 @@ async function route(db, req, res, url, port) {
     // content, so log only whose layer grew — existence, not evidence.
     await audit(db, "ingest", member
       ? { file: "(private upload)", layer: member.name, ...ingested }
-      : { file: name, ...ingested });
+      : { file: name, ...ingested }, member?.name ?? "local");
     return json(res, { ingested, resolved, edges, layer: member?.name ?? null, stats: await counts(db) });
   }
 
   if (req.method === "POST" && path === "/api/sample") {
     const { loadSampleDataset } = await import("../ingest/sample.js");
     const result = await loadSampleDataset(db);
-    await audit(db, "ingest", { file: "bundled sample dataset", ...result.ingested });
+    await audit(db, "ingest", { file: "bundled sample dataset", ...result.ingested },
+      await actorOf(db, url));
     return json(res, { ...result, stats: await counts(db) });
   }
 
   if (req.method === "POST" && path === "/api/reresolve") {
     const { reresolveAll } = await import("../resolve/reresolve.js");
-    const result = await reresolveAll(db);
+    const result = await reresolveAll(db, { actor: await actorOf(db, url) });
     return json(res, { ...result, stats: await counts(db) });
   }
 
   if (req.method === "POST" && path === "/api/extract") {
+    const actor = await actorOf(db, url); // before the claim: no await may split check-and-set
     if (extracting) return json(res, { error: "an extraction run is already in progress" }, 409);
     extracting = true; // claim BEFORE the first await — the check-and-set must be atomic
     try {
@@ -391,12 +397,12 @@ async function route(db, req, res, url, port) {
       await audit(db, "extract", {
         extracted: extract.extracted, failed: extract.failed, mentions: extract.mentions,
         model: extract.model, tokens: extract.tokens,
-      });
+      }, actor);
       return json(res, { extract, resolved, edges, stats: await counts(db) });
     } catch (err) {
       // Even an aborted run may have spent tokens — always leave an audit row.
       const spent = err.stats?.tokens ?? null;
-      await audit(db, "extract_failed", { error: String(err.message).slice(0, 300), tokens: spent }).catch(() => {});
+      await audit(db, "extract_failed", { error: String(err.message).slice(0, 300), tokens: spent }, actor).catch(() => {});
       // Only credential/config problems are the caller's to fix; everything
       // else stays a 500 so the sanitizer hides internals.
       if (isAuthError(err) || err.statusCode) throw withStatus(err, err.statusCode ?? 400);
@@ -410,7 +416,7 @@ async function route(db, req, res, url, port) {
     const body = parseJson(await readBody(req));
     const { mergeEntities } = await import("../resolve/merge.js");
     if (!body.keep || !body.lose) throw withStatus(new Error("keep and lose entity ids are required"), 400);
-    const result = await mergeEntities(db, body.keep, body.lose);
+    const result = await mergeEntities(db, body.keep, body.lose, { actor: await actorOf(db, url) });
     await rebuildEdges(db);
     return json(res, { ...result, stats: await counts(db) });
   }
@@ -419,7 +425,7 @@ async function route(db, req, res, url, port) {
     const body = parseJson(await readBody(req));
     const { unmergeEntity } = await import("../resolve/merge.js");
     if (!body.entity) throw withStatus(new Error("entity id is required"), 400);
-    const result = await unmergeEntity(db, body.entity);
+    const result = await unmergeEntity(db, body.entity, { actor: await actorOf(db, url) });
     await rebuildEdges(db);
     return json(res, { ...result, stats: await counts(db) });
   }
@@ -427,7 +433,7 @@ async function route(db, req, res, url, port) {
   if (req.method === "POST" && path === "/api/members") {
     const body = parseJson(await readBody(req));
     const member = await addMember(db, { name: body.name, email: body.email });
-    await audit(db, "member_add", { member: member.name });
+    await audit(db, "member_add", { member: member.name }, await actorOf(db, url));
     return json(res, member);
   }
 
@@ -436,7 +442,7 @@ async function route(db, req, res, url, port) {
     const reassign = url.searchParams.get("reassign") === "shared" ? "shared" : null;
     const result = await removeMember(db, memberId, { reassign });
     await rebuildEdges(db); // their layer is gone; the read model must follow
-    await audit(db, "member_remove", result);
+    await audit(db, "member_remove", result, await actorOf(db, url));
     return json(res, result);
   }
 
@@ -461,7 +467,8 @@ async function route(db, req, res, url, port) {
       workspace: info.workspace,
       connectedAt: new Date().toISOString(),
     });
-    await audit(db, "connector_connect", { connector: provider, workspace: info.workspace });
+    await audit(db, "connector_connect", { connector: provider, workspace: info.workspace },
+      await actorOf(db, url));
     return json(res, { connected: true, ...(await connectorStatus(db, provider)) });
   }
 
@@ -476,7 +483,7 @@ async function route(db, req, res, url, port) {
       const resolved = await resolveMentions(db);
       const edges = await rebuildEdges(db);
       await putConnector(db, provider, { lastSyncAt: new Date().toISOString(), lastDocCount: ingested.docCount });
-      await audit(db, "ingest", { file: `${provider} workspace`, ...ingested });
+      await audit(db, "ingest", { file: `${provider} workspace`, ...ingested }, await actorOf(db, url));
       return json(res, { ingested, resolved, edges, stats: await counts(db), ...(await connectorStatus(db, provider)) });
     } catch (err) {
       throw withStatus(new Error(err.message), 400);
@@ -487,7 +494,7 @@ async function route(db, req, res, url, port) {
 
   if (req.method === "DELETE" && provider) {
     await deleteConnector(db, provider);
-    await audit(db, "connector_disconnect", { connector: provider });
+    await audit(db, "connector_disconnect", { connector: provider }, await actorOf(db, url));
     return json(res, { connected: false, ...(await connectorStatus(db, provider)) });
   }
 
@@ -500,6 +507,18 @@ async function viewerOf(db, url) {
   if (!as) return null;
   const member = await getMember(db, as);
   return member?.id ?? null;
+}
+
+/** `?as=` as an audit actor: the member's display name, or "local". Self-
+ * declared under the single shared token — this is provenance, not
+ * authentication; per-user login is what makes it honest. Silent fallback
+ * deliberately mirrors viewerOf until the one-viewer-resolver work unifies
+ * how loudly an unknown `?as` fails. */
+async function actorOf(db, url) {
+  const as = url.searchParams.get("as");
+  if (!as) return "local";
+  const member = await getMember(db, as);
+  return member?.name ?? "local";
 }
 
 /** Presence and a masked hint only — the stored key never leaves the server. */

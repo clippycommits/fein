@@ -15,6 +15,7 @@ const { rebuildEdges } = await import(join(root, "src/graph/edges.js"));
 const { mergeEntities, unmergeEntity, listMerges } = await import(join(root, "src/resolve/merge.js"));
 const { reresolveAll } = await import(join(root, "src/resolve/reresolve.js"));
 const { searchEntities, entityBrief, counts } = await import(join(root, "src/graph/queries.js"));
+const { listAudit } = await import(join(root, "src/settings.js"));
 
 let failures = 0;
 const check = (cond, msg, extra) => {
@@ -56,10 +57,12 @@ const work = (await find("alex@ridgeline.vc"))[0];
 const side = (await find("alex@northgate.io"))[0];
 check(work && side && work.id !== side.id, "the two identities start separate", { work: work?.id, side: side?.id });
 
-const merged = await mergeEntities(db, work.id, side.id);
+const merged = await mergeEntities(db, work.id, side.id, { actor: "Tom Merrill" });
 await rebuildEdges(db);
 check(merged.emails.includes("alex@ridgeline.vc") && merged.emails.includes("alex@northgate.io"),
   "both addresses land on the survivor", merged.emails);
+const mergeRow = (await listAudit(db)).find((a) => a.action === "entity_merge");
+check(mergeRow?.actor === "Tom Merrill", "the merge audit row names its actor", mergeRow);
 const after = await counts(db);
 check(after.entities === before.entities - 1, "live entity count drops by one", { before: before.entities, after: after.entities });
 
@@ -75,8 +78,10 @@ console.log("[2/4] merges are recorded and reversible");
 {
   const merges = await listMerges(db);
   check(merges.length === 1 && merges[0].kept_id === work.id, "the merge is listed", merges);
-  await unmergeEntity(db, side.id);
+  await unmergeEntity(db, side.id, { actor: "Tom Merrill" });
   await rebuildEdges(db);
+  const unmergeRow = (await listAudit(db)).find((a) => a.action === "entity_unmerge");
+  check(unmergeRow?.actor === "Tom Merrill", "the unmerge audit row names its actor", unmergeRow);
   const restoredHits = await find("alex@northgate.io");
   check(restoredHits.length === 1 && restoredHits[0].id === side.id,
     "unmerge restores the entity and the survivor stops claiming its address",
@@ -94,9 +99,15 @@ console.log("[3/4] a merge survives a full rebuild");
 {
   await mergeEntities(db, work.id, side.id);
   await rebuildEdges(db);
-  const result = await reresolveAll(db);
+  const result = await reresolveAll(db, { actor: "Tom Merrill" });
   check(result.merges.replayed === 1, "reresolve replays the manual merge", result.merges);
   check(result.merges.dropped.length === 0, "nothing dropped", result.merges.dropped);
+  const audit = await listAudit(db);
+  const rrRow = audit.find((a) => a.action === "reresolve");
+  check(rrRow?.actor === "Tom Merrill", "the reresolve audit row names its actor", rrRow);
+  check(audit.some((a) => a.action === "review_reject" && a.actor === "Tom Merrill"),
+    "replayed review decisions are re-audited under the replaying actor",
+    audit.filter((a) => a.action === "review_reject").map((a) => a.actor));
   const live = await find("daniel");
   check(live.length === 1, "the two identities are still one person after rebuild",
     live.map((e) => e.emails));

@@ -9,6 +9,7 @@ import { rebuildEdges } from "./graph/edges.js";
 import { findWarmPath, findIntroducers } from "./graph/paths.js";
 import { searchEntities, entityBrief, resolveRef, counts } from "./graph/queries.js";
 import { getEntity } from "./graph/queries.js";
+import { audit } from "./settings.js";
 
 const [, , cmd, ...args] = process.argv;
 
@@ -123,6 +124,15 @@ async function main() {
   args.length = 0;
   args.push(...rawArgs);
   const viewer = as?.id ?? null;
+  const actor = as?.name ?? "local";
+  // CLI ingest audit rows mirror the web server's redaction rule: a private
+  // layer's filename is content — record whose layer grew, never what it was.
+  const auditIngest = async (label, result) => {
+    await audit(db, "ingest", viewer
+      ? { file: "(private ingest)", layer: as.name, ...result }
+      : { file: label, ...result }, actor);
+    return result;
+  };
 
   switch (cmd) {
     case "ingest": {
@@ -133,20 +143,20 @@ async function main() {
         const { streamMbox } = await import("./ingest/mbox.js");
         const { ingestStream } = await import("./ingest/index.js");
         let ticks = 0;
-        out(await ingestStream(db, streamMbox(args[0]), {
+        out(await auditIngest(args[0], await ingestStream(db, streamMbox(args[0]), {
           owner: viewer ?? "",
           onProgress: (t) => {
             if (++ticks % 5 === 0) process.stderr.write(`  …${t.docCount.toLocaleString()} messages\n`);
           },
-        }));
+        })));
       } else {
-        out(await ingestDocs(db, await loadFile(args[0]), { owner: viewer ?? "" }));
+        out(await auditIngest(args[0], await ingestDocs(db, await loadFile(args[0]), { owner: viewer ?? "" })));
       }
       break;
     }
     case "ingest-granola": {
       const { loadGranola } = await import("./ingest/granola.js");
-      out(await ingestDocs(db, loadGranola(args[0]), { owner: viewer ?? "" }));
+      out(await auditIngest("granola cache", await ingestDocs(db, loadGranola(args[0]), { owner: viewer ?? "" })));
       break;
     }
     case "ingest-gog": {
@@ -158,19 +168,21 @@ async function main() {
       } else if (service === "calendar") docs = gog.fetchGogCalendar({ max: Number(args[1] ?? 500) });
       else if (service === "drive") docs = gog.fetchGogDrive({ max: Number(args[1] ?? 500) });
       else throw new Error("usage: fein ingest-gog gmail|calendar|drive");
-      out(await ingestDocs(db, docs, { owner: viewer ?? "" }));
+      out(await auditIngest(`gog ${service}`, await ingestDocs(db, docs, { owner: viewer ?? "" })));
       break;
     }
     case "ingest-attio": {
       const { fetchAttio } = await import("./ingest/attio.js");
-      out(await ingestDocs(db, await fetchAttio({ includeNotes: args[0] !== "--no-notes" }),
-        { owner: viewer ?? "" }));
+      out(await auditIngest("attio workspace",
+        await ingestDocs(db, await fetchAttio({ includeNotes: args[0] !== "--no-notes" }),
+          { owner: viewer ?? "" })));
       break;
     }
     case "ingest-affinity": {
       const { fetchAffinity } = await import("./ingest/affinity.js");
-      out(await ingestDocs(db, await fetchAffinity({ includeNotes: args[0] !== "--no-notes" }),
-        { owner: viewer ?? "" }));
+      out(await auditIngest("affinity workspace",
+        await ingestDocs(db, await fetchAffinity({ includeNotes: args[0] !== "--no-notes" }),
+          { owner: viewer ?? "" })));
       break;
     }
     case "ingest-google": {
@@ -181,7 +193,7 @@ async function main() {
       else if (service === "calendar") docs = await g.fetchCalendar({});
       else if (service === "drive") docs = await g.fetchDrive({});
       else throw new Error("usage: fein ingest-google gmail|calendar|drive");
-      out(await ingestDocs(db, docs, { owner: viewer ?? "" }));
+      out(await auditIngest(`google ${service}`, await ingestDocs(db, docs, { owner: viewer ?? "" })));
       break;
     }
     case "sync": {
@@ -211,7 +223,7 @@ async function main() {
     }
     case "reresolve": {
       const { reresolveAll } = await import("./resolve/reresolve.js");
-      const r = await reresolveAll(db);
+      const r = await reresolveAll(db, { actor });
       out({ ...r, stats: await counts(db) });
       break;
     }
@@ -264,7 +276,7 @@ async function main() {
       const { mergeEntities } = await import("./resolve/merge.js");
       const keep = await refOrDie(db, args[0]);
       const lose = await refOrDie(db, args[1]);
-      const r = await mergeEntities(db, keep.id, lose.id);
+      const r = await mergeEntities(db, keep.id, lose.id, { actor });
       await rebuildEdges(db);
       out(r);
       break;
@@ -277,7 +289,7 @@ async function main() {
            and merged_into is not null limit 1`, [args.join(" ")]
       );
       if (!rows.length) throw new Error(`no merged entity matching "${args.join(" ")}"`);
-      const r = await unmergeEntity(db, rows[0].id);
+      const r = await unmergeEntity(db, rows[0].id, { actor });
       await rebuildEdges(db);
       out(r);
       break;
@@ -333,7 +345,7 @@ async function main() {
     }
     case "review": {
       if (!args.length) out(await listReviews(db));
-      else out(await resolveReview(db, args[1], args[0]));
+      else out(await resolveReview(db, args[1], args[0], { actor }));
       break;
     }
     case "demo": {

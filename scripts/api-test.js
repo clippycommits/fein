@@ -141,6 +141,14 @@ console.log("[5/10] settings: customization rebuilds the graph");
   const invalid = await send("PUT", "/api/settings", { weights: { nonsense: 5 } });
   check(invalid.status === 400, "unknown weight is rejected with 400", invalid.status);
   check(/unknown weight/.test(invalid.body?.error ?? ""), "client error message is preserved", invalid.body);
+
+  // `?as=` on a write names the audit actor (display name, never an id/email).
+  const tom = (await get("/api/members")).body.find((m) => m.name === "Tom Merrill");
+  const asTom = await send("PUT", `/api/settings?as=${tom.id}`, { weights: { meeting: 10 } });
+  check(asTom.status === 200, "settings PUT accepts ?as", asTom.status);
+  const audit = await get("/api/audit");
+  const row = audit.body.find((a) => a.action === "settings_update");
+  check(row?.actor === "Tom Merrill", "the ?as viewer is recorded as the audit actor", row);
 }
 
 console.log("[6/10] hostile input");
@@ -249,6 +257,7 @@ console.log("[9/10] privacy layers: one-click scene, private upload, scoping");
   const row = audit.body.find((a) => a.detail?.layer === "Tom Merrill");
   check(row && row.detail.file === "(private upload)" && !JSON.stringify(audit.body).includes("zara-inbox"),
     "audit records whose layer grew, never the private filename", row?.detail);
+  check(row?.actor === "Tom Merrill", "the private upload's audit row names the uploader as actor", row?.actor);
   const sharedGraph = await get("/api/graph");
   check(!sharedGraph.body.nodes.some((n) => n.name === "Zara Quist"),
     "a private-only person is hidden from the shared graph");
@@ -283,6 +292,27 @@ console.log("[10/10] MCP over HTTP: one endpoint, viewer-scoped");
   const own = asText(await sebClient.callTool({ name: "entity_brief", arguments: { entity: "Priya Nair" } }));
   check(JSON.stringify(own).includes("Fund II allocation — timing question"),
     "?as=Seb binds the agent to Seb's private layer");
+
+  // An agent's decision is audited as agent:<member>. Exact name + conflicting
+  // non-freemail domain scores 0.90 — deterministically in the review band.
+  const seb = (await get("/api/members")).body.find((m) => m.name === "Seb Larkin");
+  const rival = JSON.stringify({
+    source: "local", kind: "email", external_id: "rival-1", title: "intro?",
+    occurred_at: "2026-08-02T00:00:00Z",
+    people: [{ name: "Maya Chen", email: "maya@rivalfund.example", role: "from" }],
+  });
+  const rIngest = await send("POST", "/api/ingest?name=rival.jsonl", rival);
+  check(rIngest.status === 200 && rIngest.body.resolved.queued === 1,
+    "conflicting-domain mention queues for review", rIngest.body.resolved);
+  const review = (await get(`/api/reviews?as=${seb.id}`)).body
+    .find((r) => r.mention_email === "maya@rivalfund.example");
+  check(Boolean(review), "the queued review is visible to Seb's agent");
+  await sebClient.callTool({ name: "review_resolve",
+    arguments: { review_id: review.id, decision: "accept" } });
+  const agentRow = (await get("/api/audit")).body
+    .find((a) => a.action === "review_accept" && a.detail?.review === review.id);
+  check(agentRow?.actor === "agent:Seb Larkin",
+    "the MCP decision is audited as agent:<member>", agentRow);
   await sebClient.close();
 
   const rejected = await fetch(`${BASE}/mcp`);

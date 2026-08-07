@@ -367,7 +367,7 @@ async function startMerge(keeper) {
   ];
   if (!pick) return;
   if (!confirm(`Merge "${pick.canonical_name}" into "${keeper.canonical_name}"?`)) return;
-  await api("/api/merge", {
+  await api(`/api/merge${asParam()}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ keep: keeper.id, lose: pick.id }),
@@ -493,7 +493,7 @@ async function renderReviews() {
   for (const btn of document.querySelectorAll("#reviews button")) {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
-      await api(`/api/reviews/${encodeURIComponent(btn.dataset.id)}`, {
+      await api(`/api/reviews/${encodeURIComponent(btn.dataset.id)}${asParam()}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ decision: btn.dataset.d }),
@@ -526,7 +526,7 @@ async function renderData() {
   }
   $("#audit").innerHTML = audit.length ? audit.map((a) =>
     `<div class="audit-row"><span class="when">${esc(String(a.at).slice(0, 16).replace("T", " "))}</span>
-       · ${esc(a.action)}${a.detail?.file ? ` · ${esc(a.detail.file)}` : ""}${a.detail?.mention?.name ? ` · ${esc(a.detail.mention.name)}` : ""}</div>`).join("")
+       · ${esc(a.action)}${a.detail?.file ? ` · ${esc(a.detail.file)}` : ""}${a.detail?.mention?.name ? ` · ${esc(a.detail.mention.name)}` : ""}${a.actor && a.actor !== "local" ? ` · ${esc(a.actor)}` : ""}</div>`).join("")
     : `<div class="empty"><p>No activity recorded yet.</p></div>`;
 }
 
@@ -556,7 +556,7 @@ $("#member-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const name = $("#member-name").value.trim();
   if (!name) { toast("A member needs a name", "err"); return; }
-  await api("/api/members", {
+  await api(`/api/members${asParam()}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name, email: $("#member-email").value.trim() || null }),
@@ -571,7 +571,7 @@ async function removeMember({ id, name, docs }) {
   const n = Number(docs);
   if (!n) {
     if (!confirm(`Remove ${name}?`)) return;
-    await api(`/api/members/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await api(`/api/members/${encodeURIComponent(id)}${asParam()}`, { method: "DELETE" });
   } else {
     // Cancel/Escape must ABORT. A two-button confirm cannot offer three
     // outcomes, and mapping Cancel to "publish their private mail to the whole
@@ -586,7 +586,7 @@ async function removeMember({ id, name, docs }) {
     const choice = answer?.trim().toUpperCase();
     if (choice !== "DELETE" && choice !== "SHARE") { toast("Cancelled — nothing changed"); return; }
     const q = choice === "SHARE" ? "?reassign=shared" : "";
-    await api(`/api/members/${encodeURIComponent(id)}${q}`, { method: "DELETE" });
+    await api(`/api/members/${encodeURIComponent(id)}${q}${asParam(q ? "&" : "?")}`, { method: "DELETE" });
     toast(choice === "SHARE"
       ? `Removed ${name}; their ${n} document${n === 1 ? "" : "s"} moved to the shared layer`
       : `Removed ${name} and their ${n} private document${n === 1 ? "" : "s"}`, "good");
@@ -673,7 +673,7 @@ async function connectConnector(provider) {
   btn.disabled = true;
   btn.textContent = "Verifying…";
   try {
-    const s = await api(`/api/connectors/${provider}`, {
+    const s = await api(`/api/connectors/${provider}${asParam()}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ apiKey: key, includeNotes: $(`#${provider}-notes`).checked }),
@@ -693,7 +693,7 @@ async function syncConnector(provider) {
   const out = $(`#${provider}-result`);
   if (out) out.innerHTML = `<p class="hint">Pulling people, companies and notes…</p>`;
   try {
-    const res = await api(`/api/connectors/${provider}/sync`, { method: "POST" });
+    const res = await api(`/api/connectors/${provider}/sync${asParam()}`, { method: "POST" });
     toast(`${res.label} synced: ${res.ingested.docCount} records`, "good");
     await Promise.all([renderStats(), renderGraph(), renderData()]);
   } catch (err) {
@@ -704,7 +704,7 @@ async function syncConnector(provider) {
 
 async function disconnectConnector(provider) {
   if (!confirm("Disconnect? The stored key is deleted; data already ingested stays.")) return;
-  const s = await api(`/api/connectors/${provider}`, { method: "DELETE" });
+  const s = await api(`/api/connectors/${provider}${asParam()}`, { method: "DELETE" });
   toast(`${s.label} disconnected`, "good");
   await renderConnector(provider);
 }
@@ -741,7 +741,7 @@ $("#run-extract").addEventListener("click", async () => {
   btn.textContent = "Extracting… (this calls the Anthropic API)";
   out.innerHTML = "";
   try {
-    const res = await api("/api/extract", {
+    const res = await api(`/api/extract${asParam()}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
@@ -797,7 +797,7 @@ $("#save-settings").addEventListener("click", async () => {
   const btn = $("#save-settings");
   btn.disabled = true;
   try {
-    const res = await api("/api/settings", {
+    const res = await api(`/api/settings${asParam()}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(patch),
@@ -814,7 +814,7 @@ $("#reresolve").addEventListener("click", async () => {
   const btn = $("#reresolve");
   btn.disabled = true;
   try {
-    const res = await api("/api/reresolve", { method: "POST" });
+    const res = await api(`/api/reresolve${asParam()}`, { method: "POST" });
     toast(`Rebuilt: ${res.stats.entities} entities, ${res.stats.edges} connections`, "good");
     await Promise.all([renderStats(), renderGraph()]);
   } finally {
@@ -866,7 +866,7 @@ $("#ob-sample").addEventListener("click", async () => {
   btn.disabled = true;
   btn.textContent = "Loading…";
   try {
-    const res = await api("/api/sample", { method: "POST" });
+    const res = await api(`/api/sample${asParam()}`, { method: "POST" });
     $("#onboarding").hidden = true;
     toast(`Sample loaded: ${res.stats.entities} entities, ${res.stats.edges} connections`, "good");
     await Promise.all([renderStats(), renderGraph(), renderViewers()]);

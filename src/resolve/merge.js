@@ -16,7 +16,7 @@ import { audit } from "../settings.js";
 
 const arr = (v) => (typeof v === "string" ? JSON.parse(v) : v ?? []);
 
-export async function mergeEntities(db, keepId, loseId) {
+export async function mergeEntities(db, keepId, loseId, { actor = "local" } = {}) {
   if (keepId === loseId) throw new Error("cannot merge an entity into itself");
   const result = await db.tx(async (tx) => {
     const { rows } = await tx.query(
@@ -70,12 +70,12 @@ export async function mergeEntities(db, keepId, loseId) {
 
   await audit(db, "entity_merge", {
     kept: result.keptId, merged: result.mergedId, name: result.canonical_name,
-  });
+  }, actor);
   return result;
 }
 
 /** Reverse a merge: the tombstone comes back, taking its own mentions with it. */
-export async function unmergeEntity(db, mergedId) {
+export async function unmergeEntity(db, mergedId, { actor = "local" } = {}) {
   const result = await db.tx(async (tx) => {
     const { rows } = await tx.query(`select * from entities where id = $1`, [mergedId]);
     const lose = rows[0];
@@ -123,7 +123,7 @@ export async function unmergeEntity(db, mergedId) {
     await tx.query(`update entities set merged_into = null, merge_delta = null where id = $1`, [mergedId]);
     return { restored: mergedId, from: lose.merged_into, name: lose.canonical_name };
   });
-  await audit(db, "entity_unmerge", result);
+  await audit(db, "entity_unmerge", result, actor);
   return result;
 }
 
@@ -159,7 +159,7 @@ export async function snapshotMerges(db) {
 }
 
 /** Re-apply snapshotted merges after a rebuild, matching on stable identity. */
-export async function replayMerges(db, snapshot) {
+export async function replayMerges(db, snapshot, { actor } = {}) {
   let replayed = 0;
   const dropped = [];
   for (const m of snapshot) {
@@ -185,7 +185,7 @@ export async function replayMerges(db, snapshot) {
     const keeper = await find(m.keeper);
     const loser = await find(m.loser);
     if (keeper && loser && keeper !== loser) {
-      await mergeEntities(db, keeper, loser);
+      await mergeEntities(db, keeper, loser, { actor });
       replayed++;
     } else if (!keeper || !loser) {
       dropped.push({ keeper: m.keeperName, loser: m.loser.name, reason: "identity not found after rebuild" });

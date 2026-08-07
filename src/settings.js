@@ -82,11 +82,13 @@ function clampNumber(v, name, min = NUMERIC_LIMITS.min, max = NUMERIC_LIMITS.max
   return n;
 }
 
-/** Append-only audit trail: who did what to the graph, when. */
-export async function audit(db, action, detail = {}) {
+/** Append-only audit trail: who did what to the graph, when. The actor is a
+ * member's display NAME (never an email), "agent"/"agent:<name>" for MCP
+ * callers, or "local" — names stay readable after the member row is removed. */
+export async function audit(db, action, detail = {}, actor = "local") {
   await db.query(
-    `insert into audit_log (id, action, detail) values ($1, $2, $3)`,
-    [id("aud"), action, JSON.stringify(detail)]
+    `insert into audit_log (id, actor, action, detail) values ($1, $2, $3, $4)`,
+    [id("aud"), actor, action, JSON.stringify(detail)]
   );
 }
 

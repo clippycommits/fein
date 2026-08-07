@@ -31,8 +31,9 @@ export async function listReviews(db, { viewer = null } = {}) {
   }));
 }
 
-/** accept: mention belongs to the candidate entity. reject: it's a new entity. */
-export async function resolveReview(db, reviewId, decision) {
+/** accept: mention belongs to the candidate entity. reject: it's a new entity.
+ * Called with the real db handle or a transaction wrapper — assume only .query. */
+export async function resolveReview(db, reviewId, decision, { actor = "local" } = {}) {
   const { rows } = await db.query(
     `select r.*, m.* , m.id as mention_id_real
      from review_queue r join mentions m on m.id = r.mention_id
@@ -71,6 +72,6 @@ export async function resolveReview(db, reviewId, decision) {
     mention: mention.id,
     candidate: row.candidate_entity_id,
     score: row.score,
-  });
+  }, actor);
   return { reviewId, decision };
 }
