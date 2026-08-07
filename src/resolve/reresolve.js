@@ -24,9 +24,17 @@ export async function reresolveAll(db, { actor = "local" } = {}) {
   // Manual merges are human input too: snapshot by identity before the wipe.
   const mergeSnapshot = await snapshotMerges(db);
   const outcome = await db.tx(async (tx) => {
+    // Candidate identity is the UNION of the shared arrays and the private
+    // side rows: a decision made against a privately-evidenced candidate must
+    // still replay, and the "emails/aliases only grow" matching invariant
+    // holds for the union just as it did for the arrays alone.
+    const evAgg = (kind) =>
+      `coalesce((select jsonb_agg(v.value) from entity_evidence v
+                 where v.entity_id = e.id and v.kind = '${kind}'), '[]'::jsonb)`;
     const { rows: decided } = await tx.query(
       `select r.status, m.norm_name, m.norm_email, e.canonical_name as cand_name,
-              e.emails as cand_emails, e.aliases as cand_aliases
+              e.emails || ${evAgg("email")} as cand_emails,
+              e.aliases || ${evAgg("alias")} as cand_aliases
        from review_queue r
        join mentions m on m.id = r.mention_id
        join entities e on e.id = r.candidate_entity_id
@@ -57,7 +65,9 @@ export async function reresolveAll(db, { actor = "local" } = {}) {
         // post-decision absorbs upgrade display names — so also accept overlap
         // on emails/aliases, which only grow and so contain every earlier form.
         const { rows } = await tx.query(
-          `select r.id, e.canonical_name, e.emails, e.aliases
+          `select r.id, e.canonical_name,
+                  e.emails || ${evAgg("email")} as emails,
+                  e.aliases || ${evAgg("alias")} as aliases
            from review_queue r
            join mentions m on m.id = r.mention_id
            join entities e on e.id = r.candidate_entity_id

@@ -63,7 +63,8 @@ const built = await rebuildEdges(db);
 console.log("[1/6] layered rebuild");
 check(built.layers === 2, "edges are built per privacy layer", built);
 const id = async (q, viewer = null) => (await searchEntities(db, q, 10, { viewer }))[0]?.id;
-const [tomE, sebE, priyaE] = [await id("Tom Merrill"), await id("Seb Larkin"), await id("Priya Nair")];
+// let, not const: [5d/6] rebuilds the world and entity ids do not survive it.
+let [tomE, sebE, priyaE] = [await id("Tom Merrill"), await id("Seb Larkin"), await id("Priya Nair")];
 check(tomE && sebE && priyaE, "all three people resolved");
 
 console.log("[2/6] evidence is scoped to the viewer");
@@ -175,10 +176,96 @@ console.log("[5c/6] the review queue quotes private documents, so it is scoped t
   check(sebQueue.length >= sharedQueue.length, "the owner's queue is a superset of the shared one");
 }
 
+console.log("[5d/6] absorbed private evidence never reaches the shared record");
+{
+  const { reresolveAll } = await import(join(root, "src/resolve/reresolve.js"));
+  const { mergeEntities, unmergeEntity } = await import(join(root, "src/resolve/merge.js"));
+  // Vera is known to the firm through a shared CRM record; only Seb's private
+  // mail knows her middle name, her org, and her second address. Both private
+  // mentions AUTO-attach (exact email 0.98; exact name 0.96 — gmail is
+  // freemail, so no domain conflict) — the absorption path, not the review band.
+  await ingestDocs(db, [
+    { source: "crm", kind: "record", external_id: "sh-4", title: "Contact: Vera Shared",
+      occurred_at: "2026-07-02T10:00:00Z",
+      people: [person("Vera Shared", "vera@known.com", "mentioned")] },
+  ]);
+  await ingestDocs(db, [
+    { source: "gmail", kind: "email", external_id: "sp-5", title: "Vera intro",
+      occurred_at: "2026-07-29T10:00:00Z",
+      people: [person("Seb Larkin", "seb@ridgeline.vc", "from"),
+               { name: "Vera Anne Shared", email: "vera@known.com", org: "Quietfund Capital", role: "to" }] },
+    { source: "gmail", kind: "email", external_id: "sp-6", title: "Vera follow-up",
+      occurred_at: "2026-07-30T10:00:00Z",
+      people: [person("Seb Larkin", "seb@ridgeline.vc", "from"),
+               person("Vera Shared", "secretevidence@gmail.com", "to")] },
+  ], { owner: seb.id });
+  await resolveMentions(db);
+
+  const assertClean = async (note) => {
+    check((await searchEntities(db, "secretevidence", 10, { viewer: tom.id })).length === 0,
+      `Tom cannot search the privately-absorbed address${note}`);
+    check((await searchEntities(db, "secretevidence", 10, { viewer: null })).length === 0,
+      `nor can the shared view${note}`);
+    check((await searchEntities(db, "secretevidence", 10, { viewer: seb.id })).length === 1,
+      `its owner still finds it${note}`);
+    const veraId = (await searchEntities(db, "vera@known.com", 10))[0]?.id;
+    const tomView = await entityBrief(db, veraId, { viewer: tom.id });
+    check(!tomView.entity.emails.includes("secretevidence@gmail.com") &&
+          !tomView.entity.orgs.includes("quietfund") &&
+          !tomView.entity.aliases.includes("vera anne shared"),
+      `another member's brief carries none of the private evidence${note}`, tomView.entity);
+    const sebView = await entityBrief(db, veraId, { viewer: seb.id });
+    check(sebView.entity.emails.includes("secretevidence@gmail.com") &&
+          sebView.entity.orgs.includes("quietfund") &&
+          sebView.entity.aliases.includes("vera anne shared"),
+      `the owner's brief overlays all of it${note}`, sebView.entity);
+    check(tomView.entity.canonical_name === "Vera Shared" &&
+          sebView.entity.canonical_name === "Vera Shared",
+      `display-name upgrades come only from shared mentions${note}`, sebView.entity.canonical_name);
+    const { rows } = await db.query(`select emails, orgs, aliases from entities where id = $1`, [veraId]);
+    const raw = JSON.stringify(rows[0]);
+    check(!raw.includes("secretevidence") && !raw.includes("quietfund") && !raw.includes("anne"),
+      `the stored shared record is clean${note}`, rows[0]);
+    return veraId;
+  };
+  await assertClean("");
+
+  // Derived state: a full rebuild must repopulate the side table, never
+  // launder private values into the shared columns.
+  await reresolveAll(db);
+  [tomE, sebE, priyaE] = [await id("Tom Merrill"), await id("Seb Larkin"), await id("Priya Nair")];
+  const veraId = await assertClean(" after reresolve");
+
+  // A manual merge moves the side rows to the survivor and unmerge sends
+  // exactly those back — the shared columns stay clean throughout.
+  await ingestDocs(db, [
+    { source: "crm", kind: "record", external_id: "sh-5", title: "Contact: Vern Shard",
+      occurred_at: "2026-07-03T10:00:00Z",
+      people: [person("Vern Shard", "vern@shard.example", "mentioned")] },
+  ]);
+  await resolveMentions(db);
+  const vernId = await id("Vern Shard");
+  await mergeEntities(db, vernId, veraId);
+  const kept = await searchEntities(db, "secretevidence", 10, { viewer: seb.id });
+  check(kept.length === 1 && kept[0].id === vernId,
+    "after a merge the survivor carries the private evidence for its owner", kept.map((e) => e.id));
+  check((await searchEntities(db, "secretevidence", 10, { viewer: tom.id })).length === 0,
+    "and still nothing for anyone else");
+  const { rows: kRows } = await db.query(`select emails, orgs, aliases from entities where id = $1`, [vernId]);
+  check(!JSON.stringify(kRows[0]).includes("secretevidence"),
+    "the survivor's shared record stays clean", kRows[0]);
+  await unmergeEntity(db, veraId);
+  const back = await searchEntities(db, "secretevidence", 10, { viewer: seb.id });
+  check(back.length === 1 && back[0].id === veraId,
+    "unmerge returns the private evidence to the restored entity", back.map((e) => e.id));
+  check((await db.query(`select 1 from entity_evidence where entity_id = $1`, [vernId])).rows.length === 0,
+    "the survivor keeps none of it");
+}
+
 console.log("[6/6] removing a member disposes of their layer");
 {
   const gone = await removeMember(db, seb.id);
-  check(gone.documents === 4, "their private documents are deleted with them", gone);
+  check(gone.documents === 6, "their private documents are deleted with them", gone);
   await rebuildEdges(db);
   const after = await findWarmPath(db, tomE, priyaE, { viewer: tom.id });
   check(!after?.path && !after?.privatePath, "the private route disappears too", after);

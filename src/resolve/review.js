@@ -1,5 +1,5 @@
 import { normOrgName } from "./normalize.js";
-import { createEntityFromMention } from "./pipeline.js";
+import { addEvidence, createEntityFromMention, promoteEvidence } from "./pipeline.js";
 import { audit } from "../settings.js";
 import { visibleLayers } from "../members.js";
 
@@ -35,14 +35,17 @@ export async function listReviews(db, { viewer = null } = {}) {
  * Called with the real db handle or a transaction wrapper — assume only .query. */
 export async function resolveReview(db, reviewId, decision, { actor = "local" } = {}) {
   const { rows } = await db.query(
-    `select r.*, m.* , m.id as mention_id_real
-     from review_queue r join mentions m on m.id = r.mention_id
+    `select r.*, m.* , m.id as mention_id_real, d.owner as doc_owner
+     from review_queue r
+     join mentions m on m.id = r.mention_id
+     join documents d on d.id = m.document_id
      where r.id = $1 and r.status = 'pending'`,
     [reviewId]
   );
   if (!rows.length) throw new Error(`no pending review ${reviewId}`);
   const row = rows[0];
   const mention = { ...row, id: row.mention_id_real };
+  const owner = row.doc_owner ?? "";
 
   let entityId; // the entity whose evidence changed — callers refresh its edges
   if (decision === "accept") {
@@ -51,16 +54,31 @@ export async function resolveReview(db, reviewId, decision, { actor = "local" } 
     const emails = typeof e.emails === "string" ? JSON.parse(e.emails) : e.emails;
     const orgs = typeof e.orgs === "string" ? JSON.parse(e.orgs) : e.orgs;
     const aliases = typeof e.aliases === "string" ? JSON.parse(e.aliases) : e.aliases;
-    if (mention.norm_email && !emails.includes(mention.norm_email)) emails.push(mention.norm_email);
     const mOrg = normOrgName(mention.org_hint);
-    if (mOrg && !orgs.includes(mOrg)) orgs.push(mOrg);
-    if (mention.norm_name && !aliases.includes(mention.norm_name)) aliases.push(mention.norm_name);
-    await db.query(`update entities set emails = $2, orgs = $3, aliases = $4 where id = $1`,
-      [e.id, JSON.stringify(emails), JSON.stringify(orgs), JSON.stringify(aliases)]);
-    await db.query(`update mentions set entity_id = $2 where id = $1`, [mention.id, e.id]);
+    if (owner === "") {
+      if (mention.norm_email && !emails.includes(mention.norm_email)) emails.push(mention.norm_email);
+      if (mOrg && !orgs.includes(mOrg)) orgs.push(mOrg);
+      if (mention.norm_name && !aliases.includes(mention.norm_name)) aliases.push(mention.norm_name);
+      await db.query(`update entities set emails = $2, orgs = $3, aliases = $4 where id = $1`,
+        [e.id, JSON.stringify(emails), JSON.stringify(orgs), JSON.stringify(aliases)]);
+      await db.query(`update mentions set entity_id = $2 where id = $1`, [mention.id, e.id]);
+      await promoteEvidence(db, e.id,
+        [["email", mention.norm_email], ["org", mOrg], ["alias", mention.norm_name]]);
+    } else {
+      // The decision is human, but the evidence was witnessed privately: it
+      // stays in the owner's overlay, never in the shared columns.
+      for (const [kind, value, shared] of [
+        ["email", mention.norm_email, emails],
+        ["org", mOrg, orgs],
+        ["alias", mention.norm_name, aliases],
+      ]) {
+        if (value && !shared.includes(value)) await addEvidence(db, e.id, owner, kind, value);
+      }
+      await db.query(`update mentions set entity_id = $2 where id = $1`, [mention.id, e.id]);
+    }
     entityId = e.id;
   } else if (decision === "reject") {
-    const entity = await createEntityFromMention(db, null, mention);
+    const entity = await createEntityFromMention(db, null, mention, owner);
     await db.query(`update mentions set entity_id = $2 where id = $1`, [mention.id, entity.id]);
     entityId = entity.id;
   } else {

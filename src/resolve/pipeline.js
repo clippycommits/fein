@@ -100,20 +100,40 @@ async function loadIndex(db) {
   const { rows } = await db.query(
     `select id, kind, canonical_name, emails, orgs, aliases from entities where merged_into is null`
   );
+  // Resolution is a global process, not a read surface: matching must see
+  // every witnessed value regardless of layer, so private side rows join the
+  // in-memory union. Only the shared* subsets ever get written back.
+  const { rows: evidence } = await db.query(`select entity_id, kind, value from entity_evidence`);
+  const evByEntity = new Map();
+  for (const ev of evidence) {
+    if (!evByEntity.has(ev.entity_id)) evByEntity.set(ev.entity_id, []);
+    evByEntity.get(ev.entity_id).push(ev);
+  }
   for (const r of rows) {
-    const aliases = typeof r.aliases === "string" ? JSON.parse(r.aliases) : r.aliases;
-    index.add({
+    const sharedEmails = typeof r.emails === "string" ? JSON.parse(r.emails) : r.emails;
+    const sharedOrgs = typeof r.orgs === "string" ? JSON.parse(r.orgs) : r.orgs;
+    const sharedAliases = typeof r.aliases === "string" ? JSON.parse(r.aliases) : r.aliases;
+    const entity = {
       id: r.id,
       kind: r.kind,
       canonical_name: r.canonical_name,
-      emails: typeof r.emails === "string" ? JSON.parse(r.emails) : r.emails,
-      orgs: typeof r.orgs === "string" ? JSON.parse(r.orgs) : r.orgs,
+      sharedEmails,
+      sharedOrgs,
+      sharedAliases,
+      emails: [...sharedEmails],
+      orgs: [...sharedOrgs],
       normNames: new Set(
-        [...aliases,
+        [...sharedAliases,
          r.kind === "org" ? normOrgName(r.canonical_name) : null,
          r.kind === "person" ? mentionNormName(r.canonical_name) : null].filter(Boolean)
       ),
-    });
+    };
+    for (const ev of evByEntity.get(r.id) ?? []) {
+      if (ev.kind === "email" && !entity.emails.includes(ev.value)) entity.emails.push(ev.value);
+      else if (ev.kind === "org" && !entity.orgs.includes(ev.value)) entity.orgs.push(ev.value);
+      else if (ev.kind === "alias") entity.normNames.add(ev.value);
+    }
+    index.add(entity);
   }
   return index;
 }
@@ -127,46 +147,105 @@ function mentionNormName(name) {
 async function persistEntity(db, e) {
   await db.query(
     `update entities set canonical_name = $2, emails = $3, orgs = $4, aliases = $5 where id = $1`,
-    [e.id, e.canonical_name, JSON.stringify(e.emails), JSON.stringify(e.orgs),
-     JSON.stringify([...e.normNames])]
+    [e.id, e.canonical_name, JSON.stringify(e.sharedEmails), JSON.stringify(e.sharedOrgs),
+     JSON.stringify(e.sharedAliases)]
   );
 }
 
-function absorb(entity, mention) {
+/** Record a privately-witnessed value against its owner's overlay. */
+export async function addEvidence(db, entityId, owner, kind, value) {
+  await db.query(
+    `insert into entity_evidence (entity_id, owner, kind, value)
+     values ($1, $2, $3, $4) on conflict do nothing`,
+    [entityId, owner, kind, value]
+  );
+}
+
+/** A shared witness makes side rows for the same values redundant: shared
+ * covers them for every viewer, so the per-owner copies are deleted. */
+export async function promoteEvidence(db, entityId, pairs) {
+  const vals = pairs.filter(([, v]) => v);
+  if (!vals.length) return;
+  const conds = vals.map((_, i) => `(kind = $${i * 2 + 2} and value = $${i * 2 + 3})`).join(" or ");
+  await db.query(`delete from entity_evidence where entity_id = $1 and (${conds})`,
+    [entityId, ...vals.flat()]);
+}
+
+/**
+ * Fold a mention's evidence into the entity. What the SHARED record learns
+ * depends on where the mention was witnessed: a shared-layer mention updates
+ * the shared emails/orgs/aliases columns and may upgrade the display name; a
+ * private-layer mention's values go to entity_evidence for that owner alone
+ * and never touch the shared record or its name. The in-memory union learns
+ * everything either way — matching is global, reading is not.
+ */
+async function absorb(db, entity, mention) {
+  const owner = mention.doc_owner ?? "";
+  const mOrg = normOrgName(mention.org_hint);
   if (mention.norm_email && !entity.emails.includes(mention.norm_email)) {
     entity.emails.push(mention.norm_email);
   }
-  const mOrg = normOrgName(mention.org_hint);
   if (mOrg && !entity.orgs.includes(mOrg)) entity.orgs.push(mOrg);
-  if (mention.norm_name) {
-    entity.normNames.add(mention.norm_name);
-    // Prefer the fullest observed display name ("M. Chen" -> "Maya Chen"),
-    // and any real name over an email-derived one ("tom@x.com" -> "Tom Merrill").
-    const current = mentionNormName(entity.canonical_name) ?? "";
-    const currentIsEmail = entity.canonical_name.includes("@");
-    if (currentIsEmail || mention.norm_name.split(" ").length > current.split(" ").length) {
-      entity.canonical_name = mention.name;
+  if (mention.norm_name) entity.normNames.add(mention.norm_name);
+
+  if (owner === "") {
+    if (mention.norm_email && !entity.sharedEmails.includes(mention.norm_email)) {
+      entity.sharedEmails.push(mention.norm_email);
+    }
+    if (mOrg && !entity.sharedOrgs.includes(mOrg)) entity.sharedOrgs.push(mOrg);
+    if (mention.norm_name) {
+      if (!entity.sharedAliases.includes(mention.norm_name)) entity.sharedAliases.push(mention.norm_name);
+      // Prefer the fullest observed display name ("M. Chen" -> "Maya Chen"),
+      // and any real name over an email-derived one ("tom@x.com" -> "Tom Merrill").
+      const current = mentionNormName(entity.canonical_name) ?? "";
+      const currentIsEmail = entity.canonical_name.includes("@");
+      if (currentIsEmail || mention.norm_name.split(" ").length > current.split(" ").length) {
+        entity.canonical_name = mention.name;
+      }
+    }
+    await promoteEvidence(db, entity.id,
+      [["email", mention.norm_email], ["org", mOrg], ["alias", mention.norm_name]]);
+  } else {
+    for (const [kind, value, shared] of [
+      ["email", mention.norm_email, entity.sharedEmails],
+      ["org", mOrg, entity.sharedOrgs],
+      ["alias", mention.norm_name, entity.sharedAliases],
+    ]) {
+      if (value && !shared.includes(value)) await addEvidence(db, entity.id, owner, kind, value);
     }
   }
 }
 
-export async function createEntityFromMention(db, index, mention) {
+export async function createEntityFromMention(db, index, mention, owner = "") {
+  const mOrg = normOrgName(mention.org_hint);
   const entity = {
     id: id("ent"),
     kind: mention.kind,
+    // The name stays on the row even for a private owner: existence, not
+    // evidence — under "hide" the entity is invisible to other viewers
+    // anyway, and "reveal" shares names by deliberate choice.
     canonical_name: mention.name ?? mention.email ?? "unknown",
     emails: mention.norm_email ? [mention.norm_email] : [],
-    orgs: [],
+    orgs: mOrg ? [mOrg] : [],
     normNames: new Set([mention.norm_name].filter(Boolean)),
   };
-  const mOrg = normOrgName(mention.org_hint);
-  if (mOrg) entity.orgs.push(mOrg);
+  const priv = owner !== "";
+  entity.sharedEmails = priv ? [] : [...entity.emails];
+  entity.sharedOrgs = priv ? [] : [...entity.orgs];
+  entity.sharedAliases = priv ? [] : [...entity.normNames];
   await db.query(
     `insert into entities (id, kind, canonical_name, emails, orgs, aliases) values ($1, $2, $3, $4, $5, $6)`,
     [entity.id, entity.kind, entity.canonical_name,
-     JSON.stringify(entity.emails), JSON.stringify(entity.orgs),
-     JSON.stringify([...entity.normNames])]
+     JSON.stringify(entity.sharedEmails), JSON.stringify(entity.sharedOrgs),
+     JSON.stringify(entity.sharedAliases)]
   );
+  if (priv) {
+    for (const [kind, value] of [
+      ["email", mention.norm_email], ["org", mOrg], ["alias", mention.norm_name],
+    ]) {
+      if (value) await addEvidence(db, entity.id, owner, kind, value);
+    }
+  }
   if (index) index.add(entity);
   return entity;
 }
@@ -188,7 +267,7 @@ export function mentionIdentity(normName, normEmailValue) {
 export async function resolveMentions(db, { defer } = {}) {
   const index = await loadIndex(db);
   const { rows: mentions } = await db.query(
-    `select m.* from mentions m
+    `select m.*, d.owner as doc_owner from mentions m
      join documents d on d.id = m.document_id
      where m.entity_id is null
        and not exists (select 1 from review_queue r
@@ -214,7 +293,7 @@ export async function resolveMentions(db, { defer } = {}) {
       (best.reason !== "exact email match" || emailMatches > 1);
 
     if (best && best.score >= AUTO_MERGE && !ambiguous) {
-      absorb(best.entity, m);
+      await absorb(db, best.entity, m);
       await persistEntity(db, best.entity);
       index.reindex(best.entity);
       await db.query(`update mentions set entity_id = $2 where id = $1`, [m.id, best.entity.id]);
@@ -243,7 +322,7 @@ export async function resolveMentions(db, { defer } = {}) {
     } else {
       if (defer?.has(mentionIdentity(m.norm_name, m.norm_email))) continue;
       // The new entity is indexed, so later mentions of the same person attach to it.
-      const entity = await createEntityFromMention(db, index, m);
+      const entity = await createEntityFromMention(db, index, m, m.doc_owner ?? "");
       await db.query(`update mentions set entity_id = $2 where id = $1`, [m.id, entity.id]);
       stats.created++;
     }

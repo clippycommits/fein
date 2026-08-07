@@ -6,27 +6,70 @@ export async function searchEntities(db, query, limit = 10, { viewer = null } = 
   const q = `%${query.toLowerCase()}%`;
   const { privateEntityVisibility } = await getSettings(db);
   const layers = visibleLayers(viewer);
+  const params = [q, limit];
+  // The shared columns hold only shared-witnessed values, so the LIKEs below
+  // cannot surface another member's private address — the owner still finds
+  // their own through this side-table clause.
+  let evMatch = "";
+  if (viewer) {
+    params.push(viewer);
+    evMatch = ` or exists (
+         select 1 from entity_evidence ev
+         where ev.entity_id = entities.id and ev.owner = $${params.length}
+           and lower(ev.value) like $1)`;
+  }
   // Under the default "hide" policy an entity whose every mention lives in a
   // layer the viewer can't see is invisible: the NAME itself can be the secret.
-  const gate = privateEntityVisibility === "reveal" ? "" : `
+  let gate = "";
+  if (privateEntityVisibility !== "reveal") {
+    const base = params.length;
+    gate = `
        and exists (
          select 1 from mentions mm join documents dd on dd.id = mm.document_id
-         where mm.entity_id = entities.id and dd.owner in (${layers.map((_, i) => `$${i + 3}`).join(", ")})
+         where mm.entity_id = entities.id and dd.owner in (${layers.map((_, i) => `$${base + i + 1}`).join(", ")})
        )`;
+    params.push(...layers);
+  }
   const { rows } = await db.query(
     `select id, kind, canonical_name, emails, orgs, aliases from entities
      where merged_into is null
-       and (lower(canonical_name) like $1 or lower(emails::text) like $1 or lower(orgs::text) like $1)
+       and (lower(canonical_name) like $1 or lower(emails::text) like $1 or lower(orgs::text) like $1${evMatch})
        ${gate}
      order by canonical_name limit $2`,
-    privateEntityVisibility === "reveal" ? [q, limit] : [q, limit, ...layers]
+    params
   );
-  return rows.map(parseEntity);
+  return overlayEvidence(db, rows.map(parseEntity), viewer);
 }
 
-export async function getEntity(db, entityId) {
+/**
+ * Overlay the viewer's private evidence onto entity records at read time.
+ * The shared row never carries what only a private layer witnessed, so every
+ * other viewer gets the row exactly as stored — this is the read half of the
+ * absorption policy (the write half lives in resolve/pipeline.js).
+ */
+async function overlayEvidence(db, entities, viewer) {
+  if (!viewer || !entities.length) return entities;
+  const ph = entities.map((_, i) => `$${i + 2}`).join(", ");
+  const { rows } = await db.query(
+    `select entity_id, kind, value from entity_evidence
+     where owner = $1 and entity_id in (${ph})`,
+    [viewer, ...entities.map((e) => e.id)]
+  );
+  const cols = { email: "emails", org: "orgs", alias: "aliases" };
+  const byId = new Map(entities.map((e) => [e.id, e]));
+  for (const r of rows) {
+    const e = byId.get(r.entity_id);
+    const col = cols[r.kind];
+    if (e && col && !e[col].includes(r.value)) e[col].push(r.value);
+  }
+  return entities;
+}
+
+export async function getEntity(db, entityId, { viewer = null } = {}) {
   const { rows } = await db.query(`select * from entities where id = $1`, [entityId]);
-  return rows.length ? parseEntity(rows[0]) : null;
+  if (!rows.length) return null;
+  const [entity] = await overlayEvidence(db, [parseEntity(rows[0])], viewer);
+  return entity;
 }
 
 /**
@@ -87,7 +130,9 @@ export async function nameSteps(db, steps, { viewer = null } = {}) {
  * listed, and their evidence is not in the connection strengths.
  */
 export async function entityBrief(db, entityId, { viewer = null } = {}) {
-  const entity = await getEntity(db, entityId);
+  // Overlaid for the viewer: a privately-learned alias below still links
+  // deals for its owner, and the emails/orgs arrays show their own evidence.
+  const entity = await getEntity(db, entityId, { viewer });
   if (!entity) return null;
   // A raw id must not bypass the visibility policy the search gate enforces.
   if (!(await entityVisible(db, entity.id, viewer))) return null;

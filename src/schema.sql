@@ -130,6 +130,22 @@ create table if not exists members (
 );
 alter table documents add column if not exists owner text not null default '';
 
+-- Entity-level provenance for absorbed evidence. The shared emails/orgs/
+-- aliases columns on entities may only ever hold values witnessed in at least
+-- one shared-layer mention (or added by an explicit human merge); a value seen
+-- only in a private layer lives here and is overlaid at read time for its
+-- owner alone — otherwise the entity record itself becomes the leak. Derived
+-- state: wiped with entities (FK cascade) and repopulated by resolution from
+-- mentions + document owners, so no snapshot/replay is needed.
+create table if not exists entity_evidence (
+  entity_id text not null references entities(id) on delete cascade,
+  owner     text not null,
+  kind      text not null,             -- email | org | alias
+  value     text not null,
+  primary key (entity_id, owner, kind, value)
+);
+create index if not exists entity_evidence_owner on entity_evidence (owner);
+
 create table if not exists settings (
   key        text primary key,
   value      jsonb not null,

@@ -67,6 +67,10 @@ const BROADCAST_MIN_SENDS = 5;
 const ROLE_MIN_SENDS = 3;
 
 export async function detectAutomated(db) {
+  // Deliberately reads the SHARED email column only: `automated_reason` is a
+  // shared surface, so pattern-flagging an address witnessed solely in a
+  // private layer would advertise its existence. A private-layer robot still
+  // trips the behavioural pass below — mention counts span every layer.
   const { rows } = await db.query(
     `select e.id, e.canonical_name, e.emails,
             count(*) filter (where m.role = 'from') as sends,

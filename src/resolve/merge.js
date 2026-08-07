@@ -47,17 +47,37 @@ export async function mergeEntities(db, keepId, loseId, { actor = "local" } = {}
       : lose.canonical_name.length > keep.canonical_name.length ? lose.canonical_name
       : keep.canonical_name;
 
-    // Exactly what the survivor gained, so unmerge can give it back.
+    // Exactly what the survivor gained, so unmerge can give it back. Private
+    // side rows travel with the merge (the human merged identities, not
+    // layers, and the shared columns stay clean); rows the keeper already
+    // holds for the same (owner, kind, value) are its own and not in the
+    // delta, so unmerge sends back exactly the loser's and no more.
+    const { rows: movedEvidence } = await tx.query(
+      `select owner, kind, value from entity_evidence l
+       where l.entity_id = $2
+         and not exists (select 1 from entity_evidence k
+                         where k.entity_id = $1 and k.owner = l.owner
+                           and k.kind = l.kind and k.value = l.value)`,
+      [keepId, loseId]
+    );
     const delta = {
       emails: emails.filter((x) => !keepEmails.includes(x)),
       orgs: orgs.filter((x) => !keepOrgs.includes(x)),
       aliases: aliases.filter((x) => !keepAliases.includes(x)),
       canonical_name: canonical === keep.canonical_name ? null : keep.canonical_name,
+      evidence: movedEvidence,
     };
     await tx.query(
       `update entities set canonical_name = $2, emails = $3, orgs = $4, aliases = $5 where id = $1`,
       [keepId, canonical, JSON.stringify(emails), JSON.stringify(orgs), JSON.stringify(aliases)]
     );
+    await tx.query(
+      `insert into entity_evidence (entity_id, owner, kind, value)
+       select $1::text, owner, kind, value from entity_evidence where entity_id = $2
+       on conflict do nothing`,
+      [keepId, loseId]
+    );
+    await tx.query(`delete from entity_evidence where entity_id = $1`, [loseId]);
     await tx.query(`update mentions set entity_id = $1 where entity_id = $2`, [keepId, loseId]);
     await tx.query(`update review_queue set candidate_entity_id = $1 where candidate_entity_id = $2`,
       [keepId, loseId]);
@@ -82,9 +102,14 @@ export async function unmergeEntity(db, mergedId, { actor = "local" } = {}) {
     if (!lose) throw new Error(`no entity ${mergedId}`);
     if (!lose.merged_into) throw new Error(`${mergedId} is not merged into anything`);
 
-    // Mentions matching this entity's own identity go back to it.
-    const emails = arr(lose.emails);
-    const aliases = arr(lose.aliases);
+    const delta = typeof lose.merge_delta === "string" ? JSON.parse(lose.merge_delta) : lose.merge_delta;
+    const deltaEv = delta?.evidence ?? [];
+    // Mentions matching this entity's own identity go back to it. A privately-
+    // evidenced entity's identity lives in its side rows (the shared arrays
+    // can be empty), so the values the merge moved over count too.
+    const evVals = (kind) => deltaEv.filter((r) => r.kind === kind).map((r) => r.value);
+    const emails = [...new Set([...arr(lose.emails), ...evVals("email")])];
+    const aliases = [...new Set([...arr(lose.aliases), ...evVals("alias")])];
     const conds = [];
     const params = [lose.merged_into, mergedId];
     if (emails.length) {
@@ -101,10 +126,23 @@ export async function unmergeEntity(db, mergedId, { actor = "local" } = {}) {
         params
       );
     }
+    // Side rows the merge moved over go back with their entity — stranding a
+    // private address on the survivor would keep serving it to its owner
+    // against the wrong person.
+    for (const r of deltaEv) {
+      await tx.query(
+        `delete from entity_evidence where entity_id = $1 and owner = $2 and kind = $3 and value = $4`,
+        [lose.merged_into, r.owner, r.kind, r.value]
+      );
+      await tx.query(
+        `insert into entity_evidence (entity_id, owner, kind, value)
+         values ($1, $2, $3, $4) on conflict do nothing`,
+        [mergedId, r.owner, r.kind, r.value]
+      );
+    }
     // Take back exactly what the merge gave the survivor: leaving its emails
     // behind would let it keep claiming an address it no longer owns, and
     // future mentions of that address would resolve to the wrong person.
-    const delta = typeof lose.merge_delta === "string" ? JSON.parse(lose.merge_delta) : lose.merge_delta;
     if (delta) {
       const { rows: keepRows } = await tx.query(`select * from entities where id = $1`, [lose.merged_into]);
       const keep = keepRows[0];

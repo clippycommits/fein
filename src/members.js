@@ -56,6 +56,10 @@ export async function removeMember(db, memberId, { reassign = null } = {}) {
       await tx.query(`delete from documents where owner = $1`, [memberId]); // cascades to mentions
     }
     await tx.query(`delete from edges where owner = $1`, [memberId]);
+    // Their overlay evidence goes with the layer either way: the rows are
+    // keyed to a member id that stops resolving, and after a reassign the
+    // next reresolve re-derives the values as shared from the moved documents.
+    await tx.query(`delete from entity_evidence where owner = $1`, [memberId]);
     await tx.query(`delete from members where id = $1`, [memberId]);
   });
   return { removed: member.name, documents, reassigned: reassign === "shared" };

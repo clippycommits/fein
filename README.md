@@ -198,6 +198,12 @@ inside the shared graph:
   relationship graph: "Seb can reach Priya, ask him."
 - **Layers combine, they don't replace.** Your own evidence is summed with the
   shared layer before saturation, so private data reinforces public data.
+- **Absorption is layered.** Resolution folds what it learns about a person
+  into their entity record — but evidence absorbed from a private mailbox (a
+  second address, an org affiliation, a fuller name) is visible only to that
+  mailbox's owner, overlaid at read time. The shared record only learns what a
+  shared source has independently witnessed, and display names upgrade only
+  from shared mentions.
 
 ```bash
 fein members add "Seb Larkin" seb@ridgeline.vc

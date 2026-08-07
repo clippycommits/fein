@@ -23,12 +23,14 @@ const db = await getDb();
 const seb = await addMember(db, { name: "Seb Larkin", email: "seb@ridgeline.vc" });
 const tom = await addMember(db, { name: "Tom Merrill", email: "tom@ridgeline.vc" });
 
-// Shared doc so both people exist in the shared graph.
+// Shared doc so both people exist in the shared graph — Vera included, so the
+// absorption case below attaches to an ALREADY-SHARED entity.
 await ingestDocs(db, [{
   source: "calendar", kind: "event", external_id: "shared-1", title: "Partner sync",
   occurred_at: "2026-07-20T10:00:00Z",
   people: [{ name: "Seb Larkin", email: "seb@ridgeline.vc", role: "attendee" },
-           { name: "Tom Merrill", email: "tom@ridgeline.vc", role: "attendee" }],
+           { name: "Tom Merrill", email: "tom@ridgeline.vc", role: "attendee" },
+           { name: "Vera Shared", email: "vera@known.com", role: "attendee" }],
 }]);
 // Seb's private layer, stuffed with distinctive markers in every field.
 await ingestDocs(db, [{
@@ -40,14 +42,33 @@ await ingestDocs(db, [{
            { name: "SECRETPERSON Nair", email: "secretperson@secretcompany.com", role: "to" }],
   orgs: ["SECRETCOMPANY Ventures"],
 }], { owner: seb.id });
+// The absorption trap: Seb's private mail teaches resolution a fuller name,
+// an org, and a second address for shared Vera. Exact-email (0.98) and
+// exact-name-without-conflict (0.96, gmail is freemail so no domain conflict)
+// both AUTO-attach — without the absorption policy these markers land in the
+// shared entity record itself. Lowercase markers catch the normalized forms.
+await ingestDocs(db, [{
+  source: "gmail", kind: "email", external_id: "priv-2", title: "Vera intro",
+  occurred_at: "2026-07-26T10:00:00Z",
+  people: [{ name: "Seb Larkin", email: "seb@ridgeline.vc", role: "from" },
+           { name: "Vera SECRETMIDDLE Shared", email: "vera@known.com",
+             org: "SECRETEVORG Capital", role: "to" }],
+}, {
+  source: "gmail", kind: "email", external_id: "priv-3", title: "Vera follow-up",
+  occurred_at: "2026-07-27T10:00:00Z",
+  people: [{ name: "Seb Larkin", email: "seb@ridgeline.vc", role: "from" },
+           { name: "Vera Shared", email: "secretevidence@gmail.com", role: "to" }],
+}], { owner: seb.id });
 await resolveMentions(db);
 await rebuildEdges(db);
 
-const MARKERS = ["SECRETTITLE", "SECRETBODY", "SECRETCOMPANY", "SECRETPERSON"];
+const MARKERS = ["SECRETTITLE", "SECRETBODY", "SECRETCOMPANY", "SECRETPERSON",
+  "SECRETMIDDLE", "secretmiddle", "secretevidence@", "SECRETEVORG", "secretevorg"];
 const endpoints = [
   "/api/stats", "/api/graph", "/api/documents", "/api/reviews", "/api/audit",
   "/api/radar", "/api/members", "/api/settings", "/api/search?q=secret",
-  "/api/search?q=nair", "/api/extract/status",
+  "/api/search?q=nair", "/api/search?q=secretevidence", "/api/search?q=secretmiddle",
+  "/api/extract/status",
 ];
 
 let leaks = 0;
@@ -104,6 +125,37 @@ console.log(leaks ? `\n${leaks} LEAK(S) FOUND` : "  no marker reached a viewer w
   console.log("  ok  direct-id and graph-link probes done");
 }
 
+// The absorption case explicitly: private evidence auto-attached to the
+// already-shared Vera must not reach the shared row, its search index, or her
+// display name — while the owner's overlay still carries all of it.
+{
+  const vera = (await fetch(`${BASE}/api/search?q=vera`).then((r) => r.json()))[0];
+  if (!vera) { leaks++; console.log("  FAIL: shared person Vera not found"); }
+  else {
+    if (vera.canonical_name !== "Vera Shared") {
+      leaks++; console.log(`  LEAK canonical name upgraded from a private mailbox: ${vera.canonical_name}`);
+    }
+    for (const [label, asParam] of [["tom", `?as=${tom.id}`], ["shared", ""]]) {
+      const text = await fetch(`${BASE}/api/entity/${vera.id}${asParam}`).then((r) => r.text());
+      for (const m of ["SECRETMIDDLE", "secretmiddle", "secretevidence@", "secretevorg"]) {
+        if (text.includes(m)) { leaks++; console.log(`  LEAK [${label}] Vera's brief carries absorbed ${m}`); }
+      }
+    }
+    for (const [label, qs] of [["tom", `&as=${tom.id}`], ["shared", ""]]) {
+      const hits = await fetch(`${BASE}/api/search?q=secretevidence${qs}`).then((r) => r.json());
+      if (hits.length) { leaks++; console.log(`  LEAK [${label}] search finds a privately-absorbed address`); }
+    }
+    const ownHits = await fetch(`${BASE}/api/search?q=secretevidence&as=${seb.id}`).then((r) => r.json());
+    if (ownHits.length !== 1 || ownHits[0].id !== vera.id) {
+      leaks++; console.log("  FAIL: the owner cannot search their own absorbed address — over-filtering");
+    }
+    const own = await fetch(`${BASE}/api/entity/${vera.id}?as=${seb.id}`).then((r) => r.text());
+    if (["secretmiddle", "secretevidence@", "secretevorg"].some((m) => !own.includes(m))) {
+      leaks++; console.log("  FAIL: the owner's overlay is missing their own absorbed evidence");
+    } else console.log("  ok  absorbed private evidence stays with its owner");
+  }
+}
+
 console.log("\nControl — as SEB (owner) markers SHOULD appear:");
 let sebSees = 0;
 for (const ep of ["/api/documents", "/api/reviews"]) {
@@ -132,6 +184,8 @@ const mcpProbe = async (label, asParam) => {
     ["company_memory", { company: "secretcompany ventures" }],
     ["entity_brief", { entity: "secretperson@secretcompany.com" }],
     ["search_entities", { query: "nair" }],
+    ["search_entities", { query: "secretevidence" }],
+    ["entity_brief", { entity: "Vera Shared" }],
     ["entity_brief", { entity: "Seb Larkin" }],
     ["strongest_connections", { entity: "Seb Larkin" }],
     ["meeting_prep", { entity: "Seb Larkin", me: "Tom Merrill" }],
