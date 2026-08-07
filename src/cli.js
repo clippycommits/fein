@@ -5,7 +5,7 @@ import { loadJsonl } from "./ingest/local.js";
 import { ingestDocs } from "./ingest/index.js";
 import { resolveMentions } from "./resolve/pipeline.js";
 import { listReviews, resolveReview } from "./resolve/review.js";
-import { rebuildEdges } from "./graph/edges.js";
+import { rebuildEdges, rebuildEdgesFor } from "./graph/edges.js";
 import { findWarmPath, findIntroducers } from "./graph/paths.js";
 import { searchEntities, entityBrief, resolveRef, counts } from "./graph/queries.js";
 import { getEntity } from "./graph/queries.js";
@@ -277,7 +277,7 @@ async function main() {
       const keep = await refOrDie(db, args[0]);
       const lose = await refOrDie(db, args[1]);
       const r = await mergeEntities(db, keep.id, lose.id, { actor });
-      await rebuildEdges(db);
+      await rebuildEdgesFor(db, [keep.id, lose.id]);
       out(r);
       break;
     }
@@ -290,7 +290,7 @@ async function main() {
       );
       if (!rows.length) throw new Error(`no merged entity matching "${args.join(" ")}"`);
       const r = await unmergeEntity(db, rows[0].id, { actor });
-      await rebuildEdges(db);
+      await rebuildEdgesFor(db, [r.restored, r.from]);
       out(r);
       break;
     }

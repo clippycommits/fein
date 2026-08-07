@@ -44,6 +44,7 @@ export async function resolveReview(db, reviewId, decision, { actor = "local" } 
   const row = rows[0];
   const mention = { ...row, id: row.mention_id_real };
 
+  let entityId; // the entity whose evidence changed — callers refresh its edges
   if (decision === "accept") {
     const { rows: ents } = await db.query(`select * from entities where id = $1`, [row.candidate_entity_id]);
     const e = ents[0];
@@ -57,9 +58,11 @@ export async function resolveReview(db, reviewId, decision, { actor = "local" } 
     await db.query(`update entities set emails = $2, orgs = $3, aliases = $4 where id = $1`,
       [e.id, JSON.stringify(emails), JSON.stringify(orgs), JSON.stringify(aliases)]);
     await db.query(`update mentions set entity_id = $2 where id = $1`, [mention.id, e.id]);
+    entityId = e.id;
   } else if (decision === "reject") {
     const entity = await createEntityFromMention(db, null, mention);
     await db.query(`update mentions set entity_id = $2 where id = $1`, [mention.id, entity.id]);
+    entityId = entity.id;
   } else {
     throw new Error(`decision must be accept or reject, got: ${decision}`);
   }
@@ -73,5 +76,5 @@ export async function resolveReview(db, reviewId, decision, { actor = "local" } 
     candidate: row.candidate_entity_id,
     score: row.score,
   }, actor);
-  return { reviewId, decision };
+  return { reviewId, decision, entity: entityId };
 }

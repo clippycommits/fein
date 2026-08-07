@@ -8,6 +8,7 @@ import { z } from "zod";
 import { getDb } from "../db.js";
 import { searchEntities, entityBrief, resolveRef, counts, nameSteps } from "../graph/queries.js";
 import { findWarmPath, findIntroducers, strongestConnections } from "../graph/paths.js";
+import { rebuildEdgesFor } from "../graph/edges.js";
 import { listReviews, resolveReview } from "../resolve/review.js";
 import { getEntity } from "../graph/queries.js";
 import { companyMemory } from "../graph/memory.js";
@@ -196,7 +197,13 @@ export function buildMcpServer(db, { viewer = null, actor = "agent" } = {}) {
     "review_resolve",
     "Confirm or reject a pending entity match. accept = same person, reject = different person.",
     { review_id: z.string(), decision: z.enum(["accept", "reject"]) },
-    async ({ review_id, decision }) => text(await resolveReview(db, review_id, decision, { actor }))
+    async ({ review_id, decision }) => {
+      const result = await resolveReview(db, review_id, decision, { actor });
+      // The graph is a read model: an agent's decision refreshes it exactly
+      // like a dashboard click — but only the entity the decision touched.
+      await rebuildEdgesFor(db, [result.entity]);
+      return text(result);
+    }
   );
 
   return server;

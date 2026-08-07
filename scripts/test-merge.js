@@ -11,7 +11,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { getDb } = await import(join(root, "src/db.js"));
 const { ingestDocs } = await import(join(root, "src/ingest/index.js"));
 const { resolveMentions } = await import(join(root, "src/resolve/pipeline.js"));
-const { rebuildEdges } = await import(join(root, "src/graph/edges.js"));
+const { rebuildEdges, rebuildEdgesFor } = await import(join(root, "src/graph/edges.js"));
 const { mergeEntities, unmergeEntity, listMerges } = await import(join(root, "src/resolve/merge.js"));
 const { reresolveAll } = await import(join(root, "src/resolve/reresolve.js"));
 const { searchEntities, entityBrief, counts } = await import(join(root, "src/graph/queries.js"));
@@ -58,7 +58,9 @@ const side = (await find("alex@northgate.io"))[0];
 check(work && side && work.id !== side.id, "the two identities start separate", { work: work?.id, side: side?.id });
 
 const merged = await mergeEntities(db, work.id, side.id, { actor: "Tom Merrill" });
-await rebuildEdges(db);
+// The incremental path is what the API and CLI use after a merge — the
+// survivor-inherits-connections assertions below exercise it, not the full rebuild.
+await rebuildEdgesFor(db, [work.id, side.id]);
 check(merged.emails.includes("alex@ridgeline.vc") && merged.emails.includes("alex@northgate.io"),
   "both addresses land on the survivor", merged.emails);
 const mergeRow = (await listAudit(db)).find((a) => a.action === "entity_merge");

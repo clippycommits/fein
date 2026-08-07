@@ -10,7 +10,7 @@ import { ingestDocs } from "../ingest/index.js";
 import { loadJsonl } from "../ingest/local.js";
 import { resolveMentions } from "../resolve/pipeline.js";
 import { listReviews, resolveReview } from "../resolve/review.js";
-import { rebuildEdges, strengthOf } from "../graph/edges.js";
+import { rebuildEdges, rebuildEdgesFor, strengthOf } from "../graph/edges.js";
 import { findWarmPath, findIntroducers } from "../graph/paths.js";
 import { searchEntities, entityBrief, counts, getEntity, nameSteps } from "../graph/queries.js";
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
@@ -324,7 +324,8 @@ async function route(db, req, res, url, port) {
     }
     const result = await resolveReview(db, path.slice("/api/reviews/".length), body.decision,
       { actor: await actorOf(db, url) });
-    await rebuildEdges(db); // graph is a read model; refresh after human input
+    // Graph is a read model; refresh what the decision touched, nothing more.
+    await rebuildEdgesFor(db, [result.entity]);
     return json(res, result);
   }
 
@@ -405,7 +406,7 @@ async function route(db, req, res, url, port) {
     const { mergeEntities } = await import("../resolve/merge.js");
     if (!body.keep || !body.lose) throw withStatus(new Error("keep and lose entity ids are required"), 400);
     const result = await mergeEntities(db, body.keep, body.lose, { actor: await actorOf(db, url) });
-    await rebuildEdges(db);
+    await rebuildEdgesFor(db, [body.keep, body.lose]);
     return json(res, { ...result, stats: await counts(db) });
   }
 
@@ -414,7 +415,7 @@ async function route(db, req, res, url, port) {
     const { unmergeEntity } = await import("../resolve/merge.js");
     if (!body.entity) throw withStatus(new Error("entity id is required"), 400);
     const result = await unmergeEntity(db, body.entity, { actor: await actorOf(db, url) });
-    await rebuildEdges(db);
+    await rebuildEdgesFor(db, [result.restored, result.from]);
     return json(res, { ...result, stats: await counts(db) });
   }
 
@@ -429,7 +430,9 @@ async function route(db, req, res, url, port) {
     const memberId = path.slice("/api/members/".length);
     const reassign = url.searchParams.get("reassign") === "shared" ? "shared" : null;
     const result = await removeMember(db, memberId, { reassign });
-    await rebuildEdges(db); // their layer is gone; the read model must follow
+    // removeMember already dropped the departed layer's edges; only documents
+    // moved INTO the shared layer leave the read model stale.
+    if (reassign === "shared") await rebuildEdges(db);
     await audit(db, "member_remove", result, await actorOf(db, url));
     return json(res, result);
   }

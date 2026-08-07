@@ -121,8 +121,23 @@ console.log("[4/10] review flow + audit");
   check(reviews.body.length === 1, "one pending review (M. Chen)", reviews.body.length);
   const bad = await send("POST", `/api/reviews/${reviews.body[0].id}`, { decision: "maybe" });
   check(bad.status === 400, "invalid decision 400s");
+  const gBefore = await get("/api/graph");
   const ok = await send("POST", `/api/reviews/${reviews.body[0].id}`, { decision: "accept" });
-  check(ok.status === 200, "review accept succeeds");
+  check(ok.status === 200 && ok.body.entity, "review accept succeeds and names the entity", ok.body);
+  // The accept triggers an incremental rebuild: the M. Chen email (Maya <-> Dana)
+  // must land in the graph without a full rebuild, and corrupt nothing else.
+  const gAfter = await get("/api/graph");
+  const mayaId = (await get("/api/search?q=maya")).body[0].id;
+  const danaId = (await get("/api/search?q=dana")).body[0].id;
+  const strengthOf = (g, x, y) => g.body.links.find((l) =>
+    [l.source, l.target].includes(x) && [l.source, l.target].includes(y))?.strength ?? 0;
+  check(strengthOf(gAfter, mayaId, danaId) > strengthOf(gBefore, mayaId, danaId),
+    "the accepted mention's evidence strengthens Maya–Dana incrementally",
+    { before: strengthOf(gBefore, mayaId, danaId), after: strengthOf(gAfter, mayaId, danaId) });
+  check(gAfter.body.links.length >= gBefore.body.links.length &&
+        gAfter.body.links.every((l) => Number.isFinite(l.strength)),
+    "no other edge is lost or corrupted by the incremental pass",
+    { before: gBefore.body.links.length, after: gAfter.body.links.length });
   const audit = await get("/api/audit");
   check(audit.body.some((a) => a.action === "review_accept"), "audit trail records the decision",
     audit.body.map((a) => a.action));
