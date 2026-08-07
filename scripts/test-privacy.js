@@ -14,7 +14,7 @@ const { resolveMentions } = await import(join(root, "src/resolve/pipeline.js"));
 const { rebuildEdges } = await import(join(root, "src/graph/edges.js"));
 const { findWarmPath, findIntroducers, strongestConnections } = await import(join(root, "src/graph/paths.js"));
 const { entityBrief, searchEntities } = await import(join(root, "src/graph/queries.js"));
-const { addMember, listMembers, removeMember } = await import(join(root, "src/members.js"));
+const { addMember, listMembers, removeMember, resolveMember } = await import(join(root, "src/members.js"));
 
 let failures = 0;
 const check = (cond, msg, extra) => {
@@ -183,6 +183,21 @@ console.log("[6/6] removing a member disposes of their layer");
   const irisId = await id("Iris Kwan");
   const sharedConns = await strongestConnections(db, irisId, {});
   check(sharedConns.length === 1, "reassigned evidence is now visible to everyone", sharedConns);
+}
+
+console.log("[6b/6] ambiguous member refs fail loudly, naming the candidates");
+{
+  // addMember refuses duplicate names, but one member's name can still
+  // collide with another's email — the one ambiguity resolveMember must
+  // refuse rather than pick a private layer at random.
+  const alex = await addMember(db, { name: "Alex" });
+  const alexa = await addMember(db, { name: "Alexa", email: "alex" });
+  const err = await resolveMember(db, "alex").then(() => null, (e) => e);
+  check(/matches 2 members/.test(err?.message ?? ""), "name-vs-email collision throws", err?.message);
+  check(Boolean(err?.message.includes(alex.id) && err?.message.includes(alexa.id)),
+    "the error lists both candidates", err?.message);
+  await removeMember(db, alex.id);
+  await removeMember(db, alexa.id);
 }
 
 await db.close();

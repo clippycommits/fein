@@ -32,7 +32,15 @@ export async function startMcpServer() {
   let actor = "agent";
   if (env("VIEWER")) {
     const { resolveMember } = await import("../members.js");
-    const member = await resolveMember(db, env("VIEWER"));
+    let member;
+    try {
+      member = await resolveMember(db, env("VIEWER"));
+    } catch (err) {
+      // A wrong viewer must fail before the first tool call — loudly, not
+      // with a stack trace.
+      console.error(err.message);
+      process.exit(1);
+    }
     viewer = member.id;
     actor = `agent:${member.name}`;
   }

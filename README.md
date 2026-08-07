@@ -209,7 +209,11 @@ All of this works without the terminal too: the Data tab manages members, the
 **Uploads land in** selector above the dropzone targets a member's private
 layer, and the **Viewing as** switch in the header changes whose view you see.
 For agents, `?as=<member>` on the MCP URL (or `FEIN_VIEWER=<member>` for
-stdio) binds an MCP server to one person's view.
+stdio) binds an MCP server to one person's view. Every `?as=` — API reads,
+uploads, and `/mcp` alike — accepts a member id, exact name, or email (names
+and emails match case-insensitively; ids are exact), and an unknown or
+ambiguous ref is a hard 400 listing the candidates, never a silent answer
+from the shared layer.
 
 **What "existence is shared" actually means.** A person the firm already knows
 (they appear in any shared document) stays visible to everyone, and a colleague's

@@ -236,6 +236,20 @@ console.log("[9/10] privacy layers: one-click scene, private upload, scoping");
   const sebDocs = await get(`/api/documents?as=${seb.id}`);
   check(!sebDocs.body.withheld, "nothing is withheld from their owner", sebDocs.body.withheld);
 
+  // One resolver everywhere: reads now fail loudly on an unknown ?as= (they
+  // used to answer silently from the shared layer) and take names/emails
+  // like /mcp and ingest always did.
+  check((await get("/api/documents?as=nobody")).status === 400,
+    "unknown ?as on a read is a hard 400, never the shared layer");
+  check((await get("/api/graph?as=nobody")).status === 400,
+    "unknown ?as on the graph is a hard 400");
+  const byName = await get("/api/documents?as=Seb%20Larkin");
+  const byEmail = await get("/api/documents?as=seb@ridgeline.vc");
+  check(byName.status === 200 && byName.body.total === sebDocs.body.total && !byName.body.withheld,
+    "?as= accepts an exact member name on reads", byName.body);
+  check(byEmail.status === 200 && byEmail.body.total === sebDocs.body.total && !byEmail.body.withheld,
+    "?as= accepts a member email on reads", byEmail.body);
+
   const tomE = (await get("/api/search?q=tom")).body.find((e) => e.canonical_name === "Tom Merrill");
   const priyaE = (await get("/api/search?q=priya")).body[0];
   const path = await get(`/api/path?from=${tomE.id}&to=${priyaE.id}&as=${tom.id}`);

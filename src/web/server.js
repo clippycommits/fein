@@ -15,7 +15,7 @@ import { findWarmPath, findIntroducers } from "../graph/paths.js";
 import { searchEntities, entityBrief, counts, getEntity, nameSteps } from "../graph/queries.js";
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
 import { putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
-import { listMembers, addMember, removeMember, getMember, resolveMember, visibleLayers } from "../members.js";
+import { listMembers, addMember, removeMember, resolveMember, visibleLayers } from "../members.js";
 import { extractPending, extractionStats } from "../extract/pipeline.js";
 import { extractConfig, isAuthError } from "../extract/client.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -226,14 +226,7 @@ async function route(db, req, res, url, port) {
         id: null,
       }, 405);
     }
-    let member = null;
-    if (url.searchParams.get("as")) {
-      try {
-        member = await resolveMember(db, url.searchParams.get("as"));
-      } catch (err) {
-        throw withStatus(new Error(err.message), 400);
-      }
-    }
+    const member = await memberOf(db, url);
     const body = parseJson(await readBody(req));
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless
@@ -345,17 +338,10 @@ async function route(db, req, res, url, port) {
 
   if (req.method === "POST" && path === "/api/ingest") {
     const name = String(url.searchParams.get("name") ?? "upload.jsonl").slice(0, 200);
-    // `?as=<member>` targets that member's private layer. Unknown members are
-    // a hard 400: silently landing someone's inbox in the shared layer would
+    // `?as=<member>` targets that member's private layer; memberOf 400s on an
+    // unknown ref — silently landing someone's inbox in the shared layer would
     // be the exact leak the layer model exists to prevent.
-    let member = null;
-    if (url.searchParams.get("as")) {
-      try {
-        member = await resolveMember(db, url.searchParams.get("as"));
-      } catch (err) {
-        throw withStatus(new Error(err.message), 400);
-      }
-    }
+    const member = await memberOf(db, url);
     const docs = await parseUpload(name, await readBody(req));
     const ingested = await ingestDocs(db, docs, { owner: member?.id ?? "" });
     const resolved = await resolveMentions(db);
@@ -501,25 +487,25 @@ async function route(db, req, res, url, port) {
   json(res, { error: "not found" }, 404);
 }
 
-/** `?as=<member id>` selects the viewing layer; unknown ids fall back to shared. */
-async function viewerOf(db, url) {
+/** `?as=<member>` — id, exact name, or email — selects the viewing layer.
+ * Unknown or ambiguous refs are a hard 400: silently answering from the
+ * shared layer would hide the exact wrong-layer bug the model exists to
+ * prevent. Every `?as=` on the server resolves through here. */
+async function memberOf(db, url) {
   const as = url.searchParams.get("as");
   if (!as) return null;
-  const member = await getMember(db, as);
-  return member?.id ?? null;
+  try {
+    return await resolveMember(db, as);
+  } catch (err) {
+    throw withStatus(new Error(err.message), 400);
+  }
 }
+const viewerOf = async (db, url) => (await memberOf(db, url))?.id ?? null;
 
 /** `?as=` as an audit actor: the member's display name, or "local". Self-
  * declared under the single shared token — this is provenance, not
- * authentication; per-user login is what makes it honest. Silent fallback
- * deliberately mirrors viewerOf until the one-viewer-resolver work unifies
- * how loudly an unknown `?as` fails. */
-async function actorOf(db, url) {
-  const as = url.searchParams.get("as");
-  if (!as) return "local";
-  const member = await getMember(db, as);
-  return member?.name ?? "local";
-}
+ * authentication; per-user login is what makes it honest. */
+const actorOf = async (db, url) => (await memberOf(db, url))?.name ?? "local";
 
 /** Presence and a masked hint only — the stored key never leaves the server. */
 async function connectorStatus(db, provider) {
