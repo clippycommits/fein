@@ -168,8 +168,10 @@ export async function startWebServer(port = 4321) {
   console.log(`fein ${VERSION} — http://${loopback ? "localhost" : host}:${port}${AUTH_TOKEN ? " (token auth on)" : ""}`);
 
   // Scheduled connector syncs share this process and database. Ticks are
-  // no-ops until a connector sets syncIntervalMinutes > 0.
-  const stopScheduler = startScheduler(db);
+  // no-ops until a connector sets syncIntervalMinutes > 0 — and defer while
+  // an extraction run holds the pipeline: syncs and extraction end in the
+  // same resolveMentions + rebuildEdges, which must never interleave.
+  const stopScheduler = startScheduler(db, { isBusy: () => extracting });
 
   // A single bad request must never take the server down.
   process.on("unhandledRejection", (err) => console.error("unhandled rejection:", err));
@@ -386,8 +388,14 @@ async function route(db, req, res, url, port) {
   }
 
   if (req.method === "POST" && path === "/api/extract/cancel") {
+    // Same contract as every other mutation: ?as= resolves through the one
+    // viewer resolver (unknown refs are a hard 400), and the cancel leaves its
+    // own audit row — the eventual "extract" row is attributed to whoever
+    // STARTED the run, so without this the canceller would be unrecoverable.
+    const actor = await actorOf(db, url);
     if (!extracting) return json(res, { error: "no extraction run in progress" }, 409);
     cancelExtract = true; // the run checks between documents; partial work stays durable
+    await audit(db, "extract_cancel", {}, actor);
     return json(res, { cancelling: true });
   }
 
@@ -395,6 +403,14 @@ async function route(db, req, res, url, port) {
     const member = await memberOf(db, url); // before the claim: no await may split check-and-set
     const actor = member?.name ?? "local";
     if (extracting) return json(res, { error: "an extraction run is already in progress" }, 409);
+    // Syncs and extraction end in the same resolveMentions + rebuildEdges —
+    // a non-transactional check-then-act loop that double-creates entities
+    // when interleaved — so each side yields to the other's claim.
+    if (syncingProvider()) {
+      return json(res, {
+        error: `a ${CONNECTOR_PROVIDERS[syncingProvider()].label} sync is running — retry when it finishes`,
+      }, 409);
+    }
     extracting = true; // claim BEFORE the first await — the check-and-set must be atomic
     cancelExtract = false; // reset on the same synchronous claim, or a late cancel kills the NEXT run
     extractProgress = null;
@@ -548,6 +564,10 @@ async function route(db, req, res, url, port) {
       ...(interval !== undefined ? { syncIntervalMinutes: interval } : {}),
       workspace: info.workspace,
       connectedAt: new Date().toISOString(),
+      // putConnector merges over the existing blob, and a key that just passed
+      // verify() is evidence the failure streak is over: without this reset a
+      // stale count keeps nextDueAt deferring the fresh connection up to 24h.
+      consecutiveFailures: 0,
     });
     await audit(db, "connector_connect", { connector: provider, workspace: info.workspace },
       await actorOf(db, url));
@@ -556,6 +576,11 @@ async function route(db, req, res, url, port) {
 
   if (req.method === "POST" && provider && connWrite[2]) {
     const member = await memberOf(db, url);
+    // The mirror of the extract endpoint's sync guard: a manual sync must not
+    // interleave its resolve + edge rebuild with an in-flight extraction run.
+    if (extracting) {
+      return json(res, { error: "an extraction run is in progress — retry when it finishes" }, 409);
+    }
     let result;
     try {
       result = await runConnectorSync(db, provider, { actor: member?.name ?? "local", trigger: "manual" });

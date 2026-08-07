@@ -188,13 +188,19 @@ check(cancelRun.failed === 0 && !cancelRun.aborted,
     "estimate's pending count shrank by exactly the extracted docs", est.totalPending);
 }
 
-console.log("[6/13] pipeline with scripted generator (resumes the cancelled backlog)");
+console.log("[6/13] pipeline with scripted generator (limit, then the full backlog)");
+// `limit` is the budget boundary the server's batch default rides on: exactly
+// N documents processed, everything beyond skipped — durable and resumable
+// like cancellation.
+const limited = await extractPending(db, { generate: scripted, limit: 2 });
+check(limited.extracted === 2 && limited.failed === 0,
+  "an explicit limit caps the run at exactly 2 documents", limited);
 const callsBeforeRun1 = calls;
 const run1 = await extractPending(db, { generate: scripted });
-check(run1.extracted === before.pendingExtraction - cancelRun.extracted,
+check(run1.extracted === before.pendingExtraction - cancelRun.extracted - limited.extracted,
   "a plain re-run extracts exactly the remainder", run1);
-check(run1.skipped >= cancelRun.extracted,
-  "the doc extracted before cancellation skips by hash", run1.skipped);
+check(run1.skipped >= cancelRun.extracted + limited.extracted,
+  "docs extracted before the cancel/limit runs skip by hash", run1.skipped);
 check(run1.failed === 0 && !run1.aborted, "no failures", run1);
 check(run1.tokens.input === (calls - callsBeforeRun1) * 100, "token accounting sums per call", run1.tokens);
 
@@ -217,8 +223,18 @@ const run2 = await extractPending(db, { generate: scripted });
 check(run2.extracted === 0 && run2.skipped === run2.scanned, "second run skips everything (hash match)", run2);
 check(calls === callsBefore, "no model calls on a clean re-run");
 process.env.FEIN_EXTRACT_MODEL = "claude-test-different";
+// The estimate applies the run's own skip key, so stale-'ok' docs a config
+// change re-extracts are counted and priced — the batch total (and the
+// progress `total` the server derives from it) is the batch the run takes.
+const estStale = await estimateExtraction(db);
+const estStale1 = await estimateExtraction(db, { limit: 1 });
 const run3 = await extractPending(db, { generate: scripted });
 check(run3.extracted > 0, "model change re-extracts (hash includes model)", run3);
+check(estStale.totalPending === run3.extracted && estStale.docsThisRun === run3.extracted,
+  "the estimate counts every stale-'ok' doc the run re-extracts",
+  { estimated: estStale.totalPending, ran: run3.extracted });
+check(estStale1.docsThisRun === 1 && estStale1.approxInputTokens > 0,
+  "a limited estimate prices the stale batch's bodies, not zero", estStale1);
 delete process.env.FEIN_EXTRACT_MODEL;
 process.env.FEIN_EXTRACT_EFFORT = "high";
 const run3b = await extractPending(db, { generate: scripted });

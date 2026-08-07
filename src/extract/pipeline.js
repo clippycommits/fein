@@ -462,29 +462,39 @@ const OUTPUT_TOKENS_PER_REQUEST = 300; // grounded JSON is small
 
 /**
  * Cost/size preview for the next run: how many documents a `limit`-bounded run
- * would touch, and roughly what it would spend. Shares extractionStats'
- * pending predicate (and its documented staleness undercount) plus the run's
- * ordering, so the batch it prices is the batch extractPending would take.
- * Deliberately approximate — ~4 chars/token on body lengths, chunk counts
- * ignore paragraph-boundary overlap, list prices only — and every surface
- * showing these figures labels them approximate. The char sums read bodies
- * only inside the limited batch; the corpus-wide figure stays a count.
+ * would touch, and roughly what it would spend. Applies the run's own skip
+ * key — the extraction hash, computed in SQL — plus the run's ordering, so
+ * the batch it prices is the batch extractPending would take, INCLUDING
+ * stale-'ok' docs a model/effort/floor/prompt change will re-extract (which
+ * extractionStats' cheaper pending count deliberately ignores). Deliberately
+ * approximate — ~4 chars/token on body lengths, chunk counts ignore
+ * paragraph-boundary overlap, list prices only — and every surface showing
+ * these figures labels them approximate. The char sums read bodies only
+ * inside the limited batch; the corpus-wide figure stays a count.
  */
 export async function estimateExtraction(db, { limit = Infinity } = {}) {
   const cfg = extractConfig();
+  // extractionHash(cfg, body_sha256) in SQL: the config prefix is computed
+  // once here, the per-doc body hash joined in the query — so "pending" means
+  // exactly what the run's loop means (an ok/exhausted row only counts under
+  // the CURRENT hash; anything else gets processed and charged to `limit`).
+  const hashPrefix = `${PROMPT_VERSION}|${cfg.model}|${cfg.effort}|${minConfidence()}|`;
+  const currentHash = `encode(sha256(convert_to($1 || d.body_sha256, 'UTF8')), 'hex')`;
   const pendingFrom = `
     from documents d
     where d.body_sha256 is not null
       and not exists (select 1 from extractions e where e.document_id = d.id
+                      and e.input_sha256 = ${currentHash}
                       and (e.status = 'ok' or (e.status = 'failed' and e.attempts >= ${MAX_ATTEMPTS})))`;
-  const totalPending = Number((await db.query(`select count(*) as n ${pendingFrom}`)).rows[0].n);
+  const totalPending = Number((await db.query(`select count(*) as n ${pendingFrom}`, [hashPrefix])).rows[0].n);
   const lim = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : null;
   const { rows: [batch] } = await db.query(
     `select count(*) as docs,
             coalesce(sum(least(length(body), ${MAX_BODY_CHARS})), 0) as chars,
             coalesce(sum(ceil(least(length(body), ${MAX_BODY_CHARS})::numeric / ${CHUNK_CHARS})), 0) as requests
      from (select d.body ${pendingFrom}
-           order by d.occurred_at desc nulls last, d.id${lim !== null ? ` limit ${lim}` : ""}) as batch`
+           order by d.occurred_at desc nulls last, d.id${lim !== null ? ` limit ${lim}` : ""}) as batch`,
+    [hashPrefix]
   );
   const requests = Number(batch.requests);
   const approxInputTokens = Math.ceil(Number(batch.chars) / 4) + requests * PROMPT_OVERHEAD_TOKENS;

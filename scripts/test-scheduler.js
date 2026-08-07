@@ -54,7 +54,8 @@ globalThis.fetch = async (url, opts = {}) => {
 
 const { getDb } = await import(join(root, "src/db.js"));
 const { putConnector, getConnector, deleteConnector, clampSyncInterval } = await import(join(root, "src/connectors.js"));
-const { runConnectorSync, schedulerTick, nextDueAt, syncingProvider } = await import(join(root, "src/sync.js"));
+const { runConnectorSync, schedulerTick, nextDueAt, syncingProvider, startScheduler, schedulerRunning } =
+  await import(join(root, "src/sync.js"));
 const { listAudit } = await import(join(root, "src/settings.js"));
 
 let failures = 0;
@@ -72,7 +73,7 @@ const T0 = Date.parse("2026-08-08T09:00:00Z");
 const at = (ms) => ({ now: () => ms });
 const docCount = async () => Number((await db.query(`select count(*) as n from documents`)).rows[0].n);
 
-console.log("[1/8] nextDueAt is pure and unit-testable");
+console.log("[1/10] nextDueAt is pure and unit-testable");
 {
   const iso = new Date(T0).toISOString();
   check(nextDueAt({}, T0) === null, "no interval -> null (off)");
@@ -92,7 +93,7 @@ console.log("[1/8] nextDueAt is pure and unit-testable");
     "a configured interval above 24h is honored as-is (the cap is for backoff)");
 }
 
-console.log("[2/8] interval knob validation");
+console.log("[2/10] interval knob validation");
 {
   check(clampSyncInterval(0) === 0, "0 (off) is valid");
   check(clampSyncInterval(5) === 5 && clampSyncInterval(10080) === 10080, "5..10080 minutes are valid");
@@ -103,14 +104,14 @@ console.log("[2/8] interval knob validation");
   }
 }
 
-console.log("[3/8] off by default");
+console.log("[3/10] off by default");
 {
   await putConnector(db, "attio", { apiKey: "good-key-abcd1234", workspace: "Test Workspace" });
   const r = await schedulerTick(db, at(T0));
   check(r.ran.length === 0 && r.skipped.includes("attio"), "a connected connector with no interval never runs", r);
 }
 
-console.log("[4/8] due / not due");
+console.log("[4/10] due / not due");
 {
   await putConnector(db, "attio", { syncIntervalMinutes: 60 });
   const r1 = await schedulerTick(db, at(T0));
@@ -129,12 +130,18 @@ console.log("[4/8] due / not due");
   const before = await docCount();
   const r2 = await schedulerTick(db, at(T0 + 30 * MIN));
   check(r2.ran.length === 0, "half an interval later: not due", r2);
+  // isBusy is the extraction single-flight seen from here: a due connector
+  // defers (no attempt, no bookkeeping) while another consumer holds the
+  // shared resolve + edge-rebuild pipeline.
+  const busy = await schedulerTick(db, { ...at(T0 + 61 * MIN), isBusy: () => true });
+  check(busy.ran.length === 0 && busy.skipped.includes("attio"),
+    "a due connector defers while extraction holds the pipeline (isBusy)", busy);
   const r3 = await schedulerTick(db, at(T0 + 61 * MIN));
   check(r3.ran.includes("attio"), "past the interval: due again", r3);
   check((await docCount()) === before, "the re-pull is idempotent — doc count unchanged");
 }
 
-console.log("[5/8] failure + backoff");
+console.log("[5/10] failure + backoff");
 const lastGoodSync = (await getConnector(db, "attio")).lastSyncAt;
 const tFail = T0 + 122 * MIN;
 {
@@ -167,7 +174,7 @@ const tFail = T0 + 122 * MIN;
     "success resets the failure count and advances lastSyncAt", cfg2);
 }
 
-console.log("[6/8] not-configured guard");
+console.log("[6/10] not-configured guard");
 {
   await deleteConnector(db, "attio");
   await putConnector(db, "attio", { syncIntervalMinutes: 60 }); // armed blob, no key, no env var
@@ -175,7 +182,7 @@ console.log("[6/8] not-configured guard");
   check(r.ran.length === 0 && r.skipped.includes("attio"), "an armed blob with no key never runs", r);
 }
 
-console.log("[7/8] overlap guard (single-flight)");
+console.log("[7/10] overlap guard (single-flight)");
 {
   await putConnector(db, "attio", { apiKey: "good-key-abcd1234", syncIntervalMinutes: 60 });
   let release;
@@ -196,7 +203,26 @@ console.log("[7/8] overlap guard (single-flight)");
   check(syncingProvider() === null, "the single-flight claim is released");
 }
 
-console.log("[8/8] guard errors do not pollute the blob");
+console.log("[8/10] a disconnect mid-run stays a disconnect");
+{
+  // DELETE lands while the pull is gated in flight: the run itself completes
+  // (its ingest already committed), but the outcome bookkeeping must not
+  // resurrect the deleted blob with ghost lastSyncAt/lastRun timestamps.
+  let release;
+  gate = new Promise((r) => { release = r; });
+  const inflight = runConnectorSync(db, "attio", { actor: "local", trigger: "manual" });
+  await new Promise((r) => setImmediate(r));
+  check(syncingProvider() === "attio", "the sync is in flight before the disconnect");
+  await deleteConnector(db, "attio");
+  release();
+  gate = null;
+  const result = await inflight;
+  check(result.ingested.docCount === 3, "the in-flight pull still completes", result.ingested);
+  check((await getConnector(db, "attio")) === null,
+    "success bookkeeping does not resurrect the deleted connector blob");
+}
+
+console.log("[9/10] guard errors do not pollute the blob");
 {
   const before = await getConnector(db, "attio");
   await deleteConnector(db, "attio");
@@ -205,6 +231,15 @@ console.log("[8/8] guard errors do not pollute the blob");
   check(code === 400, "not-configured is the caller's 400", code);
   check((await getConnector(db, "attio")) === null,
     "the not-configured guard writes no failure bookkeeping", { before: Boolean(before) });
+}
+
+console.log("[10/10] startScheduler exposes a live handle (the server-wiring observable)");
+{
+  check(schedulerRunning() === false, "no scheduler is running before start");
+  const stop = startScheduler(db, { everyMs: 3_600_000 }); // never fires in-test; unref'd
+  check(schedulerRunning() === true, "startScheduler arms the interval");
+  stop();
+  check(schedulerRunning() === false, "stopping disarms it");
 }
 
 await db.close();

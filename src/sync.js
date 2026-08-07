@@ -37,6 +37,13 @@ export async function runConnectorSync(db, provider, { actor = "local", trigger 
   }
   syncingConnector = provider; // claim BEFORE the first await — the check-and-set must be atomic
   const t0 = Date.now();
+  // Outcome bookkeeping, success and failure alike. Skipped when the connector
+  // was disconnected mid-run: putConnector re-reads and merges, so writing
+  // here would resurrect the blob a DELETE just removed — a ghost "last
+  // synced" for a connector the user severed while the pull was in flight.
+  const recordOutcome = async (patch) => {
+    if ((await resolveConnectorKey(db, provider, envVar)).key) await putConnector(db, provider, patch);
+  };
   try {
     const { key, config } = await resolveConnectorKey(db, provider, envVar);
     if (!key) throw withStatus(new Error(`connect an ${label} API key first`), 400);
@@ -47,7 +54,7 @@ export async function runConnectorSync(db, provider, { actor = "local", trigger 
       const edges = await rebuildEdges(db);
       const iso = now().toISOString();
       // Bookkeeping is wrapped so it can never mask a real result or error.
-      await putConnector(db, provider, {
+      await recordOutcome({
         lastSyncAt: iso,
         lastDocCount: ingested.docCount,
         lastAttemptAt: iso,
@@ -63,7 +70,7 @@ export async function runConnectorSync(db, provider, { actor = "local", trigger 
     } catch (err) {
       const iso = now().toISOString();
       const error = String(err.message).slice(0, 300);
-      await putConnector(db, provider, {
+      await recordOutcome({
         lastAttemptAt: iso,
         consecutiveFailures: (config.consecutiveFailures ?? 0) + 1,
         lastRun: { at: iso, ok: false, trigger, durationMs: Date.now() - t0, error },
@@ -97,10 +104,13 @@ export function nextDueAt(config, tickNow = Date.now()) {
 /**
  * One scheduler pass: run every registered connector that is configured,
  * armed, and due. Sequential — providers share resolve + edge rebuilds, the
- * same reason manual syncs are single-flight. A tick never throws; a failed
- * run is already persisted + audited by runConnectorSync, so it only logs.
+ * same reason manual syncs are single-flight. `isBusy` extends that claim to
+ * OTHER pipeline consumers (an in-flight extraction run): resolveMentions is
+ * a check-then-act loop, so interleaving it with a sync's resolve would
+ * double-create entities. A tick never throws; a failed run is already
+ * persisted + audited by runConnectorSync, so it only logs.
  */
-export async function schedulerTick(db, { now = Date.now } = {}) {
+export async function schedulerTick(db, { now = Date.now, isBusy = () => false } = {}) {
   const ran = [];
   const skipped = [];
   for (const [provider, { envVar }] of Object.entries(CONNECTOR_PROVIDERS)) {
@@ -108,7 +118,7 @@ export async function schedulerTick(db, { now = Date.now } = {}) {
     // interval to 0 stops the schedule immediately.
     const { key, config } = await resolveConnectorKey(db, provider, envVar);
     if (!key || !(Number(config.syncIntervalMinutes) > 0) ||
-        syncingConnector || now() < nextDueAt(config, now())) {
+        syncingConnector || isBusy() || now() < nextDueAt(config, now())) {
       skipped.push(provider);
       continue;
     }
@@ -119,18 +129,25 @@ export async function schedulerTick(db, { now = Date.now } = {}) {
   return { ran, skipped };
 }
 
+let schedulerTimer = null; // the live interval handle — observable, so tests can pin the server wiring
+export const schedulerRunning = () => schedulerTimer !== null;
+
 /**
  * Plain interval, no immediate tick: boot is never a sync trigger (startup
  * stays cheap, tests stay deterministic) — an overdue connector runs on the
  * first tick, at most everyMs later. unref'd so it never holds the process
  * open. Returns the stop function.
  */
-export function startScheduler(db, { everyMs = 60_000, now = Date.now } = {}) {
+export function startScheduler(db, { everyMs = 60_000, now = Date.now, isBusy = () => false } = {}) {
   const t = setInterval(() => {
-    schedulerTick(db, { now }).catch((err) => console.error("scheduler tick:", err));
+    schedulerTick(db, { now, isBusy }).catch((err) => console.error("scheduler tick:", err));
   }, everyMs);
   t.unref();
-  return () => clearInterval(t);
+  schedulerTimer = t;
+  return () => {
+    clearInterval(t);
+    if (schedulerTimer === t) schedulerTimer = null;
+  };
 }
 
 /**

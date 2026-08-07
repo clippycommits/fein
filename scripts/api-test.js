@@ -12,13 +12,39 @@ const PORT = 4977;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // Attio is mocked at the fetch boundary so the connector is covered without a
-// live workspace; everything else falls through to the real fetch.
+// live workspace, and the Anthropic API is mocked the same way so the server's
+// extraction run path is covered without a model call; everything else falls
+// through to the real fetch. The key is pinned to a test value and the base
+// URL cleared, so no ambient credential can ever turn a run into a live call.
 delete process.env.ATTIO_API_KEY;
+process.env.ANTHROPIC_API_KEY = "test-key-never-a-real-credential";
+delete process.env.ANTHROPIC_AUTH_TOKEN;
+delete process.env.ANTHROPIC_BASE_URL;
+delete process.env.FEIN_EXTRACT_MODEL;
+delete process.env.FEIN_EXTRACT_EFFORT;
+delete process.env.FEIN_EXTRACT_MIN_CONFIDENCE;
 const realFetch = globalThis.fetch;
 const attioJson = (data) => ({ ok: true, status: 200, json: async () => ({ data }), text: async () => "" });
+let attioGate = null;      // when set, the attio mock awaits it — a sync hangs in flight
+let anthropicGate = null;  // when set, the model mock awaits it — an extraction run hangs in flight
+let anthropicCalls = 0;
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
+  if (u.startsWith("https://api.anthropic.com")) {
+    anthropicCalls++;
+    if (anthropicGate) await anthropicGate;
+    // An empty but schema-valid extraction: the server wiring (batch default,
+    // cancel, progress, audit) is what's under test here — grounding and
+    // persistence are covered by test-extract.js with a scripted generator.
+    return new Response(JSON.stringify({
+      id: "msg_test", type: "message", role: "assistant", model: "claude-opus-5",
+      stop_reason: "end_turn", stop_sequence: null,
+      content: [{ type: "text", text: JSON.stringify({ people: [], orgs: [], deals: [] }) }],
+      usage: { input_tokens: 100, output_tokens: 20 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }
   if (!u.startsWith("https://api.attio.com")) return realFetch(url, opts);
+  if (attioGate) await attioGate;
   const auth = opts.headers?.authorization ?? "";
   // "flaky-key" verifies fine but 500s on record queries — a workspace whose
   // pulls fail after a successful connect.
@@ -71,11 +97,22 @@ const send = async (method, path, body, headers = {}) => {
   });
   return { status: res.status, body: await res.json().catch(() => null) };
 };
+// Bounded poll for gated in-flight runs: fails the suite loudly on timeout
+// instead of hanging it.
+const until = async (fn, what, ms = 5000) => {
+  const t0 = Date.now();
+  while (!(await fn())) {
+    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
 
-console.log("[1/11] health, security, empty state");
+console.log("[1/12] health, security, empty state");
 {
   const h = await get("/api/health");
   check(h.status === 200 && h.body.ok === true && h.body.version, "health reports ok + version", h.body);
+  const { schedulerRunning } = await import(join(root, "src/sync.js"));
+  check(schedulerRunning() === true, "boot armed the connector sync scheduler", schedulerRunning());
   const page = await fetch(BASE + "/");
   check(page.headers.get("content-security-policy")?.includes("default-src 'self'"), "CSP header on pages");
   const stats = await get("/api/stats");
@@ -86,7 +123,7 @@ console.log("[1/11] health, security, empty state");
   check(missing.status === 404, "unknown API route 404s");
 }
 
-console.log("[2/11] onboarding: load sample dataset");
+console.log("[2/12] onboarding: load sample dataset");
 {
   const res = await send("POST", "/api/sample", {}, { origin: BASE });
   // 16 seed docs + 22 fixtures (incl. the team); Seb's 2 private emails are a
@@ -99,7 +136,7 @@ console.log("[2/11] onboarding: load sample dataset");
   check(res.body.members?.length === 2, "sample seeds the two-member team", res.body.members);
 }
 
-console.log("[3/11] read endpoints");
+console.log("[3/12] read endpoints");
 {
   const graph = await get("/api/graph");
   check(graph.body.nodes.length === 14 && graph.body.links.length > 5, "graph payload has people + links",
@@ -163,7 +200,7 @@ console.log("[3/11] read endpoints");
     "documents breakdown by source, private layer withheld", { total: docs.body.total, withheld: docs.body.withheld });
 }
 
-console.log("[4/11] review flow + audit");
+console.log("[4/12] review flow + audit");
 {
   const reviews = await get("/api/reviews");
   check(reviews.body.length === 1, "one pending review (M. Chen)", reviews.body.length);
@@ -191,7 +228,7 @@ console.log("[4/11] review flow + audit");
     audit.body.map((a) => a.action));
 }
 
-console.log("[5/11] settings: customization rebuilds the graph");
+console.log("[5/12] settings: customization rebuilds the graph");
 {
   const before = await get("/api/settings");
   check(before.body.weights.meeting === 3 && before.body.halfLifeDays === 180, "default settings served", before.body);
@@ -244,12 +281,11 @@ console.log("[5/11] settings: customization rebuilds the graph");
   check(row?.actor === "Tom Merrill", "the ?as viewer is recorded as the audit actor", row);
 }
 
-console.log("[6/11] extraction estimate + budget knob (no model calls)");
+console.log("[6/12] extraction estimate + budget knob (no model calls)");
 {
-  // Deliberately no POST /api/extract here: the server path constructs the
-  // real SDK client, and ambient credentials could make it a live call. The
-  // run path (default limit, cancelled stats, audit) is covered at the
-  // pipeline layer in test-extract.js.
+  // Estimate/status/cancel-guard only here — read-only, no model calls. The
+  // run path itself (settings-default limit, cancel + audit, progress,
+  // single-flight) is the next section, against the mocked model above.
   const status = await get("/api/extract/status");
   check(status.status === 200 && status.body.progress === null,
     "status carries progress: null while idle", status.body.progress);
@@ -279,9 +315,72 @@ console.log("[6/11] extraction estimate + budget knob (no model calls)");
   const cancel = await send("POST", "/api/extract/cancel", {});
   check(cancel.status === 409 && /no extraction run/.test(cancel.body?.error ?? ""),
     "cancel with no run in progress is a 409", cancel);
+  const cancelBadAs = await send("POST", "/api/extract/cancel?as=nobody", {});
+  check(cancelBadAs.status === 400,
+    "cancel resolves ?as= like every mutation — unknown member is a hard 400", cancelBadAs.status);
 }
 
-console.log("[7/11] hostile input");
+console.log("[7/12] extraction run: default batch, cancel + audit, single-flight (mocked model)");
+{
+  // The sample fixtures are all single-chunk bodies, so one model call is one
+  // document — the gate below parks the run inside a known document.
+  const gated = () => { let release; const p = new Promise((r) => { release = r; }); return { p, release }; };
+
+  // -- Run A: cancel mid-run, with the pipeline claims held --
+  const g1 = gated();
+  anthropicGate = g1.p;
+  const runA = send("POST", "/api/extract", {});
+  await until(() => anthropicCalls > 0, "the run to reach the model");
+  const st = await get("/api/extract/status");
+  check(st.body.running === true, "status reports the in-flight run", st.body.running);
+  const dup = await send("POST", "/api/extract", {});
+  check(dup.status === 409, "a second run is refused while one is in flight", dup.status);
+  const busySync = await send("POST", "/api/connectors/attio/sync");
+  check(busySync.status === 409 && /extraction run/.test(busySync.body?.error ?? ""),
+    "a manual sync yields to the extraction claim (shared resolve pipeline)", busySync);
+  const badCancel = await send("POST", "/api/extract/cancel?as=nobody", {});
+  check(badCancel.status === 400, "cancel still resolves ?as= while a run is live", badCancel.status);
+  const cancelled = await send("POST", "/api/extract/cancel?as=Tom%20Merrill", {});
+  check(cancelled.status === 200 && cancelled.body.cancelling === true, "cancel acknowledges", cancelled.body);
+  g1.release();
+  anthropicGate = null;
+  const resA = await runA;
+  check(resA.status === 200 && resA.body.extract.cancelled === "cancelled by user",
+    "the run stops between documents through the success path", resA.body.extract);
+  check(resA.body.extract.extracted === 1, "only the in-flight document completed", resA.body.extract.extracted);
+  const auditRows = (await get("/api/audit")).body;
+  const cancelRow = auditRows.find((a) => a.action === "extract_cancel");
+  check(cancelRow?.actor === "Tom Merrill",
+    "the cancellation is audited with the CANCELLER as actor (the extract row names the starter)", cancelRow);
+  check(auditRows.some((a) => a.action === "extract" && a.detail?.cancelled === "cancelled by user"),
+    "the run's own audit row records the cancelled outcome");
+
+  // -- Run B: a fresh run must not inherit the cancel flag, an empty body is
+  // one settings-sized batch (3, stored above) — never the whole corpus — and
+  // progress rides the status endpoint for any tab.
+  const g2 = gated();
+  anthropicGate = g2.p;
+  const callsAtStart = anthropicCalls;
+  const runB = send("POST", "/api/extract", {});
+  await until(() => anthropicCalls > callsAtStart, "document 1 to reach the model");
+  const g3 = gated();
+  anthropicGate = g3.p;  // swap BEFORE releasing doc 1, so doc 2 parks and doc 1's progress is visible
+  g2.release();
+  await until(() => anthropicCalls > callsAtStart + 1, "document 2 to reach the model");
+  const mid = await get("/api/extract/status");
+  check(mid.body.running === true && mid.body.progress?.done === 1 && mid.body.progress.total === 3,
+    "progress (done/total, from the priced batch) rides the status endpoint", mid.body.progress);
+  g3.release();
+  anthropicGate = null;
+  const resB = await runB;
+  check(resB.status === 200 && !resB.body.extract.cancelled && resB.body.extract.extracted === 3,
+    "empty body = one settings-sized batch, and the cancel flag reset on claim", resB.body.extract);
+  const after = await get("/api/extract/status");
+  check(after.body.running === false && after.body.progress === null, "status idle again after the run",
+    { running: after.body.running, progress: after.body.progress });
+}
+
+console.log("[8/12] hostile input");
 {
   // Malformed request targets must not crash the process.
   for (const target of ["//%ff", "//[", "//:", "//%c0%ae", "//"]) {
@@ -322,7 +421,7 @@ console.log("[7/11] hostile input");
     "junk limit falls back to the default", { status: junk.status, nodes: junk.body?.nodes?.length });
 }
 
-console.log("[8/11] attio connector (mocked workspace)");
+console.log("[9/12] attio connector (mocked workspace)");
 {
   check((await get("/api/connectors/attio")).body.connected === false, "starts disconnected");
   const probe = await send("POST", "/api/connectors/attio", {});
@@ -341,6 +440,19 @@ console.log("[8/11] attio connector (mocked workspace)");
   check(sync.status === 200 && sync.body.ingested.docCount === 3, "sync ingests people, companies and notes", sync.body.ingested);
   const maya = (await get("/api/search?q=maya")).body[0];
   check(maya?.emails.includes("maya@nordwind.vc"), "Attio contact merges with the existing person", maya?.emails);
+
+  // The other direction of the shared-pipeline claim: while a sync is in
+  // flight, an extraction run must not start.
+  let releaseAttio;
+  attioGate = new Promise((r) => { releaseAttio = r; });
+  const inflight = send("POST", "/api/connectors/attio/sync");
+  await until(async () => (await get("/api/connectors/attio")).body.syncing === true, "the sync to hold its claim");
+  const busyRun = await send("POST", "/api/extract", {});
+  check(busyRun.status === 409 && /sync is running/.test(busyRun.body?.error ?? ""),
+    "an extraction run yields to the sync claim (shared resolve pipeline)", busyRun);
+  releaseAttio();
+  attioGate = null;
+  check((await inflight).status === 200, "the gated sync itself completes");
 
   const st1 = (await get("/api/connectors/attio")).body;
   check(st1.lastRun?.ok === true && st1.lastRun.trigger === "manual" && st1.lastRun.docCount === 3,
@@ -380,6 +492,14 @@ console.log("[8/11] attio connector (mocked workspace)");
     "sync_failed reaches the audit trail");
   check(!JSON.stringify(failRows).includes("flaky-key"), "the flaky key never reaches the audit log");
 
+  // A key that just passed verify() is evidence the failure streak is over:
+  // the connect patch must reset the backoff, or nextDueAt keeps deferring a
+  // healthy connector from the stale count (putConnector merges over blobs).
+  const rekey = await send("POST", "/api/connectors/attio", { apiKey: "good-key-abcd1234" });
+  check(rekey.status === 200 && rekey.body.consecutiveFailures === 0,
+    "re-connecting with a verified key resets the failure backoff",
+    { consecutiveFailures: rekey.body.consecutiveFailures });
+
   const audit = await get("/api/audit");
   check(!JSON.stringify(audit.body).includes("good-key"), "the key never reaches the audit log");
   const gone = await send("DELETE", "/api/connectors/attio");
@@ -388,7 +508,7 @@ console.log("[8/11] attio connector (mocked workspace)");
   check(docs.body.sources.some((s) => s.source === "attio"), "disconnect keeps ingested data");
 }
 
-console.log("[9/11] upload + reresolve");
+console.log("[10/12] upload + reresolve");
 {
   const csv = readFileSync(join(root, "sample/contacts.csv"), "utf8");
   const up = await send("POST", "/api/ingest?name=contacts.csv", csv);
@@ -412,7 +532,7 @@ console.log("[9/11] upload + reresolve");
   check(post.body.length === 0, "no re-asked question after replay", post.body.length);
 }
 
-console.log("[10/11] privacy layers: one-click scene, private upload, scoping");
+console.log("[11/12] privacy layers: one-click scene, private upload, scoping");
 {
   const members = (await get("/api/members")).body;
   const tom = members.find((m) => m.name === "Tom Merrill");
@@ -531,7 +651,7 @@ console.log("[10/11] privacy layers: one-click scene, private upload, scoping");
     rrTom.body.automatedOverrides);
 }
 
-console.log("[11/11] MCP over HTTP: one endpoint, viewer-scoped");
+console.log("[12/12] MCP over HTTP: one endpoint, viewer-scoped");
 {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
