@@ -21,18 +21,21 @@ import { extractPending, extractionStats, estimateExtraction } from "../extract/
 import { extractConfig, isAuthError } from "../extract/client.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { buildMcpServer } from "../mcp/server.js";
+import { apiV1 } from "./api.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const PUBLIC = join(ROOT, "src/web/public");
-const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
+export const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
 
 const STATIC = {
   "/": ["index.html", "text/html; charset=utf-8"],
   "/app.js": ["app.js", "text/javascript; charset=utf-8"],
   "/style.css": ["style.css", "text/css; charset=utf-8"],
+  "/docs": ["docs.html", "text/html; charset=utf-8"],
+  "/docs.js": ["docs.js", "text/javascript; charset=utf-8"],
 };
 
-const SECURITY_HEADERS = {
+export const SECURITY_HEADERS = {
   "content-security-policy":
     "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'",
   "x-content-type-options": "nosniff",
@@ -41,7 +44,7 @@ const SECURITY_HEADERS = {
 };
 
 const MAX_UPLOAD = 50 * 1024 * 1024;
-const STARTED = Date.now();
+export const STARTED = Date.now();
 
 // ---- access control -------------------------------------------------------
 // FEIN_AUTH_TOKEN gates everything except /api/health (for container
@@ -88,7 +91,7 @@ const LOGIN_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" c
 function handleAuth(req, res, url) {
   if (!AUTH_TOKEN) return false;
   const path = url.pathname;
-  if (path === "/api/health") return false;
+  if (path === "/api/health" || path === "/api/v1/health" || path === "/api/v1/version") return false;
 
   if (path === "/login") {
     const attempt = url.searchParams.get("token");
@@ -112,7 +115,19 @@ function handleAuth(req, res, url) {
   if (tokenMatches(presentedToken(req))) return false;
 
   if (path.startsWith("/api/") || path === "/mcp") {
-    json(res, { error: "unauthorized — send Authorization: Bearer <FEIN_AUTH_TOKEN>" }, 401);
+    const msg = "unauthorized — send Authorization: Bearer <FEIN_AUTH_TOKEN>";
+    // The versioned API speaks problem+json for every error, including this
+    // upstream auth rejection; the dashboard /api/* and /mcp keep their bare
+    // {error} shape untouched.
+    if (path === "/api/v1" || path.startsWith("/api/v1/")) {
+      res.writeHead(401, { "content-type": "application/problem+json", ...SECURITY_HEADERS });
+      res.end(JSON.stringify({
+        type: "https://fein.vc/probs/unauthorized",
+        title: "Unauthorized", status: 401, detail: msg, error: msg,
+      }));
+    } else {
+      json(res, { error: msg }, 401);
+    }
   } else {
     res.writeHead(302, { location: "/login", ...SECURITY_HEADERS });
     res.end();
@@ -207,6 +222,14 @@ async function route(db, req, res, url, port) {
   }
 
   if (req.method !== "GET") guardCrossOrigin(req, port);
+
+  // ---- versioned public API: a faithful HTTP projection of the graph ----
+  // Sits alongside (not inside) MCP and dashboard routing, so it inherits the
+  // auth gate and the cross-origin write guard above, then owns its own
+  // problem+json error boundary, ETag/304, and pagination.
+  if (path === "/api/v1" || path.startsWith("/api/v1/")) {
+    return apiV1(db, req, res, url, port);
+  }
 
   // ---- MCP endpoint: the same graph, for agents, from the same process ----
   // Stateless Streamable HTTP: a fresh server per request, so the dashboard
@@ -607,7 +630,7 @@ async function route(db, req, res, url, port) {
  * Unknown or ambiguous refs are a hard 400: silently answering from the
  * shared layer would hide the exact wrong-layer bug the model exists to
  * prevent. Every `?as=` on the server resolves through here. */
-async function memberOf(db, url) {
+export async function memberOf(db, url) {
   const as = url.searchParams.get("as");
   if (!as) return null;
   try {
@@ -616,12 +639,12 @@ async function memberOf(db, url) {
     throw withStatus(new Error(err.message), 400);
   }
 }
-const viewerOf = async (db, url) => (await memberOf(db, url))?.id ?? null;
+export const viewerOf = async (db, url) => (await memberOf(db, url))?.id ?? null;
 
 /** `?as=` as an audit actor: the member's display name, or "local". Self-
  * declared under the single shared token — this is provenance, not
  * authentication; per-user login is what makes it honest. */
-const actorOf = async (db, url) => (await memberOf(db, url))?.name ?? "local";
+export const actorOf = async (db, url) => (await memberOf(db, url))?.name ?? "local";
 
 /** Presence and a masked hint only — the stored key never leaves the server. */
 async function connectorStatus(db, provider) {
@@ -791,7 +814,7 @@ async function documentsPayload(db, viewer = null) {
 
 /* ---------- plumbing ---------- */
 
-function json(res, obj, status = 200) {
+export function json(res, obj, status = 200) {
   if (res.writableEnded) return;
   if (res.headersSent) { res.end(); return; } // mid-stream failure: close, headers can't change
   res.writeHead(status, { "content-type": "application/json", ...SECURITY_HEADERS });
@@ -822,31 +845,31 @@ function guardCrossOrigin(req, port) {
   }
 }
 
-function withStatus(err, code) {
+export function withStatus(err, code) {
   err.statusCode = code;
   return err;
 }
 
 /** Map known user-error shapes to 4xx; everything else is a 500. */
-function classify(err) {
+export function classify(err) {
   const m = err.message ?? "";
   if (/(not found|no entity|no pending review|no member|no live entity)/i.test(m)) return 404;
   if (/(unknown (weight|resolution|radar|extraction)|must be a number|must be below|must be accept or reject|unsupported|invalid|decision |cannot merge|needs a name|matches \d+ members|no name or email column|already exists)/i.test(m)) return 400;
   return 500;
 }
 
-function required(url, name) {
+export function required(url, name) {
   const v = url.searchParams.get(name);
   if (!v) throw withStatus(new Error(`missing required param: ${name}`), 400);
   return v;
 }
 
-function boundedInt(url, name, dflt, min, max) {
+export function boundedInt(url, name, dflt, min, max) {
   const v = Number(url.searchParams.get(name) ?? dflt);
   return Number.isFinite(v) ? Math.max(min, Math.min(max, Math.floor(v))) : dflt;
 }
 
-function parseJson(text) {
+export function parseJson(text) {
   try {
     return JSON.parse(text || "{}");
   } catch {
@@ -854,7 +877,7 @@ function parseJson(text) {
   }
 }
 
-function readBody(req) {
+export function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
