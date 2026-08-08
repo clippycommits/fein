@@ -271,6 +271,44 @@ claude mcp add fein -- node /path/to/fein/src/cli.js mcp
 
 Tools: `meeting_prep` (one call: profile + relationship history + receipts + your warm paths to them), `company_memory` (every recorded deal signal for a company — investments *and passes with their reasoning* — with document provenance), `relationship_radar`, `find_warm_path`, `find_introducers`, `entity_brief`, `search_entities`, `strongest_connections`, `graph_stats`, `review_queue`, `review_resolve`.
 
+## HTTP API — the same graph, over plain HTTP
+
+Not every integration speaks MCP. A calendar webhook, a nightly Slack digest,
+a CRM enrichment job, or a plain `curl` in CI wants ordinary HTTP. So the same
+dashboard process also serves a **versioned, documented REST API at `/api/v1`** —
+a faithful projection of the same graph, from the same process and database,
+under the same token auth and the *same privacy scoping* as MCP.
+
+```bash
+curl -H "Authorization: Bearer $FEIN_AUTH_TOKEN" \
+  "http://localhost:4321/api/v1/entities?ref=maya@northgate.io"
+```
+
+- **Auth** is the deployment token (`Authorization: Bearer <FEIN_AUTH_TOKEN>`, or
+  the browser cookie). Only `/api/v1/health` and `/api/v1/version` are open.
+- **`?as=<member>`** binds a request to one member's private layer, exactly as on
+  MCP — an unknown or ambiguous ref is a hard `400`, never a silent answer from
+  the shared layer. Redacted private warm-path hops come back as
+  `(private contact)` with no id, same as everywhere else.
+- **Errors** are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `problem+json`
+  (carrying a legacy `error` alias for a soft transition), so a category like
+  `entity-not-found` or `ambiguous-ref` is a machine-stable `type`, not an
+  English string to regex.
+- **Lists** page with an opaque `cursor`; `limit` clamps at 200.
+
+The surface mirrors the MCP tools and adds what HTTP integrators need that agents
+did not: a brief by id (`GET /api/v1/entities/{id}`) or by email
+(`?ref=<email>`), warm paths (`/api/v1/paths?from=&to=`), `/api/v1/introducers`,
+timing (`/api/v1/radar`), institutional memory
+(`/api/v1/companies/{ref}/memory` — "why did we pass?"), a meeting bundle
+(`/api/v1/meeting-prep?with=`), batch lookup (`POST /api/v1/batch/resolve`) for
+CRM enrichment, and a streaming full crawl (`GET /api/v1/entities/export.ndjson`).
+Writes are limited to the one the graph already trusts from an agent:
+`POST /api/v1/reviews/{id}/decision`.
+
+The complete reference is [docs/http-api.md](docs/http-api.md); the machine spec
+is served at `/api/v1/openapi.json` and rendered as a browsable page at `/docs`.
+
 ## CLI
 
 ```
