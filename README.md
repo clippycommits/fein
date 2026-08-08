@@ -282,6 +282,7 @@ fein ingest-google <service> live pull via Google APIs
 fein sync [--extract]        resolve + rebuild edges (--extract mines bodies first)
 fein extract [--limit N]     LLM mention extraction over unprocessed bodies
 fein reresolve               rebuild entities from scratch (decisions replayed)
+fein memory <company>        fund memory: deal signals — investments + passes with reasoning
 fein entities | brief | path | intros | review | stats
 fein mcp                     MCP server (stdio)
 ```
@@ -343,14 +344,14 @@ Each co-occurrence contributes `weight(kind) × decay(age)`: meetings 3, calenda
 ## Testing
 
 ```bash
-npm test    # resolution smoke suite + API suite + extraction suite
+npm test    # 13 suites: resolution, ingest, API, extraction, privacy, radar, automated, merge, leak probe, auth, connectors, edges, scheduler
 ```
 
 The extraction suite runs the full pipeline against a scripted fake model —
 grounding, idempotency, failure isolation, and resolution integration are all
 covered offline; no API key needed.
 
-Both suites run on throwaway databases. The codebase has been through three adversarial multi-agent review passes; all 27 confirmed findings are fixed with regression coverage (see CHANGELOG).
+All suites run on throwaway databases. Recent releases have each gone through adversarial multi-agent review; confirmed findings are fixed, the most serious pinned by regression tests (see the [CHANGELOG](CHANGELOG.md)).
 
 ## Status & roadmap
 

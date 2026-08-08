@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>fundgraph — how it works</title>
+<title>Fein — how it works</title>
 <style>
   /* Print palette: validated reference instance (dataviz method), light surface.
      Color carries meaning: blue = the graph/core, orange = a human decides,
@@ -182,7 +182,7 @@
 
 <!-- ================= PAGE 1 — the big picture ================= -->
 <section class="page">
-  <div class="brand"><span class="web">🕸️</span><h1>fundgraph</h1></div>
+  <div class="brand"><span class="web">🕸️</span><h1>Fein</h1></div>
   <div class="tagline">How it works — one document for your whole team, technical or not.</div>
 
   <div class="kicker">The problem</div>
@@ -190,16 +190,16 @@
   The same person appears a hundred different ways. Nobody can see the whole picture — and neither can AI:
   an assistant that guesses with keyword or "similarity" search fetches the wrong things and doesn't know what exists.</p>
 
-  <div class="kicker" style="margin-top:12px">What fundgraph does</div>
-  <p class="lede">fundgraph reads all of those sources and builds one <b>map of reality</b>: every person and
+  <div class="kicker" style="margin-top:12px">What Fein does</div>
+  <p class="lede">Fein reads all of those sources and builds one <b>map of reality</b>: every person and
   organization, recognized across sources as one entity, connected by relationship strength <b>computed from actual
   behavior</b> — how often you really meet, email, and work together. Your team browses the map in a dashboard;
   your AI tools plug into the exact same map and stop guessing.</p>
 
-  <svg viewBox="0 0 740 300" style="width:100%; margin-top:14px" role="img" aria-label="Architecture: your systems flow into fundgraph's three stages, consumed by the dashboard and AI agents">
+  <svg viewBox="0 0 740 300" style="width:100%; margin-top:14px" role="img" aria-label="Architecture: your systems flow into Fein's three stages, consumed by the dashboard and AI agents">
     <!-- column headers -->
     <text x="80"  y="16" font-size="10.5" fill="#898781" font-weight="600" text-anchor="middle" letter-spacing="1">YOUR SYSTEMS</text>
-    <text x="380" y="16" font-size="10.5" fill="#898781" font-weight="600" text-anchor="middle" letter-spacing="1">FUNDGRAPH</text>
+    <text x="380" y="16" font-size="10.5" fill="#898781" font-weight="600" text-anchor="middle" letter-spacing="1">FEIN</text>
     <text x="655" y="16" font-size="10.5" fill="#898781" font-weight="600" text-anchor="middle" letter-spacing="1">WHO USES THE MAP</text>
 
     <!-- sources -->
@@ -269,7 +269,7 @@
     <text x="380" y="290" font-size="10" fill="#898781" text-anchor="middle">One local database. The dashboard and the agent endpoint are the same process, reading the same live graph.</text>
   </svg>
 
-  <div class="onesent"><b>In one sentence:</b> fundgraph turns your fund's scattered communication into a single,
+  <div class="onesent"><b>In one sentence:</b> Fein turns your fund's scattered communication into a single,
   trustworthy map of <i>who you know and how well</i> — that both people and AI can navigate.</div>
 
   <div class="toc">
@@ -281,7 +281,7 @@
     <div class="row"><b>Page 6</b><span>Trust — privacy layers, where AI is allowed and where it's banned, and the technical fact sheet.</span></div>
   </div>
 
-  <div class="foot"><span>fundgraph · how it works</span><span>page 1 of 6</span></div>
+  <div class="foot"><span>Fein · how it works</span><span>page 1 of 6</span></div>
 </section>
 
 <!-- ================= PAGE 2 — the pipeline ================= -->
@@ -362,7 +362,7 @@
   <div class="callout orange"><b>The trust rule:</b> the system never merges two identities on a guess, and no AI model
   ever assigns a relationship score. Anything uncertain is a question for a human — that's what makes the map safe to act on.</div>
 
-  <div class="foot"><span>fundgraph · how it works</span><span>page 2 of 6</span></div>
+  <div class="foot"><span>Fein · how it works</span><span>page 2 of 6</span></div>
 </section>
 
 <!-- ================= PAGE 3 — what you get ================= -->
@@ -409,7 +409,7 @@
     <div>
       <div class="surf" style="border-color:var(--aqua)">
         <h3>Agents on the graph — via MCP</h3>
-        <p class="sub">MCP is the open standard that lets AI assistants call tools. fundgraph exposes the whole map as
+        <p class="sub">MCP is the open standard that lets AI assistants call tools. Fein exposes the whole map as
         one endpoint, so Claude (or any MCP client) answers from <b>facts in your graph</b> instead of guessing.</p>
         <div class="ex" style="background:var(--aqua-soft); border-color:var(--aqua)">
           <b>You:</b> "Prep me for my meeting with Priya Nair. I'm Dana."<br>
@@ -426,7 +426,7 @@
           <div><code>review_queue</code> · <code>review_resolve</code></div>
         </div>
         <p class="tiny" style="margin-top:8px">Connect once, while the dashboard is running:</p>
-        <code class="cmd">claude mcp add --transport http fundgraph http://localhost:4321/mcp</code>
+        <code class="cmd">claude mcp add --transport http fein http://localhost:4321/mcp</code>
       </div>
 
       <div class="surf">
@@ -454,7 +454,7 @@
         <td>Person brief in the dashboard · agent tool <code>meeting_prep</code></td></tr>
   </table>
 
-  <div class="foot"><span>fundgraph · how it works</span><span>page 3 of 6</span></div>
+  <div class="foot"><span>Fein · how it works</span><span>page 3 of 6</span></div>
 </section>
 
 <!-- ================= PAGE 4 — the ideas, plainly ================= -->
@@ -508,14 +508,14 @@
       who's who, weighing <i>all</i> the evidence, or noticing what's missing.</p>
     </div>
     <div class="surf" style="margin:0; border-color:var(--blue)">
-      <h3 style="font-size:12px">3 · A verified map (fundgraph)</h3>
+      <h3 style="font-size:12px">3 · A verified map (Fein)</h3>
       <p class="tiny" style="color:var(--ink-2)">The facts are extracted, identity-checked, and connected <i>before</i>
       any question is asked. The model then queries the finished map and writes prose from real numbers.</p>
     </div>
   </div>
 
   <table class="compare">
-    <tr><th>The question</th><th>Searching a pile of text (RAG)</th><th>Asking the map (fundgraph)</th></tr>
+    <tr><th>The question</th><th>Searching a pile of text (RAG)</th><th>Asking the map (Fein)</th></tr>
     <tr>
       <td>"Who can intro me to Priya?"</td>
       <td>Returns emails that <i>mention</i> Priya. Whether the senders actually know her — and how well — is a guess.</td>
@@ -539,11 +539,11 @@
   </table>
 
   <div class="callout" style="margin-top:12px"><b>Not either/or.</b> Document search is still the right tool for
-  "find the clause in the LPA". fundgraph exists because <b>relationship questions need structure</b> — and once the
+  "find the clause in the LPA". Fein exists because <b>relationship questions need structure</b> — and once the
   map exists, the AI's answers to those questions stop being guesses. The two compose: facts from the graph, prose
   from the model.</div>
 
-  <div class="foot"><span>fundgraph · how it works</span><span>page 4 of 6</span></div>
+  <div class="foot"><span>Fein · how it works</span><span>page 4 of 6</span></div>
 </section>
 
 <!-- ================= PAGE 5 — MCP plainly + the stack ================= -->
@@ -551,18 +551,18 @@
   <h2>How agents connect — MCP, in plain language</h2>
   <p class="sub" style="max-width:94%"><b>MCP (Model Context Protocol)</b> is an open standard — think <b>USB-C for
   AI</b>. Instead of a custom integration per app, any assistant that speaks MCP (Claude Desktop, Claude Code, Cursor,
-  and others) can plug into any MCP "server". fundgraph is such a server: it offers the assistant a menu of eleven
+  and others) can plug into any MCP "server". Fein is such a server: it offers the assistant a menu of eleven
   named <b>tools</b> — small, well-defined actions like <code>meeting_prep</code> or <code>find_warm_path</code> —
   each with documented inputs and outputs. The assistant reads the menu and decides, per question, which tool answers it.</p>
 
-  <svg viewBox="0 0 700 220" style="width:100%; margin:8px 0 0" role="img" aria-label="Sequence: you ask Claude, Claude calls a fundgraph tool, fundgraph returns facts, Claude writes the brief">
+  <svg viewBox="0 0 700 220" style="width:100%; margin:8px 0 0" role="img" aria-label="Sequence: you ask Claude, Claude calls a Fein tool, Fein returns facts, Claude writes the brief">
     <!-- actors -->
     <rect x="30"  y="10" width="120" height="34" rx="7" fill="#f9f9f7" stroke="#e1e0d9"/>
     <rect x="290" y="10" width="120" height="34" rx="7" fill="#e8f7f1" stroke="#1baf7a"/>
     <rect x="550" y="10" width="120" height="34" rx="7" fill="#eaf2fc" stroke="#2a78d6"/>
     <text x="90"  y="31" font-size="12" font-weight="700" text-anchor="middle" fill="#0b0b0b">You</text>
     <text x="350" y="31" font-size="12" font-weight="700" text-anchor="middle" fill="#0b0b0b">Claude</text>
-    <text x="610" y="31" font-size="12" font-weight="700" text-anchor="middle" fill="#0b0b0b">fundgraph</text>
+    <text x="610" y="31" font-size="12" font-weight="700" text-anchor="middle" fill="#0b0b0b">Fein</text>
     <!-- lifelines -->
     <g stroke="#e1e0d9" stroke-width="1.5" stroke-dasharray="3 4">
       <line x1="90"  y1="44" x2="90"  y2="205"/>
@@ -597,7 +597,7 @@
     </div>
     <div class="callout" style="margin:0">
       <b>Setup is one line</b> while the dashboard runs:
-      <code class="cmd">claude mcp add --transport http fundgraph http://localhost:4321/mcp</code>
+      <code class="cmd">claude mcp add --transport http fein http://localhost:4321/mcp</code>
       <span class="tiny">Add <code>?as=Seb%20Larkin</code> to give an agent one member's private view — it then sees
       exactly what that person would see, nothing more.</span>
     </div>
@@ -611,7 +611,7 @@
     <tr><td>The database — and what "Postgres" means</td><td><b>PostgreSQL ("Postgres")</b> is one of the world's most
       trusted database systems — ~30 years old, free, and used by banks, airlines, and most tech companies. A database
       is simply a program that stores structured records and answers questions about them reliably
-      (think: industrial&#8209;strength spreadsheets with a query language). fundgraph ships with an <b>embedded</b> Postgres
+      (think: industrial&#8209;strength spreadsheets with a query language). Fein ships with an <b>embedded</b> Postgres
       (<b>PGlite</b>) — it runs <i>inside</i> the app, keeps everything in one folder on your machine, and needs zero
       installation. When a team outgrows one laptop, point <code>DATABASE_URL</code> at a normal Postgres server —
       same data, same code.</td></tr>
@@ -624,14 +624,14 @@
       as the dashboard (or standalone over stdio for headless setups).</td></tr>
   </table>
 
-  <div class="foot"><span>fundgraph · how it works</span><span>page 5 of 6</span></div>
+  <div class="foot"><span>Fein · how it works</span><span>page 5 of 6</span></div>
 </section>
 
 <!-- ================= PAGE 6 — privacy, AI boundaries, tech facts ================= -->
 <section class="page">
   <h2>Privacy layers — share the map, not the mail</h2>
   <p class="sub" style="max-width:92%">The objection every partner raises: <i>"I'm not putting my inbox where the whole
-  team can read it."</i> fundgraph's answer: each member can keep sources in a <b>private layer</b>. The team learns that
+  team can read it."</i> Fein's answer: each member can keep sources in a <b>private layer</b>. The team learns that
   a connection <i>exists</i> and who to ask — never the evidence behind it.</p>
 
   <svg viewBox="0 0 700 170" style="width:100%; margin:10px 0 2px" role="img" aria-label="Privacy layers: shared layer visible to everyone; Seb's private layer produces a locked hint for Tom and full detail for Seb">
@@ -687,12 +687,12 @@
       fictional sample world — the graph, a pending review, a team with a private layer — so you can try everything before
       connecting real data.</td></tr>
     <tr><td>Data in</td><td>Gmail Takeout (.mbox, streamed — multi-GB is fine), .ics, .csv, .jsonl, Granola cache, Attio live sync, Gmail/Calendar/Drive APIs. All ingestion is idempotent — re-importing never duplicates.</td></tr>
-    <tr><td>Agents</td><td>MCP over Streamable HTTP at <code>/mcp</code> (11 tools), or stdio (<code>fundgraph mcp</code>). Per-member scoping: <code>?as=&lt;member&gt;</code> binds an agent to that person's private layer.</td></tr>
+    <tr><td>Agents</td><td>MCP over Streamable HTTP at <code>/mcp</code> (11 tools), or stdio (<code>fein mcp</code>). Per-member scoping: <code>?as=&lt;member&gt;</code> binds an agent to that person's private layer.</td></tr>
     <tr><td>Trust &amp; audit</td><td>Deterministic scoring with receipts · human review for uncertain merges · decisions replayed on rebuilds · full audit trail · automated-sender filtering (robots stay out of the graph) · privacy leak-probe in the test suite.</td></tr>
     <tr><td>Stack</td><td>Node.js 20+ · embedded Postgres (PGlite), or <code>DATABASE_URL</code> for a shared server · D3 dashboard · Anthropic Claude (extraction only) · MCP SDK — plain-language tour on page 5. MIT open source.</td></tr>
   </table>
 
-  <div class="foot"><span>fundgraph · how it works · v0.3.0 · August 2026</span><span>page 6 of 6</span></div>
+  <div class="foot"><span>Fein · how it works · v0.5.0 · August 2026</span><span>page 6 of 6</span></div>
 </section>
 
 </body>

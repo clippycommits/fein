@@ -4,6 +4,13 @@
   "description": "Fein \u2014 the fund graph for venture capital. Open-source agentic data layer for investment teams: entity-resolved knowledge graph + relationship intelligence, exposed over MCP.",
   "type": "module",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/clippycommits/fein.git" },
+  "homepage": "https://fein.vc",
+  "bugs": { "url": "https://github.com/clippycommits/fein/issues" },
+  "keywords": [
+    "knowledge-graph", "entity-resolution", "mcp", "model-context-protocol",
+    "venture-capital", "relationship-intelligence", "crm", "postgres", "graph"
+  ],
   "bin": {
     "fein": "./src/cli.js",
     "fundgraph": "./src/cli.js"

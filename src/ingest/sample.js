@@ -11,7 +11,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 /**
  * The bundled demo world, loaded in one shot: the shared fixtures, the team
- * running this instance (Tom + Seb Larkin), and Seb's private correspondence
+ * running this instance (Tom Merrill and Seb Larkin), and Seb's private correspondence
  * with Priya Nair — so every part of the demo, including privacy layers,
  * exists right after "Load sample dataset".
  *

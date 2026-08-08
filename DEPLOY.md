@@ -14,7 +14,7 @@ call is the (optional) Anthropic API for mention extraction.
 ## One-box quickstart (Docker)
 
 ```bash
-git clone https://github.com/clippycommits/fundgraph fein && cd fein
+git clone https://github.com/clippycommits/fein fein && cd fein
 cp .env.example .env
 openssl rand -hex 24        # paste as FEIN_AUTH_TOKEN in .env
 docker compose up -d
@@ -132,7 +132,7 @@ overrides, only behind a VPN/firewall you trust). Data lands in
 
 One shared token gates the dashboard, the API, and MCP (per-member *view*
 scoping is separate: `?as=` / the viewer switch). `/api/health` is the only
-open route and returns version + uptime only. The server sets CSP and
+open data route (it returns version + uptime only); the `/login` page is likewise unauthenticated so browsers can sign in. The server sets CSP and
 no-store headers, never returns stack traces, and binds loopback unless told
 otherwise. Rotate the token by changing `.env` and `docker compose up -d`;
 old cookies and agent configs stop working immediately.

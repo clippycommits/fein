@@ -2,3 +2,8 @@ node_modules/
 data/
 *.log
 .DS_Store
+
+# secrets — never commit a real .env (the template .env.example stays tracked)
+.env
+.env.*
+!.env.example

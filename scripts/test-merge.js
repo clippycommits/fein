@@ -110,7 +110,7 @@ console.log("[3/4] a merge survives a full rebuild");
   check(audit.some((a) => a.action === "review_reject" && a.actor === "Tom Merrill"),
     "replayed review decisions are re-audited under the replaying actor",
     audit.filter((a) => a.action === "review_reject").map((a) => a.actor));
-  const live = await find("daniel");
+  const live = await find("alex");
   check(live.length === 1, "the two identities are still one person after rebuild",
     live.map((e) => e.emails));
   check(live[0].emails.includes("alex@northgate.io") && live[0].emails.includes("alex@ridgeline.vc"),
