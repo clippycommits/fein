@@ -2,7 +2,7 @@ import { strongestConnections } from "./paths.js";
 import { visibleLayers } from "../members.js";
 import { getSettings } from "../settings.js";
 
-export async function searchEntities(db, query, limit = 10, { viewer = null } = {}) {
+export async function searchEntities(db, query, limit = 10, { viewer = null, after = null } = {}) {
   const q = `%${query.toLowerCase()}%`;
   const { privateEntityVisibility } = await getSettings(db);
   const layers = visibleLayers(viewer);
@@ -30,12 +30,23 @@ export async function searchEntities(db, query, limit = 10, { viewer = null } = 
        )`;
     params.push(...layers);
   }
+  // Optional keyset bound: resume strictly after the (canonical_name, id) tuple
+  // of the previous page's last row. Off by default, so every existing caller
+  // is unchanged; the only visible difference is a deterministic id tie-break
+  // in the ORDER BY below. Scoping stays entirely in the clauses above — the
+  // cursor carries position, never a layer.
+  let afterClause = "";
+  if (after && after.name != null && after.id != null) {
+    const base = params.length;
+    afterClause = ` and (canonical_name, id) > ($${base + 1}, $${base + 2})`;
+    params.push(after.name, after.id);
+  }
   const { rows } = await db.query(
     `select id, kind, canonical_name, emails, orgs, aliases from entities
      where merged_into is null
        and (lower(canonical_name) like $1 or lower(emails::text) like $1 or lower(orgs::text) like $1${evMatch})
-       ${gate}
-     order by canonical_name limit $2`,
+       ${gate}${afterClause}
+     order by canonical_name, id limit $2`,
     params
   );
   return overlayEvidence(db, rows.map(parseEntity), viewer);
