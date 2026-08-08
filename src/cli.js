@@ -39,6 +39,7 @@ const USAGE = `fein — open-source agentic data layer for investment teams
   fein reresolve               re-run entity resolution from scratch (documents kept;
                                     review decisions are replayed, pending questions re-asked)
   fein web [port]              start the web dashboard (default port 4321)
+  fein doctor                  check your setup (runtime, database, data, keys) and print next steps
   fein resolve                 run entity resolution over unresolved mentions
   fein edges                   rebuild the relationship graph
   fein stats                   counts of docs / mentions / entities / edges
@@ -387,6 +388,57 @@ async function main() {
       console.log("edges:", JSON.stringify(r.edges));
       console.log("members:", r.members.map((m) => m.name).join(", "));
       console.log("stats:", JSON.stringify(await counts(db)));
+      break;
+    }
+    case "doctor": {
+      const good = (s) => console.log(`  ✓ ${s}`);
+      const warn = (s) => console.log(`  ⚠ ${s}`);
+      const info = (s) => console.log(`  · ${s}`);
+      console.log("fein doctor — setup check\n");
+      console.log("Runtime & storage");
+      const nodeMajor = Number(process.versions.node.split(".")[0]);
+      (nodeMajor >= 20 ? good : warn)(`Node ${process.versions.node}${nodeMajor >= 20 ? "" : " — fein needs Node 20+"}`);
+      if (process.env.DATABASE_URL) good("Database: external Postgres (DATABASE_URL)");
+      else info(`Database: embedded PGlite at ${env("DATA") ?? "./data"} (single-process)`);
+      const c = await counts(db);
+      if (c.documents === 0) warn("No data yet — run `fein demo` for the sample world, or `fein ingest <file>`");
+      else good(`${c.entities} entities, ${c.documents} documents, ${c.edges} relationships`);
+      if (c.unresolvedMentions > 0) info(`${c.unresolvedMentions} unresolved mentions — run \`fein sync\``);
+      if (c.pendingReviews > 0) info(`${c.pendingReviews} matches awaiting review — run \`fein review\``);
+      const { listMembers } = await import("./members.js");
+      const members = await listMembers(db);
+      info(members.length
+        ? `${members.length} team member(s): ${members.map((m) => m.name).join(", ")}`
+        : "No team members — everything is in the shared layer (`fein members add <name> <email>`)");
+
+      console.log("\nIntegrations");
+      (env("AUTH_TOKEN") ? good : info)(env("AUTH_TOKEN")
+        ? "FEIN_AUTH_TOKEN set — dashboard, HTTP API, and MCP are token-gated"
+        : "No FEIN_AUTH_TOKEN — fine for local use; set one before exposing the dashboard/API");
+      const anth = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
+      (anth ? good : info)(anth
+        ? "Anthropic credentials present — `fein extract` can mine document bodies"
+        : "No Anthropic key — set ANTHROPIC_API_KEY (or `ant auth login`) to use `fein extract`");
+      if (c.pendingExtraction > 0) info(`${c.pendingExtraction} document bodies not yet mined — run \`fein extract\``);
+      const connectors = [
+        ["Attio", process.env.ATTIO_API_KEY],
+        ["Affinity", process.env.AFFINITY_API_KEY],
+        ["Google APIs", process.env.GOOGLE_OAUTH_CREDENTIALS],
+      ].filter(([, v]) => v).map(([n]) => n);
+      info(connectors.length
+        ? `Connector keys detected: ${connectors.join(", ")}`
+        : "No live-connector keys in the environment (file ingestion always works)");
+
+      console.log("\nNext steps");
+      if (c.documents === 0) {
+        console.log("  1. `fein demo`     load the bundled sample world");
+        console.log("  2. `fein web`      dashboard + HTTP API + MCP at http://localhost:4321");
+        console.log("  3. `fein stats`    see what resolved");
+      } else {
+        console.log("  · `fein web`       dashboard + HTTP API (/api/v1, /docs) + MCP, one process");
+        console.log("  · `fein radar`     who to reach out to now");
+        if (c.pendingReviews > 0) console.log("  · `fein review`    clear the resolution queue");
+      }
       break;
     }
     default:
