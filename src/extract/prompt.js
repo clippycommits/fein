@@ -3,7 +3,7 @@
  * the system prompt or chunking changes — it is part of the extraction hash,
  * so changed prompts trigger re-extraction instead of serving stale results.
  */
-export const PROMPT_VERSION = "2";
+export const PROMPT_VERSION = "3";
 
 // The system prompt is static so prompt caching gets a byte-identical prefix
 // across every document in a run.
@@ -26,6 +26,16 @@ Deal signals (the deals array) — fund memory:
 - company: the company's name as written. stage: the round as written ("Series A", "seed") or null. status: invested (decision or completed investment), passed (explicit pass/decline), active (live evaluation or open round), exited, else unknown.
 - summary: one factual sentence from the document's content — the decision and the stated reason. No speculation, nothing from outside this document.
 - Passes matter as much as investments: a recorded PASS with its reasoning is exactly what institutional memory needs.
+
+Temporal facts (the facts array) — what is true, and when:
+- Report a fact ONLY when this document states a checkable attribute of a named company. These are things that can later stop being true, which is the point: a later document that contradicts one retires it.
+- subject: the company name as written. predicate: one of raising, valuation, arr, stage, headcount, location, design_partners, employs, investor, decision.
+- value: the attribute as written ("$4M seed", "$2.4M", "six", "Diligence"). Keep the document's own wording and units — do not convert, round, or normalize.
+- object: for employs and investor, the person or firm the fact is about (the employee, the investor). null for every other predicate.
+- decision is the fund's own recorded judgement about the company and its stated reason ("Passing for now", "No design partners, and the wedge is unproven at this price"). Record one fact per distinct reason. Decisions are permanent history and are never retired, so only record what the document actually decided.
+- as_of: an ISO date ONLY when the document states the period the fact belongs to ("we finished May at $2.4M ARR" → the end of May). null when the fact is simply true as of the document itself — which is the normal case.
+- quote: the verbatim fragment carrying the value. The value must appear inside the quote.
+- Do not restate a fact the document merely refers to in passing as background ("as you know, they raised a seed"). Report what THIS document asserts.
 
 If the document contains no extractable entities, return empty arrays.`;
 

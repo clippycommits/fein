@@ -39,7 +39,7 @@ globalThis.fetch = async (url, opts = {}) => {
     return new Response(JSON.stringify({
       id: "msg_test", type: "message", role: "assistant", model: "claude-opus-5",
       stop_reason: "end_turn", stop_sequence: null,
-      content: [{ type: "text", text: JSON.stringify({ people: [], orgs: [], deals: [] }) }],
+      content: [{ type: "text", text: JSON.stringify({ people: [], orgs: [], deals: [], facts: [] }) }],
       usage: { input_tokens: 100, output_tokens: 20 },
     }), { status: 200, headers: { "content-type": "application/json" } });
   }
@@ -664,8 +664,9 @@ console.log("[12/12] MCP over HTTP: one endpoint, viewer-scoped");
 
   const client = await connect();
   const tools = (await client.listTools()).tools.map((t) => t.name);
-  check(tools.length === 11 && tools.includes("meeting_prep") && tools.includes("company_memory"),
-    "all 11 tools listed over HTTP", tools);
+  check(tools.length === 13 && tools.includes("meeting_prep") && tools.includes("company_memory")
+        && tools.includes("what_changed") && tools.includes("fact_history"),
+    "all 13 tools listed over HTTP", tools);
   const stats = asText(await client.callTool({ name: "graph_stats", arguments: {} }));
   check(stats.documents > 0, "graph_stats answers from the live database", stats.documents);
   const shared = asText(await client.callTool({ name: "entity_brief", arguments: { entity: "Priya Nair" } }));

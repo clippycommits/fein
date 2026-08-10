@@ -4,6 +4,8 @@ import { mentionId } from "../ingest/index.js";
 import { normEmail, normPersonName, normOrgName } from "../resolve/normalize.js";
 import { PROMPT_VERSION, chunkBody, MIN_BODY_CHARS, MAX_BODY_CHARS, CHUNK_CHARS } from "./prompt.js";
 import { extractConfig, generateExtraction, isAuthError, priceFor } from "./client.js";
+import { isPredicate, normValue } from "../facts/vocab.js";
+import { applyFacts, deleteDocumentFacts, factId } from "../facts/write.js";
 
 const MAX_CONTEXT_CHARS = 240;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -175,7 +177,66 @@ export function groundExtraction(doc, raw, { min = minConfidence(), structured =
     }
   }
 
-  return { people, orgs, deals, dropped };
+  // Facts are grounded harder than anything else, because a fact can retire a
+  // true fact and that is the one failure that destroys trust in the memory.
+  // Three gates: the value must appear verbatim in the body, the model's quote
+  // must too, and the predicate must be in the closed vocabulary — the quote
+  // stored is cut from the body by code, never taken from the model.
+  const facts = [];
+  for (const t of raw.facts ?? []) {
+    const subject = (t.subject ?? "").trim();
+    const value = (t.value ?? "").trim();
+    const confidence = clamp(t.confidence);
+    if (!isPredicate(t.predicate)) {
+      dropped.push({ kind: "fact", name: t.predicate, reason: "predicate not in vocabulary" });
+      continue;
+    }
+    if (!subject || !value) continue;
+    const subjRe = phraseRegex(subject);
+    if (!subjRe || !subjRe.exec(prose)) {
+      dropped.push({ kind: "fact", name: subject, reason: "subject not in text as a phrase" });
+      continue;
+    }
+    const valRe = phraseRegex(value);
+    const valMatch = valRe ? valRe.exec(prose) : null;
+    if (!valMatch) {
+      dropped.push({ kind: "fact", name: `${subject}/${t.predicate}`, reason: "value not in text" });
+      continue;
+    }
+    if (confidence < min) {
+      dropped.push({ kind: "fact", name: `${subject}/${t.predicate}`, reason: `confidence ${confidence.toFixed(2)} < ${min}` });
+      continue;
+    }
+    const sn = normOrgName(subject);
+    if (!sn) continue;
+    const object = (t.object ?? "").trim() || null;
+    const key = `fact:${sn}|${t.predicate}|${normValue(value)}|${object ? object.toLowerCase() : ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // as_of is honoured only when the document states a period AND it parses;
+    // otherwise the caller falls back to documents.occurred_at, which every
+    // ingest path already populates and no model can hallucinate.
+    const asOf = t.as_of ? Date.parse(t.as_of) : NaN;
+    facts.push({
+      subject,
+      subject_norm: sn,
+      predicate: t.predicate,
+      object,
+      object_norm: object ? normOrgName(object) : null,
+      value,
+      value_norm: normValue(value),
+      as_of: Number.isFinite(asOf) ? new Date(asOf).toISOString() : null,
+      confidence,
+      quote: snippetAround(body, valMatch.index, valMatch[0].length),
+    });
+    // A fact about a company means the company matters: make sure it becomes
+    // an org entity, same rule deals already apply.
+    if (!orgs.some((o) => normOrgName(o.name) === sn) && !structuredNames.has(sn)) {
+      orgs.push({ name: subject, confidence, context: snippetAround(body, valMatch.index, valMatch[0].length) });
+    }
+  }
+
+  return { people, orgs, deals, facts, dropped };
 }
 
 /** Merge chunk results, keeping the highest-confidence copy of each identity. */
@@ -197,7 +258,15 @@ function mergeChunks(results) {
       if (!deals.has(key) || (d.confidence ?? 0) > (deals.get(key).confidence ?? 0)) deals.set(key, d);
     }
   }
-  return { people: [...people.values()], orgs: [...orgs.values()], deals: [...deals.values()] };
+  const facts = new Map();
+  for (const r of results) {
+    for (const t of r.facts ?? []) {
+      const key = `${t.subject_norm}|${t.predicate}|${t.value_norm}|${t.object_norm ?? ""}`;
+      if (!facts.has(key) || (t.confidence ?? 0) > (facts.get(key).confidence ?? 0)) facts.set(key, t);
+    }
+  }
+  return { people: [...people.values()], orgs: [...orgs.values()],
+           deals: [...deals.values()], facts: [...facts.values()] };
 }
 
 /* ---------- persistence ---------- */
@@ -273,6 +342,30 @@ async function writeDoc(outerDb, doc, grounded, meta) {
       await db.query(`delete from deals where document_id = $1`, [doc.id]);
     }
 
+    // Facts. valid_at falls back to the document's own occurred_at — the value
+    // every ingest path already populates (send date, meeting start, CRM change
+    // time) and the one no model can influence. A document with no date cannot
+    // anchor a fact in time, so it produces none rather than guessing one.
+    const docValidAt = doc.occurred_at ? new Date(doc.occurred_at).toISOString() : null;
+    if (grounded.facts?.length && docValidAt) {
+      // Re-extraction is idempotent by id, but a document whose facts CHANGED
+      // between runs must not leave the previous run's rows live.
+      const factIds = grounded.facts.map((t) =>
+        factId(doc.id, t.predicate, t.subject_norm, t.value_norm, t.object_norm));
+      await deleteDocumentFacts(db, doc.id, factIds);
+      await applyFacts(
+        db,
+        grounded.facts.map((t) => ({
+          ...t,
+          document_id: doc.id,
+          owner: doc.owner ?? "",
+          valid_at: t.as_of ?? docValidAt,
+        }))
+      );
+    } else {
+      await deleteDocumentFacts(db, doc.id);
+    }
+
     await db.query(
       `insert into extractions (document_id, status, model, input_sha256, attempts, mentions_found, input_tokens, output_tokens, error, updated_at)
        values ($1, 'ok', $2, $3, 0, $4, $5, $6, null, now())
@@ -291,6 +384,7 @@ async function markFailed(outerDb, doc, meta, message) {
     if (doc.prev_hash && doc.prev_hash !== meta.hash) {
       await db.query(`delete from mentions where document_id = $1 and origin = 'extracted'`, [doc.id]);
       await db.query(`delete from deals where document_id = $1`, [doc.id]);
+      await deleteDocumentFacts(db, doc.id);
     }
     await db.query(
       `insert into extractions (document_id, status, model, input_sha256, attempts, mentions_found, input_tokens, output_tokens, error, updated_at)
@@ -330,6 +424,14 @@ async function sweepBodylessDocs(db) {
   await db.query(
     `delete from deals where document_id in (select id from documents where body_sha256 is null)`
   );
+  // Facts go through the reopen-then-delete path, never a raw DELETE: a fact
+  // that closed another fact's window must hand that window back before it
+  // disappears, or the timeline keeps a hole where the evidence used to be.
+  const { rows: bodyless } = await db.query(
+    `select distinct document_id from facts
+      where document_id in (select id from documents where body_sha256 is null)`
+  );
+  for (const r of bodyless) await deleteDocumentFacts(db, r.document_id);
   await db.query(
     `delete from extractions where document_id in (select id from documents where body_sha256 is null)`
   );

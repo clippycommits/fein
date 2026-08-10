@@ -12,6 +12,9 @@ import { rebuildEdgesFor } from "../graph/edges.js";
 import { listReviews, resolveReview } from "../resolve/review.js";
 import { getEntity } from "../graph/queries.js";
 import { companyMemory } from "../graph/memory.js";
+import { whatChanged, factHistory } from "../facts/queries.js";
+import { normOrgName } from "../resolve/normalize.js";
+import { PREDICATE_NAMES } from "../facts/vocab.js";
 
 const VERSION = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../package.json"), "utf8"),
@@ -153,9 +156,31 @@ export function buildMcpServer(db, { viewer = null, actor = "agent" } = {}) {
 
   server.tool(
     "company_memory",
-    "Institutional memory for a company: every recorded deal signal (investments, passes with reasoning, live evaluations) mined from IC memos, board packs, and emails — with document provenance — plus the resolved org entity, affiliated people, and related documents. Passes matter: 'have we seen this company before, and why did we say no?'",
-    { company: z.string() },
-    async ({ company }) => text(await companyMemory(db, company, { viewer }))
+    "Institutional memory for a company: what is true today and what has stopped being true (with the date each fact was retired and the document that retired it), plus every recorded deal signal (investments, passes with reasoning, live evaluations) mined from IC memos, board packs, and emails — with document provenance — plus the resolved org entity, affiliated people, and related documents. Passes matter: 'have we seen this company before, and why did we say no?'. Pass as_of (ISO date) to get the world as fein believed it on that day rather than today — what we knew when we passed.",
+    { company: z.string(), as_of: z.string().optional() },
+    async ({ company, as_of }) => text(await companyMemory(db, company, { viewer, asOf: as_of ?? null }))
+  );
+
+  server.tool(
+    "what_changed",
+    "What stopped being true, and what became true, about a company in a time window — each change with the document that caused it. This is the standing-brief tool: run it before a meeting or on Monday morning to see what moved without reading every source. `since` is an ISO date. Facts that were retired are reported alongside the fact that replaced them, so 'they used to have no design partners, now they have six' is a single answer rather than an inference across two documents.",
+    { company: z.string(), since: z.string(), until: z.string().optional() },
+    async ({ company, since, until }) => {
+      const subject = normOrgName(company);
+      const changed = await whatChanged(db, subject, since, { viewer, until: until ?? null });
+      return text({ company, since, until: until ?? null, ...changed });
+    }
+  );
+
+  server.tool(
+    "fact_history",
+    `The full validity timeline for one attribute of a company, oldest first — every value it has held, when each became true, when each stopped, and the document behind each. Use it to audit an answer or to show how a number moved over time. Predicates: ${PREDICATE_NAMES.join(", ")}. Nothing is deleted, so a retired value is still here with its date range.`,
+    { company: z.string(), predicate: z.enum(PREDICATE_NAMES) },
+    async ({ company, predicate }) => {
+      const subject = normOrgName(company);
+      const history = await factHistory(db, subject, predicate, { viewer });
+      return text({ company, predicate, history });
+    }
   );
 
   server.tool(

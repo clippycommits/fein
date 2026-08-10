@@ -171,3 +171,47 @@ create index if not exists mentions_document on mentions (document_id);
 create index if not exists mentions_entity on mentions (entity_id) where entity_id is not null;
 create index if not exists documents_owner on documents (owner);
 create index if not exists documents_occurred on documents (occurred_at desc);
+
+-- Layer 3: temporal facts — what is true, and when it was true.
+--
+-- A fact is never updated in place and never deleted by contradiction. When a
+-- new document contradicts an old fact, the old row's validity window is
+-- closed (invalid_at is set) and the row survives, so "what did we believe on
+-- the day we passed" is answerable forever. Two independent timelines:
+--
+--   valid_at / invalid_at    when this was true IN THE WORLD
+--   created_at / expired_at  when fein believed it (expired_at = retraction,
+--                            i.e. fein was wrong, distinct from stopped-being-true)
+--
+-- Subjects are stored as normalized names rather than entity FKs, exactly as
+-- deals are: entity rebuilds and merges must never orphan a fact, and a
+-- company resolution hasn't seen yet still answers from its fact rows.
+create table if not exists facts (
+  id             text primary key,
+  subject        text not null,          -- as written
+  subject_norm   text not null,          -- normOrgName/normName, for matching
+  predicate      text not null,          -- closed vocabulary — src/facts/vocab.js
+  object         text,                   -- entity-valued facts (employs, investor)
+  object_norm    text,
+  value          text,                   -- literal, as written
+  value_norm     text,                   -- comparable form; restatement detection
+
+  valid_at       timestamptz not null,
+  invalid_at     timestamptz,            -- null = still true
+  created_at     timestamptz not null default now(),
+  expired_at     timestamptz,            -- retraction only, never contradiction
+
+  document_id    text not null references documents(id) on delete cascade,
+  quote          text not null,          -- verbatim span, cut by code not model
+  confidence     real not null,
+  -- derived from documents.owner at write time, denormalized like edges.owner:
+  -- the invalidation pass compares live facts per layer on every write.
+  owner          text not null default '',
+  invalidated_by text                    -- the fact that closed this window
+);
+
+create index if not exists facts_live on facts (subject_norm, predicate)
+  where invalid_at is null and expired_at is null;
+create index if not exists facts_asof on facts (subject_norm, valid_at);
+create index if not exists facts_document on facts (document_id);
+create index if not exists facts_owner on facts (owner);

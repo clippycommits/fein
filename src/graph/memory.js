@@ -2,6 +2,7 @@ import { normOrgName } from "../resolve/normalize.js";
 import { searchEntities } from "./queries.js";
 import { visibleLayers } from "../members.js";
 import { getSettings } from "../settings.js";
+import { liveFacts, retiredFacts, factsAsOf, factStats } from "../facts/queries.js";
 
 /**
  * Fund memory for a company: every deal signal ever recorded about it —
@@ -11,7 +12,7 @@ import { getSettings } from "../settings.js";
  * normalized-name aliases, so entity rebuilds never orphan a deal, and a
  * company the graph hasn't resolved yet still answers from its deal rows.
  */
-export async function companyMemory(db, companyRef, { viewer = null } = {}) {
+export async function companyMemory(db, companyRef, { viewer = null, asOf = null } = {}) {
   const norm = normOrgName(companyRef);
   const layers = visibleLayers(viewer);
   const matches = (await searchEntities(db, companyRef, 5, { viewer })).filter((e) => e.kind === "org");
@@ -21,7 +22,9 @@ export async function companyMemory(db, companyRef, { viewer = null } = {}) {
   const aliases = [...new Set(
     [norm, ...(entity ? [normOrgName(entity.canonical_name), ...entity.aliases] : [])].filter(Boolean)
   )];
-  if (!aliases.length) return { company: companyRef, entity: null, deals: [], documents: [], people: [] };
+  if (!aliases.length)
+    return { company: companyRef, entity: null, deals: [], documents: [], people: [],
+             facts: { as_of: asOf, live: [], retired: [], counts: { total: 0, live: 0, retired: 0 } } };
   const ph = aliases.map((_, i) => `$${i + 1}`).join(", ");
   // Layer scoping mirrors entityBrief exactly: deal rows, document titles,
   // and affiliated people are all evidence — never served across layers.
@@ -63,9 +66,22 @@ export async function companyMemory(db, companyRef, { viewer = null } = {}) {
     ));
   }
 
+  // Temporal facts. With no asOf this is the present: what is true today, and
+  // what has been retired and kept. With an asOf it is the world as fein
+  // believed it on that day — the "what did we know when we passed" question,
+  // which is the whole reason validity windows exist.
+  const facts = asOf
+    ? { as_of: asOf, live: await factsAsOf(db, aliases, asOf, { viewer }), retired: [],
+        counts: await factStats(db, aliases, { viewer }) }
+    : { as_of: null,
+        live: await liveFacts(db, aliases, { viewer }),
+        retired: await retiredFacts(db, aliases, { viewer }),
+        counts: await factStats(db, aliases, { viewer }) };
+
   return {
     company: entity?.canonical_name ?? companyRef,
     entity,
+    facts,
     deals,
     documents,
     people: people.map((p) => ({

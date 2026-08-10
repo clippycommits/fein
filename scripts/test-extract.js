@@ -397,7 +397,7 @@ console.log("[13/13] fund memory: deals from IC memos");
   // for the document's own decision — the mock must do the same.
   const dealer = async (doc) => {
     const body = doc.body ?? "";
-    const out = { people: [], orgs: [], deals: [], usage: { input: 100, output: 50 } };
+    const out = { people: [], orgs: [], deals: [], facts: [], usage: { input: 100, output: 50 } };
     if (body.includes("Saltglass Photonics") && body.includes("RECOMMENDATION: INVEST")) {
       out.deals.push({ company: "Saltglass Photonics", stage: "Series A", status: "invested",
         summary: "Nordwind leads EUR 7M of a EUR 12M Series A at EUR 38M pre-money.",

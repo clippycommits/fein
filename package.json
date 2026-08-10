@@ -4,12 +4,24 @@
   "description": "Fein \u2014 the fund graph for venture capital. Open-source agentic data layer for investment teams: entity-resolved knowledge graph + relationship intelligence, exposed over MCP.",
   "type": "module",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/clippycommits/fein.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clippycommits/fein.git"
+  },
   "homepage": "https://fein.vc",
-  "bugs": { "url": "https://github.com/clippycommits/fein/issues" },
+  "bugs": {
+    "url": "https://github.com/clippycommits/fein/issues"
+  },
   "keywords": [
-    "knowledge-graph", "entity-resolution", "mcp", "model-context-protocol",
-    "venture-capital", "relationship-intelligence", "crm", "postgres", "graph"
+    "knowledge-graph",
+    "entity-resolution",
+    "mcp",
+    "model-context-protocol",
+    "venture-capital",
+    "relationship-intelligence",
+    "crm",
+    "postgres",
+    "graph"
   ],
   "bin": {
     "fein": "./src/cli.js",
@@ -19,7 +31,7 @@
     "start": "node src/cli.js web",
     "mcp": "node src/cli.js mcp",
     "smoke": "node scripts/smoke.js",
-    "test": "node scripts/smoke.js && node scripts/test-ingest-batch.js && node scripts/api-test.js && node scripts/test-extract.js && node scripts/test-privacy.js && node scripts/test-radar.js && node scripts/test-automated.js && node scripts/test-merge.js && node scripts/test-leaks.js && node scripts/test-auth.js && node scripts/test-connectors.js && node scripts/test-edges-incremental.js && node scripts/test-scheduler.js && node scripts/test-api-v1.js"
+    "test": "node scripts/smoke.js && node scripts/test-ingest-batch.js && node scripts/api-test.js && node scripts/test-extract.js && node scripts/test-facts.js && node scripts/test-privacy.js && node scripts/test-radar.js && node scripts/test-automated.js && node scripts/test-merge.js && node scripts/test-leaks.js && node scripts/test-auth.js && node scripts/test-connectors.js && node scripts/test-edges-incremental.js && node scripts/test-scheduler.js && node scripts/test-api-v1.js"
   },
   "engines": {
     "node": ">=20"
