@@ -11,6 +11,7 @@ import { loadJsonl } from "../ingest/local.js";
 import { resolveMentions } from "../resolve/pipeline.js";
 import { listReviews, resolveReview } from "../resolve/review.js";
 import { rebuildEdges, rebuildEdgesFor, strengthOf } from "../graph/edges.js";
+import { companyMemory } from "../graph/memory.js";
 import { findWarmPath, findIntroducers } from "../graph/paths.js";
 import { searchEntities, entityBrief, counts, getEntity, entityVisible, nameSteps } from "../graph/queries.js";
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
@@ -321,6 +322,18 @@ async function route(db, req, res, url, port) {
         limit: boundedInt(url, "limit", 300, 1, 5000),
         focus: url.searchParams.get("focus"),
         radius: boundedInt(url, "radius", 2, 1, 4),
+      }));
+    }
+    // Company memory for the dashboard's Memory tab: what is true today, what
+    // has been retired (with the window it was true for), and — with as_of —
+    // the world as fein believed it on that day.
+    if (path === "/api/memory") {
+      const company = (url.searchParams.get("company") ?? "").trim();
+      if (!company) return json(res, { error: "company required" }, 400);
+      const asOf = url.searchParams.get("as_of");
+      return json(res, await companyMemory(db, company, {
+        viewer: await viewerOf(db, url),
+        asOf: asOf && Number.isFinite(Date.parse(asOf)) ? new Date(asOf).toISOString() : null,
       }));
     }
     if (path === "/api/documents") return json(res, await documentsPayload(db, await viewerOf(db, url)));

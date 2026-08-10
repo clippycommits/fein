@@ -50,6 +50,7 @@ for (const tab of document.querySelectorAll(".tab")) {
     document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
     tab.classList.add("active");
     $(`#tab-${tab.dataset.tab}`).classList.add("active");
+    if (tab.dataset.tab === "memory") renderMemory();
     if (tab.dataset.tab === "radar") renderRadar();
     if (tab.dataset.tab === "reviews") renderReviews();
     if (tab.dataset.tab === "data") renderData();
@@ -1043,6 +1044,110 @@ $("#ob-upload").addEventListener("click", () => {
   $("#onboarding").hidden = true;
   document.querySelector('[data-tab="data"]').click();
   $("#file-input").click();
+});
+
+
+/* ---------- memory: what is true, and when it was true ---------- */
+
+const memDate = (v) =>
+  v ? new Date(v).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "";
+
+/** A retired fact's window, as the range it was true for. */
+function memWindow(f) {
+  return `${memDate(f.valid_at)} → ${memDate(f.invalid_at)}`;
+}
+
+function memFactRow(f, retired) {
+  const src = f.document_source ? `${esc(f.document_source)} · ` : "";
+  return `<li class="fact ${retired ? "ret" : ""}" title="${esc(f.quote ?? "")}">
+    <span class="g">${retired ? "−" : "+"}</span>
+    <span class="tx"><b>${esc(f.label)}</b> ${esc(f.value ?? "")}${
+      f.object ? ` <i>· ${esc(f.object)}</i>` : ""}</span>
+    <span class="w">${src}${retired ? memWindow(f) : memDate(f.valid_at)}</span>
+  </li>`;
+}
+
+async function renderMemory() {
+  // Offer the companies the graph already knows, so the field is not a guess.
+  const orgs = await api("/api/search?q=&limit=0").catch(() => null);
+  if (orgs === null) {
+    const all = await api("/api/graph?limit=400").catch(() => null);
+    if (all?.nodes) {
+      $("#mem-companies").innerHTML = all.nodes
+        .filter((n) => n.kind === "org")
+        .map((n) => `<option value="${esc(n.name ?? n.canonical_name ?? "")}">`)
+        .join("");
+    }
+  }
+  const company = $("#mem-company").value.trim();
+  const out = $("#mem-out");
+  if (!company) return;
+
+  const asOf = $("#mem-asof").value;
+  const qs = new URLSearchParams({ company });
+  // A date input gives a day; a fact is true at a moment, so ask for the end
+  // of that day — otherwise "as of the day we passed" excludes the pass itself.
+  if (asOf) qs.set("as_of", `${asOf}T23:59:59Z`);
+  const m = await api(`/api/memory?${qs}`);
+  if (!m) return;
+
+  const live = m.facts?.live ?? [];
+  const retired = m.facts?.retired ?? [];
+  const counts = m.facts?.counts ?? { total: 0, live: 0, retired: 0 };
+  const asOfNote = m.facts?.as_of
+    ? `<p class="mem-note">Showing what fein believed on <b>${memDate(m.facts.as_of)}</b>. Facts written later are not here; facts retired since are.</p>`
+    : "";
+
+  if (!counts.total && !m.deals?.length) {
+    out.innerHTML = `<div class="empty"><p>No facts on file for <b>${esc(m.company)}</b> yet. Facts come from extraction — run it under <b>Data</b>, or check the company name.</p></div>`;
+    return;
+  }
+
+  out.innerHTML = `
+    <div class="mem-head">
+      <h2>${esc(m.company)}</h2>
+      <p class="mem-counts">
+        <span>${counts.total} fact${counts.total === 1 ? "" : "s"} on file</span>
+        <span class="ok">${counts.live} true today</span>
+        <span class="no">${counts.retired} retired, kept</span>
+      </p>
+    </div>
+    ${asOfNote}
+    <div class="mem-cols">
+      <section class="card">
+        <h3>${m.facts?.as_of ? "True then" : "True today"} <span class="chip">${live.length}</span></h3>
+        ${live.length
+          ? `<ul class="facts">${live.map((f) => memFactRow(f, false)).join("")}</ul>`
+          : `<div class="empty"><p>Nothing was true yet at this point.</p></div>`}
+      </section>
+      ${m.facts?.as_of ? "" : `
+      <section class="card">
+        <h3>Retired, kept <span class="chip">${retired.length}</span></h3>
+        ${retired.length
+          ? `<ul class="facts">${retired.map((f) => memFactRow(f, true)).join("")}</ul>`
+          : `<div class="empty"><p>Nothing has stopped being true yet.</p></div>`}
+      </section>`}
+    </div>
+    ${m.deals?.length ? `
+    <section class="card">
+      <h3>Deal signals <span class="chip">${m.deals.length}</span></h3>
+      <ul class="facts">${m.deals.map((d) => `<li class="fact">
+        <span class="g">·</span>
+        <span class="tx"><b>${esc(d.status)}</b> ${esc(d.summary ?? "")}</span>
+        <span class="w">${esc(d.document_source ?? "")} · ${memDate(d.occurred_at)}</span>
+      </li>`).join("")}</ul>
+    </section>` : ""}`;
+}
+
+let memTimer = null;
+$("#mem-company")?.addEventListener("input", () => {
+  clearTimeout(memTimer);
+  memTimer = setTimeout(renderMemory, 250);
+});
+$("#mem-asof")?.addEventListener("change", renderMemory);
+$("#mem-now")?.addEventListener("click", () => {
+  $("#mem-asof").value = "";
+  renderMemory();
 });
 
 /* ---------- boot ---------- */

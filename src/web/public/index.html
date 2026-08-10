@@ -26,6 +26,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="explore">Explore</button>
       <button class="tab" data-tab="path">Warm path</button>
+      <button class="tab" data-tab="memory">Memory</button>
       <button class="tab" data-tab="radar">Radar</button>
       <button class="tab" data-tab="reviews">Reviews <span id="review-count" class="chip" hidden></span></button>
       <button class="tab" data-tab="data">Data</button>
@@ -49,6 +50,22 @@
       <button id="find-path" class="primary">Find warm path</button>
       <div id="path-result">
         <div class="empty"><p>The best route to an introduction — hops are scored by real interaction history, and the path maximizes end-to-end strength.</p></div>
+      </div>
+    </section>
+
+    <section id="tab-memory" class="tab-panel">
+      <div class="mem-bar">
+        <input id="mem-company" type="search" placeholder="Company…  (try Halo Compute)" autocomplete="off" list="mem-companies">
+        <datalist id="mem-companies"></datalist>
+        <label class="mem-asof">As of
+          <input id="mem-asof" type="date">
+        </label>
+        <button id="mem-now" class="ghost" type="button">Today</button>
+      </div>
+      <div id="mem-out">
+        <div class="empty">
+          <p>Every fact fein holds about a company, and the document it came from. Facts that stopped being true are kept with the dates they were true for — set an <em>as of</em> date to see what was believed on that day.</p>
+        </div>
       </div>
     </section>
 
