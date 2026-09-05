@@ -147,7 +147,7 @@ function timestamp(record) {
 export async function fetchAttio({ maxPeople = ALL, maxCompanies = ALL, includeNotes = true, includeEvents = true, key, now = Date.now(), log = console.error } = {}) {
   const companies = await queryRecords("companies", maxCompanies, key);
   const people = await queryRecords("people", maxPeople, key);
-  const { docs, peopleById } = docsFromAttioRecords({ companies, people });
+  const { docs, peopleById, orgNames } = docsFromAttioRecords({ companies, people });
 
   if (includeNotes) {
     try {
@@ -160,7 +160,7 @@ export async function fetchAttio({ maxPeople = ALL, maxCompanies = ALL, includeN
 
   if (includeEvents) {
     try {
-      const events = await fetchAttioEvents(peopleById, { key, now, log });
+      const events = await fetchAttioEvents(peopleById, { key, now, log, orgNames });
       docs.push(...events.docs);
     } catch (err) {
       // Lists need `list_entry:read`; a token without it still yields the CRM.
@@ -214,7 +214,8 @@ export function docsFromAttioRecords({ companies = [], people = [] }) {
       orgs: org ? [org] : [],
     });
   }
-  return { docs, peopleById };
+  const orgNames = new Set([...companyNameById.values()].map((n) => n.toLowerCase()));
+  return { docs, peopleById, orgNames };
 }
 
 /**
@@ -227,7 +228,7 @@ export function docsFromAttioRecords({ companies = [], people = [] }) {
  *   ATTIO_EVENT_DATES      {"<list slug>": "YYYY-MM-DD"} — undated list names
  *   ATTIO_FIRM_PATTERN     regex for "added by" values that mean the firm itself
  */
-export async function fetchAttioEvents(peopleById, { key, now = Date.now(), log = console.error } = {}) {
+export async function fetchAttioEvents(peopleById, { key, now = Date.now(), log = console.error, orgNames = new Set() } = {}) {
   const lists = await attio("/lists", { method: "GET", key });
   const dates = parseEventDates(process.env.ATTIO_EVENT_DATES);
   const hosts = parseHosts({ host: process.env.ATTIO_EVENT_HOST, hostMap: process.env.ATTIO_EVENT_HOST_MAP });
@@ -237,7 +238,7 @@ export async function fetchAttioEvents(peopleById, { key, now = Date.now(), log 
   const summary = [];
   for (const event of events) {
     const entries = await queryEntries(event.listId, key);
-    const res = docsFromEventEntries(event, entries, peopleById, { hosts, firmPattern });
+    const res = docsFromEventEntries(event, entries, peopleById, { hosts, firmPattern, orgNames });
     docs.push(...res.docs);
     summary.push({ event: event.slug, date: event.date, entries: entries.length, ...res.tallies, cohort: res.cohort });
   }

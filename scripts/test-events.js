@@ -103,6 +103,16 @@ console.log("Attribution:");
   ok(a.org === null && a.inviter === null, "a firm-prefixed partner label is neither person nor org");
   a = attributeEntry({ source_lists: sel("CES wb: 2025 Door List") }, hosts, { firmPattern: firm });
   ok(a.org === null && a.inviter === null && a.raw.length === 1, "a spreadsheet tab is provenance only");
+  a = attributeEntry({ added_by: sel("Ben") }, hosts, { firmPattern: firm });
+  ok(a.org === null && a.inviter === null, "a lone first name in a select is neither person nor org");
+  a = attributeEntry({ added_by: sel("Publicis") }, hosts, { firmPattern: firm, orgNames: new Set(["publicis"]) });
+  ok(a.org === "Publicis", "a one-word value the workspace knows as a company is an org");
+  a = attributeEntry({ invited_by: sel("On Discourse") }, hosts, { firmPattern: firm });
+  ok(a.inviter === null && a.org === "On Discourse", "a select option is never a person");
+  a = attributeEntry({ invite_source: sel("B2B CMO 100 List (The Drum)") }, hosts, { firmPattern: firm });
+  ok(a.org === null && a.inviter === null, "a list name is provenance");
+  a = attributeEntry({ invited_by: txt("Joe Marchese") }, hosts, { firmPattern: firm });
+  ok(a.host.name === "Joe Marchese" && a.inviter === null, "an inviter who is a mapped host becomes the host");
 }
 
 /* ---------- a small workspace ---------- */
@@ -173,7 +183,7 @@ const { docs: crmDocs, peopleById } = docsFromAttioRecords({ companies, people }
 const eventDocs = [];
 const tallies = {};
 for (const ev of events) {
-  const r = docsFromEventEntries(ev, entries[ev.listId] ?? [], peopleById, { hosts, firmPattern: /^(human|hv)\b/i });
+  const r = docsFromEventEntries(ev, entries[ev.listId] ?? [], peopleById, { hosts, firmPattern: /^(human|hv)\b/i, orgNames: new Set(["publicis"]) });
   eventDocs.push(...r.docs);
   tallies[ev.slug] = { ...r.tallies, cohort: r.cohort, basis: r.basis };
 }

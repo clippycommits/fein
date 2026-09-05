@@ -191,36 +191,44 @@ const LABEL_OF = { attended: "attended", rsvp: "RSVP'd yes", declined: "declined
 
 // Values in "added by" / "invited by" that mean the firm itself.
 const isFirmToken = (v, firmPattern) => firmPattern.test(v);
-// "Rich Greenfield", "Kathryn Minshew" — a person, not a partner org.
-const looksLikePerson = (v) => /^[A-Z][\w'’.-]+(?: [A-Z][\w'’.-]+){1,3}$/.test(v) && !/\b(Team|Partners?|Ventures|List|Network|Inc|LLC|Media|Group)\b/i.test(v);
+// "Rich Greenfield", "Kathryn Minshew" — a person, not a partner org. Only a
+// free-text cell can name a person; select options are categories.
+const looksLikePerson = (v) => /^[A-Z][\w'’.-]+(?: [A-Z][\w'’.-]+){1,3}$/.test(v) && !/\b(Team|Partners?|Ventures|List|Network|Inc|LLC|Media|Group|Discourse)\b/i.test(v);
+// A spreadsheet tab, an invite wave, a "manual list": provenance, never a party.
+const isProvenance = (v) => /\b(list|wave|manual|sheet|export|tab|wb)\b|\d{2,}/i.test(v);
 
 /**
  * Attribution for one entry: who brought the guest.
  *   host    — the firm-side person on the document (a mapped host, else the default)
  *   inviter — a named third party who invited them (person mention, role `from`)
  *   org     — a partner organization that supplied the guest (org mention)
+ * `orgNames` (lowercased company names known to the workspace) lets a
+ * one-word value like "Publicis" count as an org while "Ben" stays a note.
  */
-export function attributeEntry(values, hosts, { firmPattern }) {
+export function attributeEntry(values, hosts, { firmPattern, orgNames = new Set() }) {
   const raw = [];
   for (const key of ["added_by", "invited_by", "invite_source", "source_list", "source_lists"]) {
-    const v = cellText(values?.[key]);
-    if (v) raw.push({ key, value: v });
+    const cells = values?.[key];
+    const v = cellText(cells);
+    if (v) raw.push({ key, value: v, type: cells?.[0]?.attribute_type ?? "text" });
   }
   let host = hosts.default;
   let inviter = null;
   let org = null;
-  for (const { key, value } of raw) {
+  for (const { key, value, type } of raw) {
     if (key === "source_list" || key === "source_lists") continue; // a spreadsheet tab, not a person
     const lower = value.toLowerCase();
-    // "Human - Joe", "Human Ventures - Jess": a token maps to a specific host.
+    // "Human - Joe", "Human Ventures - Jess", "Joe Marchese": a token maps to a specific host.
     const mapped = Object.entries(hosts.byToken).find(([token]) => new RegExp(`(^|[^a-z])${token}([^a-z]|$)`).test(lower));
     if (mapped) { host = mapped[1]; continue; }
-    if (isFirmToken(value, firmPattern)) continue;
-    if (/manual list|from hv invite list/i.test(value)) continue;
-    if (looksLikePerson(value)) { inviter ??= { name: value, email: null }; continue; }
-    org ??= value;
+    if (isFirmToken(value, firmPattern) || isProvenance(value)) continue;
+    if (type === "text" && looksLikePerson(value)) { inviter ??= { name: value, email: null }; continue; }
+    const words = value.split(/\s+/).length;
+    if (orgNames.has(lower) || (words >= 2 && !looksLikePerson(value)) || /[A-Z].*[A-Z]/.test(value.slice(1)) && words === 1) {
+      org ??= value; // known company, a multi-word non-person, or CamelCase like OpenAP / LightShed
+    }
   }
-  return { host, inviter, org, raw };
+  return { host, inviter, org, raw: raw.map(({ key, value }) => ({ key, value })) };
 }
 
 /**
@@ -255,7 +263,7 @@ export function eventsFromLists(lists, { dates = {}, now = Date.now() } = {}) {
  * were in the room (attended when the list tracks attendance, else the
  * RSVP'd-yes guests of a past event).
  */
-export function docsFromEventEntries(event, entries, peopleById, { hosts, firmPattern, cohortMin = 2 } = {}) {
+export function docsFromEventEntries(event, entries, peopleById, { hosts, firmPattern, orgNames = new Set(), cohortMin = 2 } = {}) {
   const docs = [];
   const room = [];
   const tallies = { attended: 0, rsvp: 0, declined: 0, invited: 0, skipped: 0 };
@@ -271,7 +279,7 @@ export function docsFromEventEntries(event, entries, peopleById, { hosts, firmPa
     const { tier, evidence } = classifyTier(values, { past: event.past });
     if (!tier) { tallies.skipped++; continue; }
     tallies[tier]++;
-    const { host, inviter, org, raw } = attributeEntry(values, hosts, { firmPattern });
+    const { host, inviter, org, raw } = attributeEntry(values, hosts, { firmPattern, orgNames });
     const guestRole = tier === "attended" ? "attendee" : "to";
     const guest = { name: person.name, email: person.emails?.[0] ?? null, org: person.org ?? null, role: guestRole };
     const people = [guest];
