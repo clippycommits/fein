@@ -273,11 +273,12 @@ async function fetchAttioNotes(people, key) {
 
   const notes = [];
   let offset = 0;
+  const NOTES_PAGE = 50; // Attio caps /notes at 50 per page (records allow 500)
   while (true) {
-    const res = await attio(`/notes?limit=${PAGE}&offset=${offset}`, { method: "GET", key });
+    const res = await attio(`/notes?limit=${NOTES_PAGE}&offset=${offset}`, { method: "GET", key });
     const batch = res.data ?? [];
     notes.push(...batch);
-    if (batch.length < PAGE) break;
+    if (batch.length < NOTES_PAGE) break;
     offset += batch.length;
   }
 

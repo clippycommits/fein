@@ -34,6 +34,10 @@ history in guest lists, not inboxes. Fein now reads it.
 - The Attio pull no longer caps people/companies at 5,000 — it pages
   through the workspace.
 
+### Fixed
+- Attio notes were silently skipped on every pull: `/notes` accepts at most
+  50 per page and the adapter asked for 500.
+
 ## 0.5.0 — 2026-08-08
 
 **The hardening release**: the data layer grows up for shared firm
