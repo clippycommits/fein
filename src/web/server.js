@@ -16,6 +16,7 @@ import { searchEntities, entityBrief, counts, getEntity, entityVisible, nameStep
 import { getSettings, putSettings, audit, listAudit } from "../settings.js";
 import { CONNECTOR_PROVIDERS, clampSyncInterval, putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
 import { runConnectorSync, syncingProvider, startScheduler, connectorSyncStatus } from "../sync.js";
+import { listEvents, resolveEvent, eventHistory, eventGuests, guestLeague } from "../graph/events.js";
 import { listMembers, addMember, removeMember, resolveMember, visibleLayers } from "../members.js";
 import { extractPending, extractionStats, estimateExtraction } from "../extract/pipeline.js";
 import { extractConfig, isAuthError } from "../extract/client.js";
@@ -271,6 +272,34 @@ async function route(db, req, res, url, port) {
       }));
     }
     if (path === "/api/members") return json(res, await listMembers(db));
+    // ---- events: guest-side history and league tables ----
+    if (path === "/api/events") {
+      return json(res, await listEvents(db, { viewer: await viewerOf(db, url),
+        since: url.searchParams.get("since"), until: url.searchParams.get("until") }));
+    }
+    if (path === "/api/events/league") {
+      const viewer = await viewerOf(db, url);
+      try {
+        return json(res, await guestLeague(db, { viewer,
+          sort: url.searchParams.get("sort") ?? "most_attended",
+          since: url.searchParams.get("since"), until: url.searchParams.get("until"),
+          minEvents: boundedInt(url, "minEvents", 1, 1, 1000), limit: boundedInt(url, "limit", 25, 1, 500) }));
+      } catch (err) {
+        return json(res, { error: err.message }, 400);
+      }
+    }
+    if (path.startsWith("/api/events/")) {
+      const viewer = await viewerOf(db, url);
+      const r = await resolveEvent(db, decodeURIComponent(path.slice("/api/events/".length)), { viewer });
+      if (r.error) return json(res, r, 404);
+      const tier = url.searchParams.get("tier");
+      return json(res, { event: r.event, ...(await eventGuests(db, r.event.slug, { viewer, tier, limit: boundedInt(url, "limit", 500, 1, 5000) })) });
+    }
+    if (path.startsWith("/api/entity/") && path.endsWith("/events")) {
+      const viewer = await viewerOf(db, url);
+      const id = path.slice("/api/entity/".length, -"/events".length);
+      return json(res, await eventHistory(db, id, { viewer, limit: boundedInt(url, "limit", 100, 1, 1000) }));
+    }
     if (path === "/api/radar") {
       const { relationshipRadar, radarSummary } = await import("../graph/radar.js");
       const viewer = await viewerOf(db, url);

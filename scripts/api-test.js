@@ -664,8 +664,8 @@ console.log("[12/12] MCP over HTTP: one endpoint, viewer-scoped");
 
   const client = await connect();
   const tools = (await client.listTools()).tools.map((t) => t.name);
-  check(tools.length === 11 && tools.includes("meeting_prep") && tools.includes("company_memory"),
-    "all 11 tools listed over HTTP", tools);
+  check(tools.length === 15 && tools.includes("meeting_prep") && tools.includes("company_memory"),
+    "all 15 tools listed over HTTP", tools);
   const stats = asText(await client.callTool({ name: "graph_stats", arguments: {} }));
   check(stats.documents > 0, "graph_stats answers from the live database", stats.documents);
   const shared = asText(await client.callTool({ name: "entity_brief", arguments: { entity: "Priya Nair" } }));

@@ -113,8 +113,8 @@ server deployments prefer the `ATTIO_API_KEY` environment variable (which the
 dashboard will detect and use without storing anything). **Disconnect** deletes
 the stored key and leaves already-ingested data in place.
 
-Pulls people, companies, and notes. A person's linked company becomes their org
-hint, and all of a contact's addresses are attached to one entity — so an Attio
+Pulls people, companies, notes, and [event lists](#events--guest-lists-as-relationship-evidence).
+A person's linked company becomes their org hint, and all of a contact's addresses are attached to one entity — so an Attio
 contact and their emails in Gmail resolve to the same person. Pass
 `--no-notes` to skip notes (or if your token lacks the scope, notes are skipped
 with a warning rather than failing the pull).
@@ -130,6 +130,64 @@ note *participants*; note bodies are never read.
 **What gets read:** live connectors (Granola, gog, Google APIs, Attio people/companies) read metadata and participant identities only. File exports (`.mbox`, `.ics`, `.csv` notes, `.jsonl`) also capture a size-capped plain-text **body** per document — stored locally in your database and mined only when you explicitly run [unstructured extraction](#unstructured-extraction). Set `FEIN_NO_BODIES=1` to skip body capture entirely and keep the old metadata-only behavior.
 
 Adapters emit a common JSONL shape (see `sample/seed.jsonl`); to add a source, emit that shape and `fein ingest file.jsonl`. Ingestion is idempotent: re-ingesting updates in place, and review history is preserved.
+
+## Events — guest lists as relationship evidence
+
+![events](docs/img/attio-connected.png)
+
+A firm that runs events keeps one Attio list per event and one entry per
+guest, with the guest's journey in the list's columns: invited, RSVP'd,
+declined, attended. The Attio connector reads those lists too (any list
+whose name ends in a date — `Cannes Closing Set · Jun 25, 2026` — plus any
+pinned with `ATTIO_EVENT_DATES`) and turns every contacted guest into a
+dated **touch** between the firm and that person:
+
+| tier | kind | default weight | what it means |
+|---|---|---|---|
+| attended | `event` | 2 | they were in the room |
+| RSVP'd yes | `rsvp` | 1.2 | they said yes |
+| declined / invited | `invite` | 0.6 | the invitation went out |
+| in the room together | `cohort` | 0.5 | guests of the same (small) event |
+
+The tier is decided by whichever attribute reads like a guest's journey —
+`attended`, `checked_in`, `rsvp`, `rsvp_status`, `stage`, `invite_sent`,
+`gatsby_accepted` and so on — and every touch carries its receipt
+(`rsvp_status=Accepted`). Review and priority columns never count. A past
+event's guest list is a list of people who were invited, so membership
+alone counts once the date has passed; on a future event it is a draft and
+produces nothing until the invitation is actually sent.
+
+Configuration, in the environment so the scheduler and the CLI agree:
+
+```bash
+ATTIO_EVENT_HOST="Jess Webber <jess@example.com>"     # the firm-side person on every touch
+ATTIO_EVENT_HOST_MAP='{"joe":"Joe Marchese <joe@example.com>"}'   # "added by: Human - Joe" → Joe
+ATTIO_EVENT_DATES='{"summit_2026":"2026-04-07"}'      # lists whose names carry no date
+ATTIO_FIRM_PATTERN='^(human|hv)\b'                    # "added by" values that mean the firm itself
+```
+
+"Invited by: Rich Greenfield" puts Rich on the touch too (he brought the
+guest — that is who knows whom); "Added by: Publicis" records the partner
+organization. The cohort document per event links the people who were
+actually in the room, and the participant cap keeps a 600-person party from
+becoming 180,000 edges while a 30-person dinner still counts.
+
+What you get back:
+
+```bash
+fein events                          # every event with attended / RSVP'd / declined / invited counts
+fein events "Cannes closing"         # who was contacted about one event, by tier, with who brought them
+fein history "Alex Rivera"           # one person's event history + show rate
+fein league most_attended            # the loyal — also never_attended (the over-invited),
+fein league lapsed --since 2026-01-01  #   most_invited, lapsed, best_show_rate
+```
+
+Agents get the same as `list_events`, `event_guests`, `event_history` and
+`guest_league`; `entity_brief` and `meeting_prep` carry an `events` block
+when the person has one. Strength and radar simply see the touches: the
+firm's relationship with a guest grows with every event they show up to and
+cools when they stop, and a guest's own graph links them to the people they
+sat next to.
 
 ## Fixing what resolution missed
 
@@ -269,7 +327,7 @@ Without the dashboard running, the stdio flavor works anywhere:
 claude mcp add fein -- node /path/to/fein/src/cli.js mcp
 ```
 
-Tools: `meeting_prep` (one call: profile + relationship history + receipts + your warm paths to them), `company_memory` (every recorded deal signal for a company — investments *and passes with their reasoning* — with document provenance), `relationship_radar`, `find_warm_path`, `find_introducers`, `entity_brief`, `search_entities`, `strongest_connections`, `graph_stats`, `review_queue`, `review_resolve`.
+Tools: `meeting_prep` (one call: profile + relationship history + receipts + your warm paths to them), `company_memory` (every recorded deal signal for a company — investments *and passes with their reasoning* — with document provenance), `relationship_radar`, `find_warm_path`, `find_introducers`, `entity_brief`, `search_entities`, `strongest_connections`, `list_events`, `event_guests`, `event_history`, `guest_league`, `graph_stats`, `review_queue`, `review_resolve`.
 
 ## CLI
 
@@ -283,6 +341,9 @@ fein sync [--extract]        resolve + rebuild edges (--extract mines bodies fir
 fein extract [--limit N]     LLM mention extraction over unprocessed bodies
 fein reresolve               rebuild entities from scratch (decisions replayed)
 fein memory <company>        fund memory: deal signals — investments + passes with reasoning
+fein events [event]          events with per-tier counts, or one event's guests
+fein history <person>        a person's event history + show rate
+fein league <sort>           guest league tables (most_attended, never_attended, most_invited, lapsed, best_show_rate)
 fein entities | brief | path | intros | review | stats
 fein mcp                     MCP server (stdio)
 ```

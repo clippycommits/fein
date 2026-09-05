@@ -1,6 +1,6 @@
 /**
- * Attio adapter — pulls people, companies, and (optionally) notes from an
- * Attio workspace via the REST API v2.
+ * Attio adapter — pulls people, companies, (optionally) notes, and event
+ * lists from an Attio workspace via the REST API v2.
  *
  * Auth: create an access token in Attio → Workspace settings → Developers →
  * "Create integration"/API key, grant it read scopes for the objects you want
@@ -12,8 +12,11 @@
  * note participants) — never note bodies or deal content.
  */
 
+import { eventsFromLists, docsFromEventEntries, parseEventDates, parseHosts } from "./attio-events.js";
+
 const API = "https://api.attio.com/v2";
 const PAGE = 500; // Attio's max page size for record queries
+const ALL = Number.MAX_SAFE_INTEGER;
 
 function apiKey(explicit) {
   const key = explicit ?? process.env.ATTIO_API_KEY;
@@ -138,10 +141,37 @@ function timestamp(record) {
 /**
  * Fetch people + companies as documents. Each person becomes one CRM record
  * carrying every known address (so resolution links the addresses together)
- * and their linked company name as the org hint.
+ * and their linked company name as the org hint. Event lists (see
+ * ./attio-events.js) follow, unless `includeEvents` is false.
  */
-export async function fetchAttio({ maxPeople = 5000, maxCompanies = 5000, includeNotes = true, key } = {}) {
+export async function fetchAttio({ maxPeople = ALL, maxCompanies = ALL, includeNotes = true, includeEvents = true, key, now = Date.now(), log = console.error } = {}) {
   const companies = await queryRecords("companies", maxCompanies, key);
+  const people = await queryRecords("people", maxPeople, key);
+  const { docs, peopleById } = docsFromAttioRecords({ companies, people });
+
+  if (includeNotes) {
+    try {
+      docs.push(...(await fetchAttioNotes(people, key)));
+    } catch (err) {
+      // Notes need a separate scope; missing it shouldn't fail the whole pull.
+      log(`attio: skipping notes (${err.message})`);
+    }
+  }
+
+  if (includeEvents) {
+    try {
+      const events = await fetchAttioEvents(peopleById, { key, now, log });
+      docs.push(...events.docs);
+    } catch (err) {
+      // Lists need `list_entry:read`; a token without it still yields the CRM.
+      log(`attio: skipping event lists (${err.message})`);
+    }
+  }
+  return docs;
+}
+
+/** Pure mapping of Attio people + companies to documents (network-free, for tests). */
+export function docsFromAttioRecords({ companies = [], people = [] }) {
   const companyNameById = new Map();
   for (const c of companies) {
     const id = recordId(c);
@@ -164,12 +194,13 @@ export async function fetchAttio({ maxPeople = 5000, maxCompanies = 5000, includ
     });
   }
 
-  const people = await queryRecords("people", maxPeople, key);
+  const peopleById = new Map();
   for (const p of people) {
     const name = personName(p);
     const emails = personEmails(p);
     if (!name && !emails.length) continue;
     const org = linkedCompanyIds(p).map((id) => companyNameById.get(id)).find(Boolean) ?? null;
+    peopleById.set(recordId(p), { name, emails, org });
     const mentions = emails.length
       ? emails.map((email) => ({ name, email, org, role: "mentioned" }))
       : [{ name, email: null, org, role: "mentioned" }];
@@ -183,16 +214,49 @@ export async function fetchAttio({ maxPeople = 5000, maxCompanies = 5000, includ
       orgs: org ? [org] : [],
     });
   }
+  return { docs, peopleById };
+}
 
-  if (includeNotes) {
-    try {
-      docs.push(...(await fetchAttioNotes(people, key)));
-    } catch (err) {
-      // Notes need a separate scope; missing it shouldn't fail the whole pull.
-      console.error(`attio: skipping notes (${err.message})`);
-    }
+/**
+ * Event lists: every list whose name ends in a date (or is pinned in
+ * ATTIO_EVENT_DATES) is pulled entry by entry and mapped to touch + cohort
+ * documents. Configuration is read from the environment so the scheduled
+ * sync and the CLI agree:
+ *   ATTIO_EVENT_HOST       "Name <email>" — the firm-side person on every touch
+ *   ATTIO_EVENT_HOST_MAP   {"joe": "Joe X <joe@…>"} — "added by" tokens → hosts
+ *   ATTIO_EVENT_DATES      {"<list slug>": "YYYY-MM-DD"} — undated list names
+ *   ATTIO_FIRM_PATTERN     regex for "added by" values that mean the firm itself
+ */
+export async function fetchAttioEvents(peopleById, { key, now = Date.now(), log = console.error } = {}) {
+  const lists = await attio("/lists", { method: "GET", key });
+  const dates = parseEventDates(process.env.ATTIO_EVENT_DATES);
+  const hosts = parseHosts({ host: process.env.ATTIO_EVENT_HOST, hostMap: process.env.ATTIO_EVENT_HOST_MAP });
+  const firmPattern = new RegExp(process.env.ATTIO_FIRM_PATTERN || "^(human|hv|the firm|us|team|internal)\\b", "i");
+  const events = eventsFromLists(lists, { dates, now });
+  const docs = [];
+  const summary = [];
+  for (const event of events) {
+    const entries = await queryEntries(event.listId, key);
+    const res = docsFromEventEntries(event, entries, peopleById, { hosts, firmPattern });
+    docs.push(...res.docs);
+    summary.push({ event: event.slug, date: event.date, entries: entries.length, ...res.tallies, cohort: res.cohort });
   }
-  return docs;
+  log(`attio: ${events.length} event lists → ${docs.length} documents`);
+  return { docs, events: summary };
+}
+
+/** Page through a list's entries (needs the `list_entry:read` scope). */
+async function queryEntries(listId, key) {
+  const out = [];
+  let offset = 0;
+  while (true) {
+    const res = await attio(`/lists/${listId}/entries/query`, { body: { limit: PAGE, offset }, key });
+    const batch = res.data ?? [];
+    out.push(...batch);
+    if (batch.length < PAGE) break;
+    offset += batch.length;
+  }
+  return out;
 }
 
 /**

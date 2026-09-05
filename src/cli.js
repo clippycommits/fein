@@ -45,6 +45,12 @@ const USAGE = `fein — open-source agentic data layer for investment teams
   fein entities <query>        search people and orgs
   fein brief <ref>             pre-meeting brief for a person (name, email, or id)
   fein memory <company>        fund memory: every recorded deal signal for a company
+  fein events [event]          events with per-tier guest counts, or one event's guests
+                                    (--tier attended|rsvp|declined|invited)
+  fein history <person>        a person's event history + show rate
+  fein league [sort]           guest league tables: most_attended (default), never_attended,
+                                    most_invited, lapsed, best_show_rate; --since/--until YYYY-MM-DD,
+                                    --min N, --limit N
                                     (investments, passes + reasoning), with provenance
   fein path <from> <to>        best warm-intro path between two people
   fein intros <from> <to>      rank mutual connections as introducers
@@ -274,6 +280,33 @@ async function main() {
       if (!args.length) throw new Error("usage: fein memory <company>");
       const { companyMemory } = await import("./graph/memory.js");
       out(await companyMemory(db, args.join(" "), { viewer }));
+      break;
+    }
+    case "events": {
+      const { listEvents, resolveEvent, eventGuests } = await import("./graph/events.js");
+      const tierIdx = args.indexOf("--tier");
+      const tier = tierIdx >= 0 ? args[tierIdx + 1] : null;
+      const rest = args.filter((a, i) => !(i === tierIdx || i === tierIdx + 1));
+      if (!rest.length) { out(await listEvents(db, { viewer })); break; }
+      const r = await resolveEvent(db, rest.join(" "), { viewer });
+      if (r.error) throw new Error(JSON.stringify(r));
+      out({ event: r.event, ...(await eventGuests(db, r.event.slug, { viewer, tier })) });
+      break;
+    }
+    case "history": {
+      if (!args.length) throw new Error("usage: fein history <person>");
+      const { eventHistory } = await import("./graph/events.js");
+      const e = await refOrDie(db, args.join(" "), viewer);
+      out({ entity: e.canonical_name, ...(await eventHistory(db, e.id, { viewer })) });
+      break;
+    }
+    case "league": {
+      const { guestLeague } = await import("./graph/events.js");
+      const flags = ["--since", "--until", "--min", "--limit"];
+      const opt = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+      const sort = args.find((a, i) => !a.startsWith("--") && !flags.includes(args[i - 1])) ?? "most_attended";
+      out(await guestLeague(db, { viewer, sort, since: opt("--since") ?? null, until: opt("--until") ?? null,
+        minEvents: Number(opt("--min") ?? 1), limit: Number(opt("--limit") ?? 25) }));
       break;
     }
     case "path":

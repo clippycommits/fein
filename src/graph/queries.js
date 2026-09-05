@@ -1,5 +1,6 @@
 import { strongestConnections } from "./paths.js";
 import { visibleLayers } from "../members.js";
+import { eventHistory } from "./events.js";
 import { getSettings } from "../settings.js";
 
 export async function searchEntities(db, query, limit = 10, { viewer = null } = {}) {
@@ -179,11 +180,18 @@ export async function entityBrief(db, entityId, { viewer = null } = {}) {
       ));
     }
   }
+  // Events: what they were invited to and showed up for (guest-side only).
+  let events;
+  if (entity.kind === "person") {
+    const { history, summary } = await eventHistory(db, entityId, { viewer, limit: 12 });
+    if (history.length) events = { ...summary, recent: history };
+  }
   const hidden = Number(withheld[0].n);
   return {
     entity,
     connections,
     recentDocuments: docs,
+    ...(events ? { events } : {}),
     ...(deals?.length ? { deals } : {}),
     ...(hidden ? { withheldDocuments: hidden } : {}),
   };

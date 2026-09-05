@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.0 — 2026-09-05
+
+**The events release**: a firm that runs events has its relationship
+history in guest lists, not inboxes. Fein now reads it.
+
+### Added
+- **Attio event lists**: every list whose name ends in a date (or is pinned
+  with `ATTIO_EVENT_DATES`) is pulled entry by entry. Each contacted guest
+  becomes a dated touch between the firm and that person, tiered by the
+  list's own columns — attended (`event`), RSVP'd yes (`rsvp`), declined or
+  invited (`invite`) — with the deciding attribute kept as the receipt. A
+  past event's membership counts as invited; a future event's draft list
+  produces nothing until invitations go out. `src/ingest/attio-events.js`
+  is pure and tested offline against real Attio entry shapes.
+- **Hosts and inviters**: `ATTIO_EVENT_HOST` is the firm-side person on
+  every touch; `ATTIO_EVENT_HOST_MAP` routes "added by: Human - Joe" to Joe.
+  A named "invited by" becomes a person on the touch (who brought whom); a
+  partner in "added by" becomes an org mention.
+- **Cohorts**: one `cohort` document per event for the people in the room
+  (attended when tracked, else the yes-RSVPs of a past event). The
+  participant cap decides which rooms produce pair-edges.
+- **Signal weights** `rsvp`, `invite`, `cohort` (Settings).
+- **Queries**: `listEvents`, `eventGuests`, `eventHistory`, `guestLeague`
+  (most_attended, never_attended, most_invited, lapsed, best_show_rate) in
+  `src/graph/events.js`; `/api/events`, `/api/events/<event>`,
+  `/api/events/league`, `/api/entity/<id>/events`; MCP tools `list_events`,
+  `event_guests`, `event_history`, `guest_league`; CLI `events`, `history`,
+  `league`. `entity_brief` / `meeting_prep` carry an `events` block; the
+  dashboard brief and its Markdown copy show it.
+
+### Changed
+- The Attio pull no longer caps people/companies at 5,000 — it pages
+  through the workspace.
+
 ## 0.5.0 — 2026-08-08
 
 **The hardening release**: the data layer grows up for shared firm

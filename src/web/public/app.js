@@ -345,6 +345,15 @@ async function showBrief(id) {
            ${d.summary ? `<br><span class="sub">${esc(d.summary)}</span>` : ""}
          </div>`).join("")
       : "") +
+    (b.events
+      ? `<h3 class="section-title">Events · ${b.events.attended} attended / ${b.events.events} contacted${b.events.showRate != null ? ` · ${Math.round(b.events.showRate * 100)}% show rate` : ""}</h3>` +
+        b.events.recent.map((ev) =>
+          `<div class="doc-row">
+             <strong class="${ev.tier === "attended" ? "ok" : ev.tier === "declined" ? "err" : ""}">${esc(ev.tier === "rsvp" ? "RSVP'D" : ev.tier.toUpperCase())}</strong>
+             · ${esc(ev.event)}
+             <span class="src">${ev.date ? "· " + esc(ev.date) : ""}${ev.invitedBy ? " · invited by " + esc(ev.invitedBy) : ev.via ? " · via " + esc(ev.via) : ""}</span>
+           </div>`).join("")
+      : "") +
     `<h3 class="section-title">Recent documents</h3>` +
     (b.withheldDocuments
       ? `<p class="hint">🔒 ${b.withheldDocuments} document${b.withheldDocuments === 1 ? "" : "s"} withheld — in colleagues' private layers.</p>`
@@ -413,6 +422,11 @@ async function copyBrief() {
       const sig = Object.entries(c.signals ?? {}).map(([k, v]) => `${v} ${k}${v === 1 ? "" : "s"}`).join(", ");
       return `- **${c.name}** — ${pct(c.strength)}${sig ? ` (${sig})` : ""}`;
     }),
+    ...(b.events ? [
+      ``,
+      `## Events — ${b.events.attended} attended of ${b.events.events} contacted`,
+      ...b.events.recent.map((ev) => `- ${ev.tier === "rsvp" ? "RSVP'd" : ev.tier} · ${ev.event}${ev.date ? ` (${ev.date})` : ""}${ev.invitedBy ? ` — invited by ${ev.invitedBy}` : ev.via ? ` — via ${ev.via}` : ""}`),
+    ] : []),
     ``,
     `## Recent documents`,
     ...b.recentDocuments.map((d) =>

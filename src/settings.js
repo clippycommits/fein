@@ -8,7 +8,10 @@ import { id } from "./db.js";
 export const DEFAULT_SETTINGS = {
   weights: {
     meeting: 3,      // meeting notes (Granola etc.)
-    event: 2,        // calendar co-attendance
+    event: 2,        // calendar co-attendance; an event the guest attended
+    rsvp: 1.2,       // said yes to an event
+    invite: 0.6,     // was invited (or declined) — the firm reached out
+    cohort: 0.5,     // was in the same room (per event, under the participant cap)
     email: 2.5,      // direct from<->to email
     emailCc: 1,      // cc'd participation
     doc: 1.5,        // doc co-authorship

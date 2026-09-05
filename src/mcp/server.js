@@ -12,6 +12,7 @@ import { rebuildEdgesFor } from "../graph/edges.js";
 import { listReviews, resolveReview } from "../resolve/review.js";
 import { getEntity } from "../graph/queries.js";
 import { companyMemory } from "../graph/memory.js";
+import { listEvents, resolveEvent, eventHistory, eventGuests, guestLeague } from "../graph/events.js";
 
 const VERSION = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../package.json"), "utf8"),
@@ -132,6 +133,7 @@ export function buildMcpServer(db, { viewer = null, actor = "agent" } = {}) {
         profile: brief.entity,
         connections: brief.connections,
         recentDocuments: brief.recentDocuments,
+        ...(brief.events ? { events: brief.events } : {}),
       };
       if (me) {
         const self = await ref(db, me, viewer);
@@ -177,6 +179,43 @@ export function buildMcpServer(db, { viewer = null, actor = "agent" } = {}) {
       for (const i of items) i.name = (await getEntity(db, i.entity))?.canonical_name ?? i.entity;
       return text({ entity: e.canonical_name, radar: items });
     }
+  );
+
+  server.tool(
+    "list_events",
+    "Every event in the graph (from CRM event lists) with per-tier guest counts: attended, RSVP'd yes, declined, invited. Optional since/until (YYYY-MM-DD).",
+    { since: z.string().optional(), until: z.string().optional() },
+    async ({ since, until }) => text(await listEvents(db, { viewer, since: since ?? null, until: until ?? null }))
+  );
+
+  server.tool(
+    "event_history",
+    "A person's event history: every event they were contacted about, newest first, with the tier reached (attended / rsvp / declined / invited), who brought them, and the receipt. Plus a summary: counts, first and last event, show rate.",
+    { entity: z.string(), limit: z.number().optional() },
+    async ({ entity, limit }) => {
+      const e = await ref(db, entity, viewer);
+      return text({ entity: e.canonical_name, ...(await eventHistory(db, e.id, { viewer, limit: limit ?? 100 })) });
+    }
+  );
+
+  server.tool(
+    "event_guests",
+    "Who was contacted about one event (by slug or name), grouped by tier, with who brought each guest. Filter with tier = attended | rsvp | declined | invited.",
+    { event: z.string(), tier: z.enum(["attended", "rsvp", "declined", "invited"]).optional(), limit: z.number().optional() },
+    async ({ event, tier, limit }) => {
+      const r = await resolveEvent(db, event, { viewer });
+      if (r.error) return text(r);
+      return text({ event: r.event, ...(await eventGuests(db, r.event.slug, { viewer, tier: tier ?? null, limit: limit ?? 500 })) });
+    }
+  );
+
+  server.tool(
+    "guest_league",
+    "League tables across events. sort: most_attended (the loyal), never_attended (the over-invited: many invitations, never in the room), most_invited, lapsed (attended before `since`, nothing after — needs since), best_show_rate. since/until bound the events counted (YYYY-MM-DD); minEvents is the floor.",
+    { sort: z.enum(["most_attended", "never_attended", "most_invited", "lapsed", "best_show_rate"]).optional(),
+      since: z.string().optional(), until: z.string().optional(), minEvents: z.number().optional(), limit: z.number().optional() },
+    async ({ sort, since, until, minEvents, limit }) =>
+      text(await guestLeague(db, { viewer, sort: sort ?? "most_attended", since: since ?? null, until: until ?? null, minEvents: minEvents ?? 1, limit: limit ?? 25 }))
   );
 
   server.tool(
