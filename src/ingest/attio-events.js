@@ -191,11 +191,26 @@ const LABEL_OF = { attended: "attended", rsvp: "RSVP'd yes", declined: "declined
 
 // Values in "added by" / "invited by" that mean the firm itself.
 const isFirmToken = (v, firmPattern) => firmPattern.test(v);
-// "Rich Greenfield", "Kathryn Minshew" — a person, not a partner org. Only a
-// free-text cell can name a person; select options are categories.
-const looksLikePerson = (v) => /^[A-Z][\w'’.-]+(?: [A-Z][\w'’.-]+){1,3}$/.test(v) && !/\b(Team|Partners?|Ventures|List|Network|Inc|LLC|Media|Group|Discourse)\b/i.test(v);
+// "Rich Greenfield", "Kathryn Minshew" — a person, not a partner org.
+const ORG_WORDS = /\b(Team|Partners?|Ventures|List|Network|Inc|LLC|Media|Group|Discourse|Entertainment|Capital|Studios?|Labs?|Agency|Fund|Holdings|Company|Co|Corp|Digital|Global|Advisors|Collective|Club|Society|Foundation|Institute)\b/i;
+const looksLikePerson = (v) => /^[A-Z][\w'’.-]+(?: [A-Z][\w'’.-]+){1,3}$/.test(v) && !ORG_WORDS.test(v);
 // A spreadsheet tab, an invite wave, a "manual list": provenance, never a party.
 const isProvenance = (v) => /\b(list|wave|manual|sheet|export|tab|wb)\b|\d{2,}/i.test(v);
+// "Walt Piecyk (LightShed)", "Heather Hartnett | HH" → ["Walt Piecyk", "LightShed"].
+function splitSuffix(v) {
+  const m = /^(.*?)\s*(?:\(([^)]*)\)|\|\s*(.*))\s*$/.exec(v);
+  if (!m) return [v.trim(), null];
+  const suffix = (m[2] ?? m[3] ?? "").trim();
+  return [m[1].trim(), suffix || null];
+}
+function orgLike(v, orgNames) {
+  if (!v) return false;
+  const lower = v.toLowerCase();
+  if (orgNames.has(lower)) return true;
+  const words = v.split(/\s+/).length;
+  if (words >= 2) return !looksLikePerson(v);
+  return /[a-z][A-Z]/.test(v); // OpenAP, LightShed, iConnections — but not HOST or Ben
+}
 
 /**
  * Attribution for one entry: who brought the guest.
@@ -208,27 +223,29 @@ const isProvenance = (v) => /\b(list|wave|manual|sheet|export|tab|wb)\b|\d{2,}/i
 export function attributeEntry(values, hosts, { firmPattern, orgNames = new Set() }) {
   const raw = [];
   for (const key of ["added_by", "invited_by", "invite_source", "source_list", "source_lists"]) {
-    const cells = values?.[key];
-    const v = cellText(cells);
-    if (v) raw.push({ key, value: v, type: cells?.[0]?.attribute_type ?? "text" });
+    const v = cellText(values?.[key]);
+    if (v) raw.push({ key, value: v });
   }
   let host = hosts.default;
   let inviter = null;
   let org = null;
-  for (const { key, value, type } of raw) {
+  for (const { key, value } of raw) {
     if (key === "source_list" || key === "source_lists") continue; // a spreadsheet tab, not a person
     const lower = value.toLowerCase();
     // "Human - Joe", "Human Ventures - Jess", "Joe Marchese": a token maps to a specific host.
     const mapped = Object.entries(hosts.byToken).find(([token]) => new RegExp(`(^|[^a-z])${token}([^a-z]|$)`).test(lower));
     if (mapped) { host = mapped[1]; continue; }
     if (isFirmToken(value, firmPattern) || isProvenance(value)) continue;
-    if (type === "text" && looksLikePerson(value)) { inviter ??= { name: value, email: null }; continue; }
-    const words = value.split(/\s+/).length;
-    if (orgNames.has(lower) || (words >= 2 && !looksLikePerson(value)) || /[A-Z].*[A-Z]/.test(value.slice(1)) && words === 1) {
-      org ??= value; // known company, a multi-word non-person, or CamelCase like OpenAP / LightShed
+    const [main, suffix] = splitSuffix(value);
+    if (orgNames.has(main.toLowerCase())) { org ??= main; continue; }
+    if (looksLikePerson(main)) {
+      inviter ??= { name: main, email: null };
+      if (suffix && orgLike(suffix, orgNames)) org ??= suffix;
+      continue;
     }
+    if (orgLike(main, orgNames)) org ??= main;
   }
-  return { host, inviter, org, raw: raw.map(({ key, value }) => ({ key, value })) };
+  return { host, inviter, org, raw };
 }
 
 /**
@@ -239,7 +256,9 @@ export function attributeEntry(values, hosts, { firmPattern, orgNames = new Set(
 export function eventsFromLists(lists, { dates = {}, now = Date.now() } = {}) {
   const out = [];
   for (const l of lists ?? []) {
-    if (l.parent_object && l.parent_object !== "people") continue; // company lists are not guest lists
+    // Attio returns parent_object as a one-element array on /lists and a string on entries.
+    const parent = Array.isArray(l.parent_object) ? l.parent_object[0] : l.parent_object;
+    if (parent && parent !== "people") continue; // company lists are not guest lists
     const slug = l.api_slug;
     const date = dates[slug] ?? parseEventDate(l.name);
     if (!date) continue;

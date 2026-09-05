@@ -108,7 +108,15 @@ console.log("Attribution:");
   a = attributeEntry({ added_by: sel("Publicis") }, hosts, { firmPattern: firm, orgNames: new Set(["publicis"]) });
   ok(a.org === "Publicis", "a one-word value the workspace knows as a company is an org");
   a = attributeEntry({ invited_by: sel("On Discourse") }, hosts, { firmPattern: firm });
-  ok(a.inviter === null && a.org === "On Discourse", "a select option is never a person");
+  ok(a.inviter === null && a.org === "On Discourse", "'On Discourse' is a platform, not a person");
+  a = attributeEntry({ invited_by: sel("Heather Hartnett | HH") }, hosts, { firmPattern: firm });
+  ok(a.inviter?.name === "Heather Hartnett" && a.org === null, "'Name | initials' is the person", a);
+  a = attributeEntry({ invited_by: sel("Walt Piecyk (LightShed)") }, hosts, { firmPattern: firm });
+  ok(a.inviter?.name === "Walt Piecyk" && a.org === "LightShed", "'Name (Org)' is the person and the org", a);
+  a = attributeEntry({ invited_by: sel("Radial Entertainment") }, hosts, { firmPattern: firm });
+  ok(a.inviter === null && a.org === "Radial Entertainment", "a two-word company is an org", a);
+  a = attributeEntry({ invited_by: sel("HOST") }, hosts, { firmPattern: firm });
+  ok(a.inviter === null && a.org === null, "an all-caps label is nothing", a);
   a = attributeEntry({ invite_source: sel("B2B CMO 100 List (The Drum)") }, hosts, { firmPattern: firm });
   ok(a.org === null && a.inviter === null, "a list name is provenance");
   a = attributeEntry({ invited_by: txt("Joe Marchese") }, hosts, { firmPattern: firm });
@@ -137,12 +145,12 @@ const people = [
   person("p6", "Jess Webber", "jess@example.com", null),
 ];
 const lists = [
-  { id: { list_id: "L1" }, api_slug: "ces_2025", name: "CES Cocktails · Jan 8, 2025", parent_object: "people" },
+  { id: { list_id: "L1" }, api_slug: "ces_2025", name: "CES Cocktails · Jan 8, 2025", parent_object: ["people"] }, // the array form the /lists endpoint really returns
   { id: { list_id: "L2" }, api_slug: "dinner_2025", name: "Salon Dinner · Apr 10, 2025", parent_object: "people" },
   { id: { list_id: "L3" }, api_slug: "mixer_2026", name: "Local Innovation Mixer · Sep 28, 2026", parent_object: "people" },
   { id: { list_id: "L4" }, api_slug: "summit_2026", name: "Human Attention Summit 2026", parent_object: "people" },
   { id: { list_id: "L5" }, api_slug: "prospects", name: "Summit · Prospect Research", parent_object: "people" },
-  { id: { list_id: "L6" }, api_slug: "partners", name: "Activation Partners · Jun 22, 2026", parent_object: "companies" },
+  { id: { list_id: "L6" }, api_slug: "partners", name: "Activation Partners · Jun 22, 2026", parent_object: ["companies"] },
 ];
 const entries = {
   L1: [

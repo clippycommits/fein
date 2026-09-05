@@ -229,7 +229,7 @@ export function docsFromAttioRecords({ companies = [], people = [] }) {
  *   ATTIO_FIRM_PATTERN     regex for "added by" values that mean the firm itself
  */
 export async function fetchAttioEvents(peopleById, { key, now = Date.now(), log = console.error, orgNames = new Set() } = {}) {
-  const lists = await attio("/lists", { method: "GET", key });
+  const lists = (await attio("/lists", { method: "GET", key })).data ?? [];
   const dates = parseEventDates(process.env.ATTIO_EVENT_DATES);
   const hosts = parseHosts({ host: process.env.ATTIO_EVENT_HOST, hostMap: process.env.ATTIO_EVENT_HOST_MAP });
   const firmPattern = new RegExp(process.env.ATTIO_FIRM_PATTERN || "^(human|hv|the firm|us|team|internal)\\b", "i");
