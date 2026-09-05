@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ask · Fein</title>
+<link rel="stylesheet" href="/ask.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='44' fill='%230b0b0b'/><circle cx='50' cy='50' r='10' fill='%23fcfcfb'/></svg>">
+</head>
+<body>
+<header class="top">
+  <a class="wordmark" href="/ask" aria-label="Fein">fein</a>
+  <nav>
+    <label class="viewer" title="Ask as a member to include their private layer">
+      <span>as</span>
+      <select id="viewer"><option value="">shared layer</option></select>
+    </label>
+    <button id="new" type="button" title="Start a new conversation">New</button>
+    <a href="/" title="Open the graph dashboard">Graph</a>
+  </nav>
+</header>
+
+<main id="main">
+  <section id="hero">
+    <h1>Ask the graph.</h1>
+    <p class="sub" id="sub">People, organizations, events and relationships, from the CRM and every guest list.</p>
+  </section>
+
+  <section id="thread" aria-live="polite"></section>
+
+  <div id="notice" hidden></div>
+
+  <div id="examples">
+    <button class="chip" type="button">Who has come to the most of our events?</button>
+    <button class="chip" type="button">Who have we invited five or more times and never seen?</button>
+    <button class="chip" type="button">Who came to events in 2025 but nothing this year?</button>
+    <button class="chip" type="button">Prep me for a meeting with …</button>
+  </div>
+</main>
+
+<form id="ask" autocomplete="off">
+  <div class="box">
+    <textarea id="q" rows="1" placeholder="Ask anything about your people and events" aria-label="Your question"></textarea>
+    <button id="send" type="submit" aria-label="Ask">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+    </button>
+    <button id="stop" type="button" aria-label="Stop" hidden>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+    </button>
+  </div>
+  <p class="foot"><span id="status">Answers come from the graph as of the last sync.</span></p>
+</form>
+
+<script src="/ask.js"></script>
+</body>
+</html>

@@ -38,6 +38,28 @@ dashboard + MCP endpoint, data in a volume, fail-closed if the token is
 missing. [DEPLOY.md](DEPLOY.md) is the client-onboarding runbook — TLS,
 connecting agents, backups, Postgres mode, upgrades.
 
+## Ask — a question box over the graph
+
+![ask](docs/img/dashboard.png)
+
+`/ask` is for the people at a firm who will never open a dashboard: one
+input, type a question, get an answer. Claude reads the graph through the
+same MCP tools an external agent gets (an in-process client on an in-memory
+transport), so the answer on the page and the answer in Claude Code come
+from identical code. Tool calls show as one-line receipts under the answer,
+lists come back as tables, and "as …" binds the question to a member's
+private layer.
+
+```bash
+export ANTHROPIC_API_KEY=...      # or `ant auth login`
+FEIN_FIRM="Ridgeline Capital" npm start   # → http://localhost:4321/ask
+```
+
+Agents and scripts can use the same endpoint: `POST /api/ask` with
+`{"messages":[{"role":"user","content":"who came to the most events?"}]}`
+returns server-sent events (`text` deltas, `tool` / `tool_result` receipts,
+`done`). `FEIN_ASK_MODEL` and `FEIN_ASK_EFFORT` tune cost against depth.
+
 ## The dashboard
 
 | | |

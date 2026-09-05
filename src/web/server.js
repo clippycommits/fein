@@ -17,6 +17,7 @@ import { getSettings, putSettings, audit, listAudit } from "../settings.js";
 import { CONNECTOR_PROVIDERS, clampSyncInterval, putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
 import { runConnectorSync, syncingProvider, startScheduler, connectorSyncStatus } from "../sync.js";
 import { listEvents, resolveEvent, eventHistory, eventGuests, guestLeague } from "../graph/events.js";
+import { ask, askConfig, askCredentials, describeError } from "../ask/index.js";
 import { listMembers, addMember, removeMember, resolveMember, visibleLayers } from "../members.js";
 import { extractPending, extractionStats, estimateExtraction } from "../extract/pipeline.js";
 import { extractConfig, isAuthError } from "../extract/client.js";
@@ -31,6 +32,9 @@ const STATIC = {
   "/": ["index.html", "text/html; charset=utf-8"],
   "/app.js": ["app.js", "text/javascript; charset=utf-8"],
   "/style.css": ["style.css", "text/css; charset=utf-8"],
+  "/ask": ["ask.html", "text/html; charset=utf-8"],
+  "/ask.js": ["ask.js", "text/javascript; charset=utf-8"],
+  "/ask.css": ["ask.css", "text/css; charset=utf-8"],
 };
 
 const SECURITY_HEADERS = {
@@ -272,6 +276,18 @@ async function route(db, req, res, url, port) {
       }));
     }
     if (path === "/api/members") return json(res, await listMembers(db));
+    if (path === "/api/ask/status") {
+      const cfg = askConfig();
+      const attio = await connectorStatus(db, "attio").catch(() => null);
+      return json(res, {
+        configured: askCredentials() !== "ambient" || Boolean(process.env.ANTHROPIC_PROFILE),
+        credentials: askCredentials(),
+        model: cfg.model,
+        effort: cfg.effort,
+        firm: cfg.firm,
+        lastSyncAt: attio?.lastSyncAt ?? null,
+      });
+    }
     // ---- events: guest-side history and league tables ----
     if (path === "/api/events") {
       return json(res, await listEvents(db, { viewer: await viewerOf(db, url),
@@ -531,6 +547,41 @@ async function route(db, req, res, url, port) {
     }
     const { setAutomated } = await import("../resolve/automated.js");
     return json(res, await setAutomated(db, entityId, body.automated, { actor: member?.name ?? "local" }));
+  }
+
+  // ---- Ask: one question, one streamed answer (server-sent events) ----
+  if (req.method === "POST" && path === "/api/ask") {
+    const member = await memberOf(db, url);
+    const body = parseJson(await readBody(req));
+    const abort = new AbortController();
+    res.on("close", () => abort.abort());
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      "x-accel-buffering": "no",
+      ...SECURITY_HEADERS,
+    });
+    const emit = (type, data) => {
+      if (!res.writableEnded) res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+    try {
+      await ask(db, {
+        messages: body.messages,
+        viewer: member?.id ?? null,
+        viewerName: member?.name ?? null,
+        asker: member?.name ?? null,
+        signal: abort.signal,
+        onEvent: emit,
+      });
+    } catch (err) {
+      const d = describeError(err);
+      if (err?.statusCode === 400) d.message = err.message;
+      if (d.code !== "aborted") console.error("ask:", err?.message ?? err);
+      emit("error", d);
+    } finally {
+      res.end();
+    }
+    return;
   }
 
   if (req.method === "POST" && path === "/api/members") {

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.0 — 2026-09-05
+
+**Ask**: a question box over the graph, for the people who will never open
+a dashboard.
+
+### Added
+- **`/ask`** — one input, one streamed answer. Claude drives the graph
+  through the same MCP tools an external agent gets (an in-process client),
+  so an answer on the page and an answer in Claude Code come from identical
+  code. Tool calls show as one-line receipts under the answer; lists come
+  back as tables; the conversation stays in the browser. `?as=<member>`
+  binds a question to that member's private layer, and the page offers the
+  members as "as …".
+- **`POST /api/ask`** (server-sent events: `start`, `text`, `tool`,
+  `tool_result`, `turn`, `done`, `error`) and **`GET /api/ask/status`**
+  (configured / model / effort / firm / last sync). Bounded: iterations,
+  tool-result size, and the browser can stop a question mid-way.
+- Configuration: `ANTHROPIC_API_KEY` (or an `ant auth login` profile),
+  `FEIN_FIRM` (the firm's name in the prompt), `FEIN_ASK_MODEL` (default
+  `claude-opus-5`), `FEIN_ASK_EFFORT` (default `medium`),
+  `FEIN_ASK_MAX_ITERATIONS`, `FEIN_ASK_MAX_TOOL_CHARS`,
+  `FEIN_ASK_FALLBACKS=0` to disable the server-side refusal fallback.
+- The system prompt and tool list are prompt-cached; only the date and the
+  asker vary per request.
+
 ## 0.6.0 — 2026-09-05
 
 **The events release**: a firm that runs events has its relationship
