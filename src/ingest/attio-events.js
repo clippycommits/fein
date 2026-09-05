@@ -227,25 +227,30 @@ export function attributeEntry(values, hosts, { firmPattern, orgNames = new Set(
     if (v) raw.push({ key, value: v });
   }
   let host = hosts.default;
-  let inviter = null;
-  let org = null;
+  const inviters = [];
+  const orgs = [];
+  const addOrg = (o) => { if (o && !orgs.some((x) => x.toLowerCase() === o.toLowerCase())) orgs.push(o); };
   for (const { key, value } of raw) {
     if (key === "source_list" || key === "source_lists") continue; // a spreadsheet tab, not a person
-    const lower = value.toLowerCase();
-    // "Human - Joe", "Human Ventures - Jess", "Joe Marchese": a token maps to a specific host.
-    const mapped = Object.entries(hosts.byToken).find(([token]) => new RegExp(`(^|[^a-z])${token}([^a-z]|$)`).test(lower));
-    if (mapped) { host = mapped[1]; continue; }
-    if (isFirmToken(value, firmPattern) || isProvenance(value)) continue;
-    const [main, suffix] = splitSuffix(value);
-    if (orgNames.has(main.toLowerCase())) { org ??= main; continue; }
-    if (looksLikePerson(main)) {
-      inviter ??= { name: main, email: null };
-      if (suffix && orgLike(suffix, orgNames)) org ??= suffix;
-      continue;
+    // "Rich Greenfield, David Birnbaum", "Rich Greenfield and CAA", "Jess / Joe": several parties.
+    for (const part of value.split(/\s*(?:,|&|\/|;|\band\b)\s*/).map((p) => p.trim()).filter(Boolean)) {
+      const lower = part.toLowerCase();
+      // "Human - Joe", "Human Ventures - Jess", "Joe Marchese": a token maps to a specific host.
+      const mapped = Object.entries(hosts.byToken).find(([token]) => new RegExp(`(^|[^a-z])${token}([^a-z]|$)`).test(lower));
+      if (mapped) { host = mapped[1]; continue; }
+      if (isFirmToken(part, firmPattern) || isProvenance(part)) continue;
+      const [main, suffix] = splitSuffix(part);
+      if (orgNames.has(main.toLowerCase())) { addOrg(main); continue; }
+      if (looksLikePerson(main)) {
+        if (!inviters.some((i) => i.name.toLowerCase() === main.toLowerCase())) inviters.push({ name: main, email: null });
+        if (suffix && orgLike(suffix, orgNames)) addOrg(suffix);
+        continue;
+      }
+      if (orgLike(main, orgNames)) addOrg(main);
     }
-    if (orgLike(main, orgNames)) org ??= main;
   }
-  return { host, inviter, org, raw };
+  // `inviter` / `org` keep the first of each for callers that want one; the arrays carry all.
+  return { host, inviter: inviters[0] ?? null, inviters, org: orgs[0] ?? null, orgs, raw };
 }
 
 /**
@@ -298,13 +303,15 @@ export function docsFromEventEntries(event, entries, peopleById, { hosts, firmPa
     const { tier, evidence } = classifyTier(values, { past: event.past });
     if (!tier) { tallies.skipped++; continue; }
     tallies[tier]++;
-    const { host, inviter, org, raw } = attributeEntry(values, hosts, { firmPattern, orgNames });
+    const { host, inviters, orgs: partnerOrgs, raw } = attributeEntry(values, hosts, { firmPattern, orgNames });
     const guestRole = tier === "attended" ? "attendee" : "to";
     const guest = { name: person.name, email: person.emails?.[0] ?? null, org: person.org ?? null, role: guestRole };
     const people = [guest];
     const h = hostMention(host, "author");
     if (h) people.push(h);
-    if (inviter) people.push({ ...inviter, role: "from" });
+    for (const inviter of inviters) people.push({ ...inviter, role: "from" });
+    const inviter = inviters[0] ?? null;
+    const org = partnerOrgs[0] ?? null;
     const extras = {};
     for (const key of ["vip", "priority_get", "cannes_speaker", "marquee_250", "host_committee", "sports", "in_agenda", "role", "segment", "type", "category", "attendee_segment", "invite_tier", "invite_wave"]) {
       const v = values[key];
@@ -319,7 +326,7 @@ export function docsFromEventEntries(event, entries, peopleById, { hosts, firmPa
       title: `${event.name} — ${LABEL_OF[tier]}`,
       occurred_at: event.occurredAt,
       people,
-      orgs: org ? [org] : [],
+      orgs: partnerOrgs,
       raw: {
         event: event.slug,
         event_name: event.name,
@@ -328,8 +335,8 @@ export function docsFromEventEntries(event, entries, peopleById, { hosts, firmPa
         evidence,
         guest: { name: person.name, email: guest.email },
         host: host ? { name: host.name, email: host.email } : null,
-        ...(inviter ? { invited_by: inviter.name } : {}),
-        ...(org ? { via: org } : {}),
+        ...(inviter ? { invited_by: inviters.map((i) => i.name).join(", ") } : {}),
+        ...(org ? { via: partnerOrgs.join(", ") } : {}),
         ...(raw.length ? { attribution: raw } : {}),
         ...(Object.keys(extras).length ? { attributes: extras } : {}),
       },

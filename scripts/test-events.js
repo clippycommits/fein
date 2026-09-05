@@ -117,6 +117,12 @@ console.log("Attribution:");
   ok(a.inviter === null && a.org === "Radial Entertainment", "a two-word company is an org", a);
   a = attributeEntry({ invited_by: sel("HOST") }, hosts, { firmPattern: firm });
   ok(a.inviter === null && a.org === null, "an all-caps label is nothing", a);
+  a = attributeEntry({ invited_by: txt("Rich Greenfield, David Birnbaum, Alex Michaels") }, hosts, { firmPattern: firm });
+  ok(a.inviters.map((i) => i.name).join("|") === "Rich Greenfield|David Birnbaum|Alex Michaels" && a.org === null, "a comma list is several inviters", a);
+  a = attributeEntry({ invited_by: txt("Rich Greenfield and CAA") }, hosts, { firmPattern: firm, orgNames: new Set(["caa"]) });
+  ok(a.inviter?.name === "Rich Greenfield" && a.org === "CAA", "'X and Org' is a person and an org", a);
+  a = attributeEntry({ invited_by: txt("Zach Ferres, Rich Greenfield"), added_by: sel("Publicis") }, hosts, { firmPattern: firm, orgNames: new Set(["publicis"]) });
+  ok(a.inviters.length === 2 && a.orgs.join() === "Publicis", "inviters and orgs accumulate across columns", a);
   a = attributeEntry({ invite_source: sel("B2B CMO 100 List (The Drum)") }, hosts, { firmPattern: firm });
   ok(a.org === null && a.inviter === null, "a list name is provenance");
   a = attributeEntry({ invited_by: txt("Joe Marchese") }, hosts, { firmPattern: firm });
@@ -155,7 +161,7 @@ const lists = [
 const entries = {
   L1: [
     entry("e1", "p1", { attended: check(), rsvp: sel("Yes"), invited_by: txt("Rich Greenfield") }),
-    entry("e2", "p2", { attended: check(), rsvp: sel("Yes") }),
+    entry("e2", "p2", { attended: check(), rsvp: sel("Yes"), invited_by: txt("Rich Greenfield, David Birnbaum") }),
     entry("e3", "p3", { attended: check(false), rsvp: sel("Yes") }),
     entry("e4", "p4", { attended: check(false), rsvp: sel("No") }),
   ],
@@ -212,6 +218,9 @@ for (const ev of events) {
   ok(alexCes.occurred_at.startsWith("2025-01-08"), "dated at the event");
   ok(alexCes.people.some((p) => p.email === "jess@example.com" && p.role === "author"), "host on the touch as author");
   ok(alexCes.people.some((p) => p.name === "Rich Greenfield" && p.role === "from"), "inviter on the touch as from");
+  const priyaCes = eventDocs.find((d) => d.external_id === "attio-entry-e2");
+  ok(priyaCes.people.filter((p) => p.role === "from").length === 2 && priyaCes.raw.invited_by === "Rich Greenfield, David Birnbaum",
+    "every named inviter rides on the touch", priyaCes.people);
   ok(alexCes.people[0].role === "attendee" && alexCes.people[0].org === "Northgate Media", "guest is the attendee, carrying the org hint");
   ok(alexCes.raw.tier === "attended" && alexCes.raw.evidence === "attended=true", "raw carries tier + receipt", alexCes.raw);
 
