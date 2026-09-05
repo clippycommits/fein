@@ -193,7 +193,7 @@ const LABEL_OF = { attended: "attended", rsvp: "RSVP'd yes", declined: "declined
 const isFirmToken = (v, firmPattern) => firmPattern.test(v);
 // "Rich Greenfield", "Kathryn Minshew" — a person, not a partner org.
 const ORG_WORDS = /\b(Team|Partners?|Ventures|List|Network|Inc|LLC|Media|Group|Discourse|Entertainment|Capital|Studios?|Labs?|Agency|Fund|Holdings|Company|Co|Corp|Digital|Global|Advisors|Collective|Club|Society|Foundation|Institute)\b/i;
-const looksLikePerson = (v) => /^[A-Z][\w'’.-]+(?: [A-Z][\w'’.-]+){1,3}$/.test(v) && !ORG_WORDS.test(v);
+const looksLikePerson = (v) => /^[A-Z][\w'’.-]+(?: [A-Z][\w'’.-]+){1,2}$/.test(v) && !ORG_WORDS.test(v);
 // A spreadsheet tab, an invite wave, a "manual list": provenance, never a party.
 const isProvenance = (v) => /\b(list|wave|manual|sheet|export|tab|wb)\b|\d{2,}/i.test(v);
 // "Walt Piecyk (LightShed)", "Heather Hartnett | HH" → ["Walt Piecyk", "LightShed"].
@@ -208,6 +208,9 @@ function orgLike(v, orgNames) {
   const lower = v.toLowerCase();
   if (orgNames.has(lower)) return true;
   const words = v.split(/\s+/).length;
+  // Four or more capitalised words with no company word is two names run
+  // together or a sentence, not an organization — leave it as provenance.
+  if (words >= 4) return ORG_WORDS.test(v);
   if (words >= 2) return !looksLikePerson(v);
   return /[a-z][A-Z]/.test(v); // OpenAP, LightShed, iConnections — but not HOST or Ben
 }
@@ -233,7 +236,7 @@ export function attributeEntry(values, hosts, { firmPattern, orgNames = new Set(
   for (const { key, value } of raw) {
     if (key === "source_list" || key === "source_lists") continue; // a spreadsheet tab, not a person
     // "Rich Greenfield, David Birnbaum", "Rich Greenfield and CAA", "Jess / Joe": several parties.
-    for (const part of value.split(/\s*(?:,|&|\/|;|\band\b)\s*/).map((p) => p.trim()).filter(Boolean)) {
+    for (const part of value.split(/\s*(?:,|&|\/|;|\band\b|\bvia\b|\bthrough\b|\bw\/)\s*/i).map((p) => p.trim()).filter(Boolean)) {
       const lower = part.toLowerCase();
       // "Human - Joe", "Human Ventures - Jess", "Joe Marchese": a token maps to a specific host.
       const mapped = Object.entries(hosts.byToken).find(([token]) => new RegExp(`(^|[^a-z])${token}([^a-z]|$)`).test(lower));
