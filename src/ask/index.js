@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { BRAND, env } from "../brand.js";
 import { buildMcpServer } from "../mcp/server.js";
 import { systemPrompt, contextBlock } from "./prompt.js";
+import { askViaClaudeCode } from "./claude-code.js";
 
 /**
  * Ask — one question in, one streamed answer out.
@@ -29,13 +30,35 @@ const VERSION = JSON.parse(
 export function askConfig() {
   return {
     model: env("ASK_MODEL") ?? "claude-opus-5",
-    effort: env("ASK_EFFORT") ?? "medium",
+    effort: env("ASK_EFFORT") ?? "low", // chat: fewer, more consolidated tool calls, first token sooner
     maxTokens: Number(env("ASK_MAX_TOKENS") ?? 16000),
     maxIterations: Number(env("ASK_MAX_ITERATIONS") ?? 10),
     maxToolChars: Number(env("ASK_MAX_TOOL_CHARS") ?? 60000),
     firm: env("FIRM") ?? "the firm",
     fallbacks: env("ASK_FALLBACKS") !== "0",
+    provider: askProvider(),
   };
+}
+
+/**
+ * Which way a question is answered:
+ *   api          — the Anthropic API with ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / an `ant` profile
+ *   claude-code  — the Claude Agent SDK on a Claude Code OAuth token (a subscription)
+ * FEIN_ASK_PROVIDER pins it; otherwise the API wins when it has a key, else Claude Code when it has a token.
+ */
+export function askProvider() {
+  const pinned = env("ASK_PROVIDER");
+  if (pinned === "api" || pinned === "claude-code") return pinned;
+  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return "api";
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return "claude-code";
+  return "api";
+}
+
+/** Presence only: is there anything the chosen provider can authenticate with? */
+export function askConfigured() {
+  const provider = askProvider();
+  if (provider === "claude-code") return Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN);
+  return askCredentials() !== "ambient" || Boolean(process.env.ANTHROPIC_PROFILE);
 }
 
 /** Presence only, never values: what the first question will authenticate with. */
@@ -79,6 +102,9 @@ export function describeError(err) {
   if (err instanceof Anthropic.APIConnectionError) return { code: "unreachable", message: "Could not reach the model provider." };
   if (err instanceof Anthropic.BadRequestError) return { code: "bad_request", message: "The model rejected the request." };
   if (err?.name === "AbortError" || err?.message === "Request was aborted.") return { code: "aborted", message: "Stopped." };
+  if (/CLAUDE_CODE_OAUTH_TOKEN|not logged in|authentication required|invalid api key|401/i.test(err?.message ?? "")) {
+    return { code: "not_configured", message: "Ask is not set up on this instance yet: Claude Code has no subscription token." };
+  }
   return { code: "error", message: "Something went wrong answering that." };
 }
 
@@ -87,10 +113,21 @@ export function describeError(err) {
  * `onEvent(type, data)` receives, in order: start, text*, (tool, tool_result)*, turn*, done | error.
  * Returns the final assistant text.
  */
-export async function ask(db, { messages, viewer = null, viewerName = null, asker = null, signal = null,
-  onEvent = () => {}, createClient = defaultClient, now = () => new Date(), config = askConfig() } = {}) {
+export async function ask(db, { messages, viewer = null, viewerName = null, viewerRef = null, asker = null, signal = null,
+  onEvent = () => {}, createClient = defaultClient, queryFn = null, mcpUrl = null, mcpAuth = null,
+  now = () => new Date(), config = askConfig() } = {}) {
   const turns = normalizeMessages(messages);
   if (!turns.length) throw Object.assign(new Error("ask needs a question"), { statusCode: 400 });
+
+  if (config.provider === "claude-code") {
+    if (!mcpUrl) throw new Error("the claude-code provider needs the server's MCP url");
+    const url = viewerRef ? `${mcpUrl}?as=${encodeURIComponent(viewerRef)}` : mcpUrl;
+    return askViaClaudeCode({
+      turns, mcpUrl: url, mcpAuth, config, signal, onEvent, queryFn,
+      systemText: systemPrompt({ firm: config.firm, brand: BRAND }),
+      contextText: contextBlock({ today: now().toISOString().slice(0, 10), asker, viewerName }),
+    });
+  }
 
   // The graph, as an MCP client would see it — same tools, same viewer scoping.
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.0 — 2026-09-05
+
+**Ask on a subscription, and a front door without the graph.**
+
+### Added
+- **Claude Code provider for Ask**: with `CLAUDE_CODE_OAUTH_TOKEN` set (from
+  `claude setup-token`, a Max or Team subscription) and no API key, Ask runs
+  through the Claude Agent SDK — Claude Code as a library — with the Fein
+  system prompt, this server's own MCP endpoint over loopback for the graph
+  tools, and every built-in coding tool switched off. Same events, same
+  page. `FEIN_ASK_PROVIDER=api|claude-code` pins the choice;
+  `GET /api/ask/status` reports `provider`.
+- **`FEIN_HOME=ask`**: the question box becomes `/`, the dashboard moves to
+  `/dashboard`, and the Ask page carries no link to the graph visual.
+
+### Changed
+- Ask's default effort is `low`: first token sooner, fewer and more
+  consolidated tool calls. `FEIN_ASK_EFFORT` raises it.
+- `zod` 4 (required by the Agent SDK; the MCP server's schemas are unchanged).
+
 ## 0.7.0 — 2026-09-05
 
 **Ask**: a question box over the graph, for the people who will never open

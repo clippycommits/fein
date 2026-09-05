@@ -17,7 +17,7 @@ import { getSettings, putSettings, audit, listAudit } from "../settings.js";
 import { CONNECTOR_PROVIDERS, clampSyncInterval, putConnector, deleteConnector, resolveConnectorKey, maskKey } from "../connectors.js";
 import { runConnectorSync, syncingProvider, startScheduler, connectorSyncStatus } from "../sync.js";
 import { listEvents, resolveEvent, eventHistory, eventGuests, guestLeague } from "../graph/events.js";
-import { ask, askConfig, askCredentials, describeError } from "../ask/index.js";
+import { ask, askConfig, askCredentials, askConfigured, askProvider, describeError } from "../ask/index.js";
 import { listMembers, addMember, removeMember, resolveMember, visibleLayers } from "../members.js";
 import { extractPending, extractionStats, estimateExtraction } from "../extract/pipeline.js";
 import { extractConfig, isAuthError } from "../extract/client.js";
@@ -28,8 +28,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const PUBLIC = join(ROOT, "src/web/public");
 const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
 
+// FEIN_HOME=ask makes the question box the front door and moves the
+// dashboard to /dashboard — for firms whose people should never meet the
+// graph visual. Default keeps the dashboard at /.
+const HOME_IS_ASK = env("HOME") === "ask";
 const STATIC = {
-  "/": ["index.html", "text/html; charset=utf-8"],
+  "/": [HOME_IS_ASK ? "ask.html" : "index.html", "text/html; charset=utf-8"],
+  "/dashboard": ["index.html", "text/html; charset=utf-8"],
   "/app.js": ["app.js", "text/javascript; charset=utf-8"],
   "/style.css": ["style.css", "text/css; charset=utf-8"],
   "/ask": ["ask.html", "text/html; charset=utf-8"],
@@ -280,8 +285,9 @@ async function route(db, req, res, url, port) {
       const cfg = askConfig();
       const attio = await connectorStatus(db, "attio").catch(() => null);
       return json(res, {
-        configured: askCredentials() !== "ambient" || Boolean(process.env.ANTHROPIC_PROFILE),
-        credentials: askCredentials(),
+        configured: askConfigured(),
+        provider: askProvider(),
+        credentials: askProvider() === "claude-code" ? (process.env.CLAUDE_CODE_OAUTH_TOKEN ? "claude-code-oauth" : "none") : askCredentials(),
         model: cfg.model,
         effort: cfg.effort,
         firm: cfg.firm,
@@ -569,9 +575,13 @@ async function route(db, req, res, url, port) {
         messages: body.messages,
         viewer: member?.id ?? null,
         viewerName: member?.name ?? null,
+        viewerRef: member?.id ?? null,
         asker: member?.name ?? null,
         signal: abort.signal,
         onEvent: emit,
+        // The Claude Code provider reaches the graph over loopback, as any agent would.
+        mcpUrl: `http://127.0.0.1:${port}/mcp`,
+        mcpAuth: AUTH_TOKEN,
       });
     } catch (err) {
       const d = describeError(err);

@@ -23,7 +23,10 @@ const { ingestDocs } = await import(join(root, "src/ingest/index.js"));
 const { resolveMentions } = await import(join(root, "src/resolve/pipeline.js"));
 const { rebuildEdges } = await import(join(root, "src/graph/edges.js"));
 const { addMember } = await import(join(root, "src/members.js"));
-const { ask, normalizeMessages, describeError, askCredentials } = await import(join(root, "src/ask/index.js"));
+const { ask, normalizeMessages, describeError, askCredentials, askProvider } = await import(join(root, "src/ask/index.js"));
+const { claudeCodeOptions, foldTranscript, childEnv } = await import(join(root, "src/ask/claude-code.js"));
+delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+delete process.env.FEIN_ASK_PROVIDER;
 
 let failures = 0;
 const ok = (cond, label, extra) => {
@@ -126,7 +129,7 @@ console.log("The loop:");
   ok(events.filter((e) => e[0] === "text").length >= 4, "text streamed in deltas");
 
   const first = capture[0].params;
-  ok(first.model === "claude-opus-5" && first.output_config.effort === "medium", "model + effort from config", { model: first.model, oc: first.output_config });
+  ok(first.model === "claude-opus-5" && first.output_config.effort === "low", "model + effort from config", { model: first.model, oc: first.output_config });
   ok(first.betas?.[0] === "server-side-fallback-2026-07-01" && first.fallbacks === "default", "refusal fallback on by default");
   ok(Array.isArray(first.system) && first.system[0].cache_control?.type === "ephemeral" && !first.system[1].cache_control,
     "stable system block cached, volatile block not", first.system.map((b) => Boolean(b.cache_control)));
@@ -211,6 +214,72 @@ console.log("Edges of the loop:");
   ok(askCredentials() === "ambient", "no key in the environment reads as ambient");
 }
 
+console.log("Claude Code provider:");
+{
+  ok(askProvider() === "api", "no credentials at all → api (and not configured)");
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "oat";
+  ok(askProvider() === "claude-code", "a Claude Code token and no API key → claude-code");
+  process.env.ANTHROPIC_API_KEY = "sk";
+  ok(askProvider() === "api", "an API key wins over the token");
+  process.env.FEIN_ASK_PROVIDER = "claude-code";
+  ok(askProvider() === "claude-code", "FEIN_ASK_PROVIDER pins it");
+  delete process.env.ANTHROPIC_API_KEY; delete process.env.FEIN_ASK_PROVIDER;
+
+  ok(foldTranscript([{ role: "user", content: "hi" }]) === "hi", "a single turn is the prompt");
+  const folded = foldTranscript([{ role: "user", content: "a" }, { role: "assistant", content: "b" }, { role: "user", content: "c" }]);
+  ok(folded.startsWith("Earlier in this conversation") && folded.endsWith("c") && folded.includes("Assistant: b"), "history folds into the prompt", folded);
+  const ce = childEnv({ PATH: "/bin", CLAUDE_CODE_SESSION_ID: "x", CLAUDE_CODE_OAUTH_TOKEN: "oat", CLAUDE_CODE_ENTRYPOINT: "cli" });
+  ok(ce.PATH === "/bin" && ce.CLAUDE_CODE_OAUTH_TOKEN === "oat" && !("CLAUDE_CODE_SESSION_ID" in ce) && !("CLAUDE_CODE_ENTRYPOINT" in ce),
+    "the child keeps the token, drops the parent session's identity", ce);
+
+  const opts = claudeCodeOptions({ systemText: "SYS", contextText: "CTX", mcpUrl: "http://127.0.0.1:1/mcp?as=m1", mcpAuth: "tok", model: "claude-opus-5", effort: "low", maxTurns: 10 });
+  ok(opts.systemPrompt.type === "custom" && opts.systemPrompt.prompt[0] === "SYS", "custom system prompt replaces Claude Code's");
+  ok(opts.mcpServers.fein.type === "http" && opts.mcpServers.fein.url.endsWith("?as=m1") && opts.mcpServers.fein.headers.Authorization === "Bearer tok", "graph over loopback MCP with the token and the viewer", opts.mcpServers);
+  ok(opts.allowedTools[0] === "mcp__fein__*" && opts.disallowedTools.includes("Bash") && opts.disallowedTools.includes("ToolSearch"), "only graph tools allowed, tool search off");
+  ok(opts.mcpServers.fein.alwaysLoad === true, "graph tools load in the first prompt, never deferred");
+  ok(opts.permissionMode === "bypassPermissions" && opts.allowDangerouslySkipPermissions && opts.strictMcpConfig && opts.persistSession === false && opts.includePartialMessages, "headless, strict, streaming, no session files");
+  ok(opts.effort === "low" && opts.model === "claude-opus-5" && opts.maxTurns === 10, "model, effort and turn cap pass through");
+
+  // A scripted SDK stream: init → tool_use → tool_result → text deltas → result.
+  const script = [
+    { type: "system", subtype: "init", mcp_servers: [{ name: "fein", status: "connected" }], tools: ["mcp__fein__guest_league"], model: "claude-opus-5" },
+    { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "t0", name: "ToolSearch", input: { query: "x" } }] } },
+    { type: "user", parent_tool_use_id: null, message: { content: [{ type: "tool_result", tool_use_id: "t0", content: "" }] } },
+    { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "t1", name: "mcp__fein__guest_league", input: { sort: "most_attended" } }] } },
+    { type: "user", parent_tool_use_id: null, message: { content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: JSON.stringify({ guests: [{ name: "Alex" }] }) }] }] } },
+    { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", delta: { type: "text_delta", text: "Alex " } } },
+    { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", delta: { type: "text_delta", text: "leads." } } },
+    { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Alex leads." }] } },
+    { type: "result", subtype: "success", is_error: false, num_turns: 2, duration_ms: 1200, total_cost_usd: 0.01, result: "Alex leads.", usage: { input_tokens: 10, output_tokens: 5 } },
+  ];
+  let seen = null;
+  const queryFn = ({ prompt, options }) => { seen = { prompt, options }; const it = (async function* () { for (const m of script) yield m; })(); it.close = () => {}; return it; };
+  const events = [];
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "oat";
+  const answer = await ask(db, {
+    messages: [{ role: "user", content: "who leads?" }], viewerRef: jess.id, viewerName: "Jess Webber", asker: "Jess Webber",
+    onEvent: (t, d) => events.push([t, d]), queryFn, mcpUrl: "http://127.0.0.1:9/mcp", mcpAuth: "tok",
+    config: { model: "claude-opus-5", effort: "low", maxTokens: 1, maxIterations: 8, maxToolChars: 1, firm: "Ridgeline Capital", fallbacks: true, provider: "claude-code" },
+  });
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  ok(answer === "Alex leads.", "answer assembled from stream deltas, not duplicated by the assistant message", answer);
+  const types = events.map((e) => e[0]);
+  ok(types.join() === "start,tool,tool_result,text,text,turn,done", "event order matches the API provider; Claude Code's own tools never surface", types);
+  ok(events[0][1].provider === "claude-code", "start names the provider");
+  ok(events[1][1].name === "guest_league" && events[2][1].summary === "1 guest" && events[2][1].ok, "tool names lose the mcp__fein__ prefix; receipts summarize", [events[1][1], events[2][1]]);
+  ok(events.find((e) => e[0] === "turn")[1].costUsd === 0.01 && events.find((e) => e[0] === "turn")[1].turns === 2, "turn carries cost and turns");
+  ok(seen.prompt === "who leads?" && seen.options.mcpServers.fein.url === `http://127.0.0.1:9/mcp?as=${jess.id}` && seen.options.systemPrompt.prompt[0].includes("Ridgeline Capital") && seen.options.systemPrompt.prompt[1].includes("Jess Webber"),
+    "the SDK got the question, the viewer-scoped MCP url and the Fein prompt", { prompt: seen.prompt, url: seen.options.mcpServers.fein.url });
+
+  // An error result becomes an error event.
+  const bad = [{ type: "result", subtype: "error_max_turns", is_error: true, num_turns: 8, duration_ms: 5, total_cost_usd: 0 }];
+  const ev2 = [];
+  await ask(db, { messages: [{ role: "user", content: "x" }], onEvent: (t, d) => ev2.push([t, d]), mcpUrl: "http://127.0.0.1:9/mcp",
+    queryFn: () => { const it = (async function* () { for (const m of bad) yield m; })(); it.close = () => {}; return it; },
+    config: { model: "m", effort: "low", maxTokens: 1, maxIterations: 8, maxToolChars: 1, firm: "F", fallbacks: true, provider: "claude-code" } });
+  ok(ev2.at(-1)[0] === "error" && ev2.at(-1)[1].code === "error_max_turns", "max turns → error event", ev2.at(-1));
+}
+
 console.log("HTTP route:");
 {
   process.env.FEIN_AUTH_TOKEN = "t0k";
@@ -225,8 +294,12 @@ console.log("HTTP route:");
   ok(r.status === 401, "status needs the token");
   r = await fetch(`${base}/api/ask/status`, { headers: H });
   const st = await r.json();
-  ok(r.status === 200 && st.configured === false && st.credentials === "ambient" && st.firm === "Ridgeline Capital" && st.model === "claude-opus-5",
-    "status reports not configured, the firm and the model", st);
+  ok(r.status === 200 && st.configured === false && st.provider === "api" && st.credentials === "ambient" && st.firm === "Ridgeline Capital" && st.model === "claude-opus-5",
+    "status reports not configured, the provider, the firm and the model", st);
+  r = await fetch(`${base}/`, { headers: { authorization: "Bearer t0k" } });
+  ok((await r.text()).includes('id="tiles"'), "the dashboard is the front door by default");
+  r = await fetch(`${base}/dashboard`, { headers: { authorization: "Bearer t0k" } });
+  ok(r.status === 200 && (await r.text()).includes('id="tiles"'), "…and always at /dashboard");
   r = await fetch(`${base}/ask`, { headers: { authorization: "Bearer t0k" } });
   ok(r.status === 200 && (await r.text()).includes("Ask the graph"), "the page is served behind auth");
   r = await fetch(`${base}/ask`, { redirect: "manual" });

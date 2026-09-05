@@ -55,6 +55,13 @@ export ANTHROPIC_API_KEY=...      # or `ant auth login`
 FEIN_FIRM="Ridgeline Capital" npm start   # → http://localhost:4321/ask
 ```
 
+**On a subscription instead of an API key:** set `CLAUDE_CODE_OAUTH_TOKEN`
+(from `claude setup-token`) and leave `ANTHROPIC_API_KEY` unset. Ask then
+runs through the Claude Agent SDK — Claude Code as a library, coding tools
+off, graph tools on — and usage comes out of the subscription. Set
+`FEIN_HOME=ask` to make the question box the front door and move the
+dashboard to `/dashboard`.
+
 Agents and scripts can use the same endpoint: `POST /api/ask` with
 `{"messages":[{"role":"user","content":"who came to the most events?"}]}`
 returns server-sent events (`text` deltas, `tool` / `tool_result` receipts,

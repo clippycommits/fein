@@ -197,7 +197,9 @@
         const o = document.createElement("option"); o.value = m.email || m.name; o.textContent = m.name; viewerSel.appendChild(o);
       }
       if (st.firm && st.firm !== "the firm") sub.textContent = `${st.firm}'s people, organizations, events and relationships, from the CRM and every guest list.`;
-      if (st.configured === false) say("Ask is not set up on this instance yet: it has no Anthropic credentials. Everything else works.", "err");
+      if (st.configured === false) say(st.provider === "claude-code"
+        ? "Ask is not set up on this instance yet: Claude Code has no subscription token."
+        : "Ask is not set up on this instance yet: it has no Anthropic credentials.", "err");
       else status.textContent = `Answers come from the graph as of the last sync${st.lastSyncAt ? " · " + st.lastSyncAt.slice(0, 16).replace("T", " ") + " UTC" : ""}.`;
     } catch {}
     load();
